@@ -345,7 +345,7 @@ group('xp rewards', () => {
  * animal still, cast one slot and run the engine for three seconds of game
  * time. Returns the damage the animal took.
  */
-function castAtStationaryTarget(wizard: WizardId, slot: AbilitySlot, dt: number) {
+function castAtStationaryTarget(wizard: WizardId, slot: AbilitySlot, dt: number, gap: number) {
   const scene = new THREE.Scene()
   const camera = new THREE.PerspectiveCamera(60, 1.6, 0.1, 400)
   const player = new THREE.Object3D()
@@ -373,7 +373,7 @@ function castAtStationaryTarget(wizard: WizardId, slot: AbilitySlot, dt: number)
     if (nav.blocked(at.x, at.z)) continue
     for (let a = 0; a < 24 && !spot; a++) {
       const angle = (a / 24) * Math.PI * 2
-      const candidate = { x: at.x + Math.cos(angle) * 6, z: at.z + Math.sin(angle) * 6 }
+      const candidate = { x: at.x + Math.cos(angle) * gap, z: at.z + Math.sin(angle) * gap }
       if (nav.blocked(candidate.x, candidate.z)) continue
       if (!nav.lineOfSight(candidate.x, candidate.z, at.x, at.z, 0.15, SHOT_CLEARANCE)) continue
       spot = candidate
@@ -488,14 +488,17 @@ group('every damaging ability connects with a clear shot', () => {
   for (const wizard of ['MOTH', 'BRAMBLE', 'CINDER', 'ORBIT'] as WizardId[]) {
     for (const slot of SLOTS) {
       if (!damaging(wizard, slot)) continue
-      // Two frame rates: a clean 60fps and the 20fps the engine clamps to.
+      // Two frame rates — a clean 60fps and the 20fps the engine clamps to —
+      // and both point-blank and at a comfortable poking distance.
       for (const dt of [1 / 60, 1 / 20]) {
-        const dealt = castAtStationaryTarget(wizard, slot, dt)
-        check(
-          `${wizard} ${slot} (${kits[wizard].abilities[slot].name}) lands damage at ${Math.round(1 / dt)}fps`,
-          dealt > 0,
-          `dealt ${dealt.toFixed(1)}`,
-        )
+        for (const gap of [3, 6]) {
+          const dealt = castAtStationaryTarget(wizard, slot, dt, gap)
+          check(
+            `${wizard} ${slot} (${kits[wizard].abilities[slot].name}) lands damage at ${Math.round(1 / dt)}fps from ${gap}m`,
+            dealt > 0,
+            `dealt ${dealt.toFixed(1)}`,
+          )
+        }
       }
     }
   }

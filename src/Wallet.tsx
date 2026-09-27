@@ -191,6 +191,9 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
   const [gifts, setGifts] = useState<Gift[]>(initial.current.gifts)
   const [selected, setSelected] = useState<number | null>(null)
   const [drag, setDrag] = useState<DragState | null>(null)
+  // Handing a stack over is irreversible, so a drop only proposes the gift and
+  // the player has to confirm it against the named amount and recipient.
+  const [pending, setPending] = useState<{ from: number; npc: string; proximity: boolean } | null>(null)
   const dragRef = useRef<DragState | null>(null)
   const slotsRef = useRef(slots)
   // Window-level pointer handlers outlive a render, so live props and slots are
@@ -244,6 +247,14 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
     setSelected(to)
   }
 
+  /** Checks the stack is worth giving, then puts the gift up for confirmation. */
+  const askGive = (index: number, npcRaw: string, proximity: boolean) => {
+    const stack = slotsRef.current[index]
+    if (!stack) { live.current.onToast('That slot is empty — there is nothing to hand over.'); return }
+    if (amountOf(stack) <= 0n) { live.current.onToast(`No ${items[stack.def].symbol} left to give.`); return }
+    setPending({ from: index, npc: npcRaw, proximity })
+  }
+
   const give = (index: number, npcRaw: string, proximity: boolean) => {
     const stack = slotsRef.current[index]
     if (!stack) { live.current.onToast('That slot is empty — there is nothing to hand over.'); return }
@@ -286,7 +297,7 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
         : 'The world is not loaded, so there is no one to give this to.')
       return
     }
-    give(current.from, target, !hit)
+    askGive(current.from, target, !hit)
   }
 
   const dragging = drag !== null
@@ -325,6 +336,28 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
     event.preventDefault()
     setDragState({ from: index, x: event.clientX, y: event.clientY, ox: event.clientX, oy: event.clientY, moved: false, target: null })
   }
+
+  // Resolved here rather than in the dialog so a stack that empties or moves
+  // while the question is open simply withdraws it.
+  const pendingStack = (() => {
+    if (!pending) return null
+    const stack = slots[pending.from]
+    if (!stack) return null
+    const amount = amountOf(stack)
+    return amount > 0n ? { def: items[stack.def], amount } : null
+  })()
+  useEffect(() => { if (pending && !pendingStack) setPending(null) }, [pending, pendingStack])
+  useEffect(() => {
+    if (!pending) return
+    // Captured, so Escape closes the question and not the whole pouch behind it.
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault(); event.stopPropagation()
+      setPending(null)
+    }
+    window.addEventListener('keydown', onKey, true)
+    return () => window.removeEventListener('keydown', onKey, true)
+  }, [pending])
 
   const dragged = drag && drag.moved ? slots[drag.from] : null
   const hovering = giveable(nearbyNpc)
@@ -375,7 +408,7 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
     <div className="pouch-action">
       {chosen ? <>
         <span>{items[chosen.def].name} · {formatUnits(amountOf(chosen), items[chosen.def].decimals)} {items[chosen.def].symbol}</span>
-        <button className="primary full" disabled={!hovering} onClick={() => selected !== null && hovering && give(selected, hovering, true)}>
+        <button className="primary full" disabled={!hovering} onClick={() => selected !== null && hovering && askGive(selected, hovering, true)}>
           {hovering ? `Give to ${shortName(hovering)}` : 'No one nearby to give this to'}
         </button>
       </> : <span>Tap a slot to select it, or drag a stack onto a townsperson in the world.</span>}
@@ -398,5 +431,43 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
         {drag!.target ? `GIVE TO ${shortName(drag!.target).toUpperCase()}` : hovering ? `DROP ON SOMEONE · OR OFFER TO ${shortName(hovering).toUpperCase()}` : 'DROP ON A TOWNSPERSON'}
       </div>
     </>, document.body)}
+    {pendingStack && createPortal(
+      <div
+        className="give-ask-backdrop"
+        onPointerDown={event => { if (event.target === event.currentTarget) setPending(null) }}
+      >
+        <div className="give-ask" role="alertdialog" aria-modal="true" aria-labelledby="give-ask-title">
+          <div className="popup-corners" aria-hidden="true"><i /><i /><i /><i /></div>
+          <span className="give-ask-eyebrow">CONFIRM HANDOVER</span>
+          <div className="give-ask-subject">
+            <PixelIcon art={pendingStack.def.art} />
+            <div>
+              <strong id="give-ask-title">
+                {formatUnits(pendingStack.amount, pendingStack.def.decimals)} {pendingStack.def.symbol}
+              </strong>
+              <small>to {shortName(pending!.npc)}</small>
+            </div>
+          </div>
+          <p>
+            Are you sure? This leaves your pouch for good — {shortName(pending!.npc)} keeps it and
+            there is no way to take it back.
+            {pending!.proximity && ' They are simply the townsperson you are standing beside.'}
+          </p>
+          <span className={`wui-state ${demo ? 'demo' : 'live'}`}>
+            <i aria-hidden="true" />{demo ? 'DEMO — NO REAL FUNDS' : 'LIVE FUNDS — REAL VALUE'}
+          </span>
+          <div className="give-ask-row">
+            <button type="button" className="give-ask-no" onClick={() => setPending(null)}>Keep it</button>
+            <button
+              type="button"
+              className="primary give-ask-yes"
+              autoFocus
+              onClick={() => { const it = pending!; setPending(null); give(it.from, it.npc, it.proximity) }}
+            >
+              Give it to {shortName(pending!.npc)}
+            </button>
+          </div>
+        </div>
+      </div>, document.body)}
   </>
 }

@@ -247,6 +247,14 @@ export function createBattle(deps: BattleDeps) {
     rig.muzzlePoint(out)
     // A guard for the styles with no staff: never fire from inside the floor.
     if (out.y < 0.8) out.set(player.position.x, 1.7, player.position.z)
+    // The staff is held about a metre to the character's side, which can put
+    // the tip inside a wall or a boulder the character is standing clear of.
+    // A bolt born in there dies against it on the first frame and the cast is
+    // silently eaten, so fall back to the body — which is where the targeting
+    // check was made from in the first place.
+    if (!nav.lineOfSight(player.position.x, player.position.z, out.x, out.z, 0.15, SHOT_CLEARANCE)) {
+      out.set(player.position.x, out.y, player.position.z)
+    }
     return out
   }
 

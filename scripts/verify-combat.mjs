@@ -836,9 +836,21 @@ if (want('controls')) {
      so this needs a fresh one of its own. */
   const attackMove = await ctl.evaluate(async () => {
     const w = window.__wally
-    const animal = w.wildlife.animals.find(a => a.state !== 'dead' && a.species.id !== 'chicken')
+    const animal = w.wildlife.animals.find(a => a.state !== 'dead' && a.species.id !== 'CHICKEN')
     if (!animal) return { noTarget: true }
-    w.player.position.set(animal.group.position.x + 14, 0, animal.group.position.z)
+    // Stand somewhere with a clear view: acquisition needs line of sight, and
+    // dropping the character behind a wall tests the wall, not attack-move.
+    const at = animal.group.position
+    let spot = null
+    for (let a = 0; a < 16 && !spot; a++) {
+      const angle = (a / 16) * Math.PI * 2
+      const c = { x: at.x + Math.cos(angle) * 10, z: at.z + Math.sin(angle) * 10 }
+      if (w.nav.blocked(c.x, c.z)) continue
+      if (!w.nav.lineOfSight(c.x, c.z, at.x, at.z, 0.15, 1.6)) continue
+      spot = c
+    }
+    if (!spot) return { noTarget: true }
+    w.player.position.set(spot.x, 0, spot.z)
     w.battle.armAttackMove()
     const armed = w.battle.isAttackMoveArmed()
     w.battle.primaryClick(animal.group.position.clone(), null)
@@ -849,7 +861,7 @@ if (want('controls')) {
       if (w.battle.currentOrder() === 'attack') break
       await new Promise(r => setTimeout(r, 100))
     }
-    return { armed, target: animal.species.name, acquired: w.battle.currentOrder() === 'attack', orders: [...new Set(orders)] }
+    return { armed, target: animal.species.id, acquired: w.battle.currentOrder() === 'attack', orders: [...new Set(orders)] }
   })
   check(!attackMove.noTarget, 'a live animal is available for the attack-move test')
   check(attackMove.armed, 'tapping A arms attack-move')

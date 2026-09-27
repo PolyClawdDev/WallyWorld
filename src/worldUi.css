@@ -480,6 +480,74 @@
 .pouch-gift strong { display: block; font: 700 11px 'DM Mono', ui-monospace, monospace; letter-spacing: 0.06em; color: #e6dcc0; }
 .pouch-gift small { display: block; margin-top: 4px; font-size: 9px; color: #a9a284; }
 
+/* ==================================================================== *
+ * Handover question: the last word before a stack leaves the pouch
+ * ==================================================================== */
+.give-ask-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6vh 4vw;
+  background: #070b11cc;
+  backdrop-filter: blur(2px);
+}
+.give-ask {
+  position: relative;
+  width: min(378px, 100%);
+  padding: 20px 22px 18px;
+  background-color: var(--leather);
+  background-image: repeating-linear-gradient(90deg, #00000010 0 3px, transparent 3px 7px);
+  box-shadow: inset 0 3px 0 #ffffff1a, inset 0 -5px 0 #00000091, 0 18px 44px #000a;
+  clip-path: var(--vx-clip-sm);
+}
+.give-ask-eyebrow {
+  font: 700 9px 'DM Mono', ui-monospace, monospace;
+  letter-spacing: 0.18em;
+  color: var(--brass);
+}
+.give-ask-subject {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0 14px;
+  padding: 10px 12px;
+  background: #0c141c;
+  box-shadow: inset 0 3px 14px #00000066;
+  clip-path: var(--vx-clip-sm);
+}
+.give-ask-subject .pixel-icon { width: 38px; height: 38px; flex: none; }
+.give-ask-subject strong { display: block; font: 700 19px 'DM Mono', ui-monospace, monospace; color: #f2e7cd; }
+.give-ask-subject small { display: block; margin-top: 3px; font: 10px 'DM Mono', ui-monospace, monospace; color: #b0a086; letter-spacing: 0.08em; }
+.give-ask p {
+  margin: 0 0 14px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: #cbbda2;
+}
+.give-ask-row { display: flex; gap: 8px; margin-top: 14px; }
+.give-ask-row button {
+  flex: 1;
+  padding: 11px 12px;
+  font: 700 11px 'DM Mono', ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  clip-path: var(--vx-clip-sm);
+}
+.give-ask-no {
+  color: #c6b89e;
+  background-color: #2b2118;
+  box-shadow: inset 0 2px 0 #ffffff14, inset 0 -3px 0 #00000091;
+}
+.give-ask-no:hover { color: #f2e7cd; background-color: #3a2c1e; }
+.give-ask-yes {
+  color: #241705;
+  background: var(--brass);
+  box-shadow: inset 0 2px 0 var(--brass-lit), inset 0 -3px 0 var(--brass-dark);
+}
+.give-ask-yes:hover { background: var(--brass-lit); }
+
 .pouch-ghost {
   position: fixed;
   width: 48px;
