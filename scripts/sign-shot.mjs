@@ -19,7 +19,7 @@ await click('Enter the world')
 await sleep(250)
 await click('Continue with')
 await sleep(300)
-await click('Enter Wally World')
+await click('Enter Voxels')
 await page.waitForFunction('!!window.__wally', { timeout: 25000 })
 await sleep(1200)
 

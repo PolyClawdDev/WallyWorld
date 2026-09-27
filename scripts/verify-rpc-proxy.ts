@@ -107,7 +107,7 @@ const record = (reply: Reply) => {
 }
 
 async function main() {
-  console.log('Wally World · RPC proxy verification')
+  console.log('Voxels · RPC proxy verification')
   console.log(`  api      ${API}`)
   console.log(`  cluster  ${CLUSTER}`)
   console.log(`  secrets  ${SECRETS.length} fragment(s) being checked for (values not printed)`)

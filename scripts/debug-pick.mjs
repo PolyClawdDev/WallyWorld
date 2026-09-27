@@ -17,7 +17,7 @@ const clickText = async text => {
 await page.goto('http://127.0.0.1:5173/', { waitUntil: 'networkidle0' })
 await clickText('Enter the world')
 await clickText('Continue with')
-await clickText('Enter Wally World')
+await clickText('Enter Voxels')
 await page.waitForFunction('!!window.__wally && !!window.__wallyBridge')
 await page.evaluate(() => window.__wally.player.position.set(18, 0, 26))
 await wait(1200)

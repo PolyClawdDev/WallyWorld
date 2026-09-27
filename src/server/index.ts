@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ *
- * Wally World API.
+ * Voxels API.
  *
  * Replaces the previous in-memory demo with durable SQLite storage,
  * Sign-In With Solana authentication, and server-verified payment
@@ -38,6 +38,8 @@ import {
   SESSION_TTL_MS,
 } from './config'
 import { createSession, issueChallenge, isAllowedDomain, revokeFromAuthHeader, verifySignIn, walletFromAuthHeader } from './auth'
+import { ensureAccount } from './pvp/ids'
+import { goldView } from './pvp/ledger'
 import {
   advanceDemoTask,
   createDemoTask,
@@ -55,6 +57,7 @@ import {
 import { verifyClusterIdentity, verifyTransfer } from './chain'
 import { allowedMethodNames, proxyRpc } from './rpcProxy'
 import { redact, safeError, safeLog } from './redact'
+import { attachPvpUpgrade, handlePvpHttp } from './pvp'
 
 const MAX_BODY_BYTES = 32 * 1024
 /** Read-and-discard ceiling above the cap, so an oversized request still gets a 413. */
@@ -328,6 +331,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       rpcProxy: '/api/rpc',
       rpcAllowedMethods: allowedMethodNames(),
       persistence: 'sqlite',
+      pvp: { presence: '/ws/pvp', gold: 'game-gold', demo: true },
       auth: 'sign-in-with-solana',
       paymentsEnabled: PAYMENTS_ENABLED,
       /** Always false. Not switchable by configuration; see the README. */
@@ -504,6 +508,26 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return send(res, 200, { id: task.id, status: task.status, cost: task.cost, mode: 'demo' })
   }
 
+  if (method === 'POST' && path === '/api/dev/session') {
+    if (process.env.WALLY_DEV_SESSIONS !== '1') return fail(res, 404, 'not_found')
+    const parsed = await readJson(req)
+    if (!parsed.ok) return failBody(res, parsed)
+    const label = String((parsed.body as { label?: unknown }).label ?? 'dev').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'dev'
+    const accountId = `dev${label}${randomUUID().replace(/-/g, '').slice(0, 24)}`
+    const session = createSession(accountId)
+    const account = ensureAccount(accountId)
+    return send(res, 200, {
+      token: session.token,
+      expiresAtMs: session.expiresAtMs,
+      playerId: account.player_id,
+      gold: goldView(account.player_id),
+      mode: 'dev-session',
+      notice: 'Test identity only. Not a wallet. Not Solana.',
+    })
+  }
+
+  if (handlePvpHttp(req, res, path, method, send, fail)) return
+
   return fail(res, 404, 'not_found')
 }
 
@@ -537,11 +561,12 @@ const server = createServer((req, res) => {
 sweepExpired()
 setInterval(() => sweepExpired(), 10 * 60 * 1000).unref()
 setInterval(() => sweepBuckets(), 5 * 60 * 1000).unref()
+attachPvpUpgrade(server)
 
 server.listen(PORT, () => {
   // Every line goes through `safeLog`. The endpoint URL is never printed — only
   // the name of the variable it came from, which is not a credential.
-  safeLog(`Wally World API on http://127.0.0.1:${PORT}`)
+  safeLog(`Voxels API on http://127.0.0.1:${PORT}`)
   safeLog(`  cluster        ${CLUSTER}${CLUSTER === 'mainnet-beta' ? '  *** MAINNET · REAL FUNDS ***' : ''}`)
   safeLog(`  persistence    sqlite`)
   safeLog(`  rpc endpoint   from ${RPC_SOURCE_VAR}${RPC_IS_PUBLIC ? ' (public endpoint)' : ' (keyed — treated as a credential, never logged or served)'}`)

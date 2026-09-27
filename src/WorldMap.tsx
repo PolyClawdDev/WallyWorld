@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { ambientNpcs, buildingSpecs, districtAt, districts, huntingRegions, perimeterTrees, serviceNpcs, townLayout } from './townData'
-import { SAFE_ZONE, speciesSpecs, trailWaypoints, wildRegions, wildlifeMarkers } from './wildlife'
+import { SAFE_ZONE, huntTrails, speciesSpecs, wildRegions, wildlifeMarkers } from './wildlife'
 import { playerPose } from './worldBridge'
 import type { PlayerPose } from './worldBridge'
 
@@ -98,7 +98,7 @@ export function WorldMap() {
   return <>
     <div className="mp">
     <div className="mp-stage">
-      <svg ref={svg} viewBox={fitBox} shapeRendering="crispEdges" role="img" aria-label="Map of Wally World, drawn from the live town layout">
+      <svg ref={svg} viewBox={fitBox} shapeRendering="crispEdges" role="img" aria-label="Map of Voxels, drawn from the live town layout">
         <defs>
           {/* surveyor's grid ruled straight onto the parchment */}
           <pattern id="mp-grid" width="8" height="8" patternUnits="userSpaceOnUse">
@@ -128,8 +128,12 @@ export function WorldMap() {
 
         {/* hunting grounds and the lit trail, published by the wildlife module */}
         {huntingRegions.map(region => <polygon key={region.name} points={polygon(region.x, region.z, region.radius, 14)} fill={`${region.accent}26`} stroke={region.accent} strokeWidth="1.1" strokeDasharray="5 3" />)}
-        <polyline points={trailWaypoints.map(([x, z]) => `${x},${z}`).join(' ')} fill="none" stroke="#7a5c33" strokeWidth="2.6" strokeLinejoin="round" />
-        <polyline points={trailWaypoints.map(([x, z]) => `${x},${z}`).join(' ')} fill="none" stroke="#e0cda2" strokeWidth="1" strokeLinejoin="round" strokeDasharray="3 3" />
+        {huntTrails.map((trail, index) => (
+          <g key={`trail-${index}`}>
+            <polyline points={trail.map(([x, z]) => `${x},${z}`).join(' ')} fill="none" stroke="#7a5c33" strokeWidth="2.6" strokeLinejoin="round" />
+            <polyline points={trail.map(([x, z]) => `${x},${z}`).join(' ')} fill="none" stroke="#e0cda2" strokeWidth="1" strokeLinejoin="round" strokeDasharray="3 3" />
+          </g>
+        ))}
 
         {/* streets, plaza, canal, bridges: the same numbers the world is built from */}
         {townLayout.streets.map((street, index) => <rect key={index} x={street.x - street.width / 2} y={street.z - street.depth / 2} width={street.width} height={street.depth} fill="#d3bb8d" stroke="#a98c5e" strokeWidth="0.6" />)}
@@ -240,7 +244,7 @@ export function WorldMap() {
           <li><Swatch kind="bridge" color="#765b4a" />Bridges ({townLayout.bridges.length})</li>
           <li><Swatch kind="tree" color="#49624d" />Woodland ring</li>
           <li><Swatch kind="region" color="#e35e35" />Hunting ground ({huntingRegions.length})</li>
-          <li><Swatch kind="trail" color="#8a6c4a" />Lit trail to the wildwood</li>
+          <li><Swatch kind="trail" color="#8a6c4a" />Lit trails to the hunting grounds</li>
           {Object.values(speciesSpecs).map(species => <li key={species.id}>
             <Swatch kind="animal" color={species.mapColor} />{species.label} · {species.threat}
           </li>)}

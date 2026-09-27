@@ -78,7 +78,7 @@ export function isSafeZone(x: number, z: number) {
 
 /* --------------------------- species --------------------------- */
 
-export type SpeciesId = 'CHICKEN' | 'REINDEER' | 'BEAR'
+export type SpeciesId = 'CHICKEN' | 'REINDEER' | 'BEAR' | 'WOLF' | 'BOAR'
 export type ThreatTier = 'passive' | 'defensive' | 'aggressive'
 
 export type SpeciesSpec = {
@@ -91,6 +91,10 @@ export type SpeciesSpec = {
   goldBaseUnits: number
   /** Kill loot is split into this many coins so the pickup is visible. */
   coins: number
+  /** Base XP for a kill at or below recommendedLevel. Scaled at the award site. */
+  xpBase: number
+  /** Level this animal is meant for. Farming below this still pays full XP. */
+  recommendedLevel: number
   height: number
   depth: number
   walkSpeed: number
@@ -116,6 +120,8 @@ export const speciesSpecs: Record<SpeciesId, SpeciesSpec> = {
     maxHp: 12,
     goldBaseUnits: 2,
     coins: 1,
+    xpBase: 30,
+    recommendedLevel: 1,
     // Generous for a chicken, but the wayfinders stand 3.5m tall: at true
     // scale a hen is a speck you cannot see, let alone aim at.
     height: 1.1,
@@ -139,6 +145,8 @@ export const speciesSpecs: Record<SpeciesId, SpeciesSpec> = {
     maxHp: 70,
     goldBaseUnits: 12,
     coins: 3,
+    xpBase: 140,
+    recommendedLevel: 3,
     height: 2.35,
     depth: 6,
     walkSpeed: 1.6,
@@ -160,6 +168,8 @@ export const speciesSpecs: Record<SpeciesId, SpeciesSpec> = {
     maxHp: 200,
     goldBaseUnits: 45,
     coins: 5,
+    xpBase: 420,
+    recommendedLevel: 6,
     height: 1.95,
     depth: 9,
     walkSpeed: 1.4,
@@ -173,11 +183,57 @@ export const speciesSpecs: Record<SpeciesId, SpeciesSpec> = {
     respawnMs: 32000,
     mapColor: '#4a3a34',
   },
+  WOLF: {
+    id: 'WOLF',
+    label: 'WOLF',
+    blurb: 'Hunts in the Brasswood. Fast, and it does not miss often.',
+    threat: 'aggressive',
+    maxHp: 240,
+    goldBaseUnits: 58,
+    coins: 5,
+    xpBase: 720,
+    recommendedLevel: 9,
+    height: 1.72,
+    depth: 7,
+    walkSpeed: 1.9,
+    fleeSpeed: 0,
+    chaseSpeed: 5.5,
+    noticeRadius: 20,
+    attackRange: 3.0,
+    attackDamage: 26,
+    attackCooldownMs: 1550,
+    windUpMs: 420,
+    respawnMs: 36000,
+    mapColor: '#6a6e74',
+  },
+  BOAR: {
+    id: 'BOAR',
+    label: 'BOAR',
+    blurb: 'Brasswood brute. Hits harder than a bear and does not run.',
+    threat: 'aggressive',
+    maxHp: 380,
+    goldBaseUnits: 95,
+    coins: 7,
+    xpBase: 1100,
+    recommendedLevel: 12,
+    height: 1.78,
+    depth: 10,
+    walkSpeed: 1.25,
+    fleeSpeed: 0,
+    chaseSpeed: 4.3,
+    noticeRadius: 15,
+    attackRange: 3.6,
+    attackDamage: 36,
+    attackCooldownMs: 2100,
+    windUpMs: 720,
+    respawnMs: 42000,
+    mapColor: '#3d2a1f',
+  },
 }
 
 /* --------------------------- regions --------------------------- */
 
-export type WildRegionKind = 'wildwood' | 'woods' | 'grassland' | 'meadow' | 'fields' | 'outskirts'
+export type WildRegionKind = 'wildwood' | 'woods' | 'grassland' | 'meadow' | 'fields' | 'outskirts' | 'brasswood'
 
 export type WildRegion = {
   id: string
@@ -263,10 +319,31 @@ export const wildRegions: WildRegion[] = [
     color: '#3d5140',
     counts: { CHICKEN: 2 },
   },
+  {
+    id: 'brasswood',
+    label: 'THE BRASSWOOD',
+    kind: 'brasswood',
+    x: 78,
+    z: -80,
+    radius: 16,
+    note: 'Far south-east timber. Wolves and boars. Come at level 8 or do not come.',
+    color: '#2a3226',
+    counts: { WOLF: 4, BOAR: 3 },
+  },
 ]
 
-/** The headline hunting area, and where the HUD compass points. */
+/** The starter hunting area. Compass points here until the high-level bracket. */
 export const huntingArea = wildRegions[0]
+
+/** Far south-east ground for players approaching level 10. */
+export const highHuntArea = wildRegions.find(region => region.id === 'brasswood') ?? wildRegions[0]
+
+/** Compass switches to the Brasswood once levelling off town game goes stale. */
+export const HIGH_HUNT_LEVEL = 8
+
+export function compassHuntRegion(level: number) {
+  return level >= HIGH_HUNT_LEVEL ? highHuntArea : huntingArea
+}
 
 const regionAccent: Record<WildRegionKind, string> = {
   wildwood: '#e35e35',
@@ -275,6 +352,7 @@ const regionAccent: Record<WildRegionKind, string> = {
   meadow: '#7bc9ce',
   fields: '#7bc9ce',
   outskirts: '#849394',
+  brasswood: '#c4893a',
 }
 
 // townData leaves an empty `huntingRegions` seam for exactly this. Filling it
@@ -301,6 +379,23 @@ export const trailWaypoints: Array<[number, number]> = [
   [-49, -44],
   [-55, -52],
 ]
+
+/**
+ * Lit dirt south-east to the Brasswood. Crosses at the south canal bridge
+ * and stays east of the fisher shed, south of the cartwright.
+ */
+export const brassTrailWaypoints: Array<[number, number]> = [
+  [22, -9],
+  [30, -20],
+  [38, -32],
+  [48, -44],
+  [58, -56],
+  [70, -68],
+  [78, -78],
+]
+
+/** Every marked hunt trail. Map, scenery and tree scatter share this list. */
+export const huntTrails: Array<Array<[number, number]>> = [trailWaypoints, brassTrailWaypoints]
 
 /* ------------------------ sprite building ------------------------ */
 
@@ -575,10 +670,95 @@ const bearPlan = (): SpritePlan => ({
   depth: speciesSpecs.BEAR.depth,
 })
 
+const wolfPlan = (): SpritePlan => ({
+  // 24 wide, 18 tall. Lean, long muzzle, pointed ears, brush tail.
+  rows: grid(24, [
+    [[17, 17, 'A'], [20, 20, 'A']],
+    [[16, 17, 'A'], [19, 21, 'A']],
+    [[16, 21, 'H']],
+    [[16, 22, 'H'], [18, 18, 'E'], [23, 23, 'N']],
+    [[15, 22, 'H'], [23, 23, 'N']],
+    [[14, 18, 'C'], [19, 21, 'M']],
+    [[2, 4, 'T'], [8, 18, 'B']],
+    [[1, 5, 'T'], [7, 18, 'B']],
+    [[1, 4, 'T'], [6, 17, 'B']],
+    [[2, 3, 'T'], [6, 16, 'b']],
+    [[7, 8, '2'], [14, 15, '1']],
+    [[7, 8, '2'], [14, 15, '1']],
+    [[7, 8, '2'], [14, 15, '1']],
+    [[7, 8, '2'], [14, 15, '1']],
+    [[7, 8, '2'], [14, 15, '1']],
+    [[7, 8, '2'], [14, 15, '1']],
+    [[6, 8, '4'], [13, 15, '3']],
+    [[6, 8, '4'], [13, 15, '3']],
+  ]),
+  palette: {
+    B: '#6a6e74',
+    b: '#4e5358',
+    C: '#5c6166',
+    H: '#6a6e74',
+    M: '#3a3d40',
+    N: '#2a2c2e',
+    A: '#3a3d40',
+    E: '#ffb15c',
+    T: '#8a8e92',
+    '1': '#4a4e52',
+    '2': '#43474b',
+    '3': '#1f2123',
+    '4': '#1b1d1f',
+  },
+  spread: { A: 'pair', E: 'sides', T: 'centre', N: 'centre', '1': 'pair', '2': 'pair', '3': 'pair', '4': 'pair' },
+  part: { '1': 'legFront', '3': 'legFront', '2': 'legBack', '4': 'legBack', T: 'tail', H: 'head', M: 'head', E: 'head', A: 'head', N: 'head', C: 'head' },
+  emissive: ['E'],
+  height: speciesSpecs.WOLF.height,
+  depth: speciesSpecs.WOLF.depth,
+})
+
+const boarPlan = (): SpritePlan => ({
+  // 20 wide, 14 tall. Barrel body, bristle ridge, ivory tusks, short legs.
+  rows: grid(20, [
+    [[7, 12, 'R']],
+    [[5, 14, 'R'], [8, 11, 'B']],
+    [[3, 16, 'B'], [7, 12, 'R']],
+    [[2, 17, 'B']],
+    [[1, 2, 'T'], [2, 17, 'B'], [16, 16, 'K']],
+    [[1, 2, 'T'], [2, 17, 'B'], [15, 18, 'H'], [16, 16, 'E'], [19, 19, 'K']],
+    [[2, 16, 'B'], [15, 18, 'H'], [17, 18, 'M']],
+    [[3, 15, 'b'], [15, 18, 'M']],
+    [[4, 6, '2'], [12, 15, '1']],
+    [[4, 6, '2'], [12, 15, '1']],
+    [[4, 6, '2'], [12, 15, '1']],
+    [[4, 6, '2'], [12, 15, '1']],
+    [[3, 6, '4'], [12, 16, '3']],
+    [[3, 6, '4'], [12, 16, '3']],
+  ]),
+  palette: {
+    B: '#3d2a1f',
+    b: '#2a1c16',
+    R: '#1a1410',
+    H: '#4a3326',
+    M: '#2a1c16',
+    K: '#c4a574',
+    E: '#ffb15c',
+    T: '#4a3326',
+    '1': '#332218',
+    '2': '#2c1d15',
+    '3': '#1a120e',
+    '4': '#16100c',
+  },
+  spread: { R: 'centre', E: 'sides', K: 'pair', T: 'centre', '1': 'pair', '2': 'pair', '3': 'pair', '4': 'pair' },
+  part: { '1': 'legFront', '3': 'legFront', '2': 'legBack', '4': 'legBack', T: 'tail', H: 'head', M: 'head', E: 'head', K: 'head' },
+  emissive: ['E'],
+  height: speciesSpecs.BOAR.height,
+  depth: speciesSpecs.BOAR.depth,
+})
+
 const plans: Record<SpeciesId, () => SpritePlan> = {
   CHICKEN: chickenPlan,
   REINDEER: reindeerPlan,
   BEAR: bearPlan,
+  WOLF: wolfPlan,
+  BOAR: boarPlan,
 }
 
 /** One template per species; animals are clones with their own materials. */

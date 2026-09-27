@@ -10,14 +10,14 @@ import {
   rewardsSnapshot,
   subscribeRewards,
 } from './rewards'
-import { huntingArea, speciesSpecs } from './wildlife'
+import { speciesSpecs } from './wildlife'
 import type { WizardId } from './characters'
 
 import './hunt.css'
 
 /* ------------------------------------------------------------------ *
  * The hunt HUD. Health, the active ability, the current target, a
- * compass out to the wildwood, and the demo reward ledger.
+ * compass out to the current hunt ground, and the demo reward ledger.
  *
  * Fast-moving values are written straight to DOM refs from a single
  * animation frame; React state is only used for things that actually
@@ -128,7 +128,7 @@ function HuntLog({ onClose }: { onClose: () => void }) {
       </div>
 
       {snapshot.entries.length === 0 ? (
-        <p className="empty">No kills yet. Follow the lit trail south-west out of the plaza.</p>
+        <p className="empty">No kills yet. Follow the lit trail south-west to the Wildwood, or south-east to the Brasswood once town game stops paying.</p>
       ) : (
         <table>
           <thead>
@@ -162,6 +162,7 @@ export function HuntHud({ wizard }: { wizard: WizardId }) {
   const standing = useRef<HTMLElement>(null)
   const compassArrow = useRef<HTMLElement>(null)
   const compassDistance = useRef<HTMLElement>(null)
+  const compassLabel = useRef<HTMLSpanElement>(null)
 
   // Discrete changes only: a different species under the cursor, or a death.
   useEffect(() => {
@@ -201,6 +202,9 @@ export function HuntHud({ wizard }: { wizard: WizardId }) {
       }
       if (compassArrow.current) compassArrow.current.style.transform = `rotate(${huntState.compassDegrees.toFixed(1)}deg)`
       if (compassDistance.current) compassDistance.current.textContent = `${Math.round(huntState.compassDistance)} M`
+      if (compassLabel.current && compassLabel.current.textContent !== huntState.compassLabel) {
+        compassLabel.current.textContent = huntState.compassLabel
+      }
       frame = requestAnimationFrame(tick)
     }
     frame = requestAnimationFrame(tick)
@@ -240,7 +244,7 @@ export function HuntHud({ wizard }: { wizard: WizardId }) {
       {target && <TargetPlate target={target} range={kits[wizard].basic.range} />}
 
       <div className="hunt-compass">
-        <span>{huntingArea.label}</span>
+        <span ref={compassLabel}>{huntState.compassLabel}</span>
         {/* the needle is a clipped shape in hunt.css, not a glyph */}
         <em className="arrow" ref={compassArrow} aria-hidden="true" />
         <b ref={compassDistance}>0 M</b>

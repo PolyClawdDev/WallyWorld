@@ -29,7 +29,7 @@ const key = async k => { await page.keyboard.press(k); await wait(500) }
 await page.goto(`${site.base}/`, { waitUntil: 'networkidle0' })
 await clickText('Enter the world')
 await clickText('Continue with')
-await clickText('Enter Wally World')
+await clickText('Enter Voxels')
 await page.waitForFunction('!!window.__wally', { timeout: 20000 })
 await wait(1500)
 

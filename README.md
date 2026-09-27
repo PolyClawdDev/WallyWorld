@@ -1,6 +1,8 @@
-# Wally World
+# Voxels
 
 An atmospheric, single-player fantasy town where your wallet has a world.
+
+Storage, env, and debug probe keys still use the historical `wally` prefix (`wally.progression.v1`, `wally-receipt`, `wally-session-v1`, `WALLY_DB_PATH`, `window.__wally`, and similar) so existing saves and verification scripts keep working.
 
 ## Run locally
 
@@ -44,7 +46,7 @@ one, store one, transmit one, display one, or ask for one — not on any screen,
 and there is no code path that could. Phantom holds the key and performs every
 signature. `src/server/` contains no keypair either: the server verifies
 signatures and reads the chain, and cannot move anyone's funds. If you ever see
-Wally World ask you for a seed phrase, it is not Wally World.
+Voxels ask you for a seed phrase, it is not Voxels.
 
 What is implemented:
 

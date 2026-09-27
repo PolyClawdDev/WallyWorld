@@ -12,7 +12,8 @@ import {
   subscribeBattle,
 } from './battle/store'
 import type { SlotView } from './battle/store'
-import type { WizardId } from './characters'
+import type { MothStyle, WizardId } from './characters'
+import { WizardPortrait } from './wizardPortrait'
 
 import './combatHud.css'
 
@@ -34,64 +35,6 @@ import './combatHud.css'
  * ------------------------------------------------------------------ */
 
 const SLOTS: AbilitySlot[] = ['Q', 'W', 'E', 'R']
-
-/** A tiny voxel bust per wayfinder, built from the same palette as the model. */
-function Portrait({ wizard }: { wizard: WizardId }) {
-  const common = (
-    <>
-      <rect x="6" y="14" width="12" height="4" fill="#161b28" />
-      <rect x="4" y="18" width="16" height="6" fill="currentColor" />
-    </>
-  )
-  const faces: Record<WizardId, React.ReactNode> = {
-    MOTH: (
-      <>
-        <polygon points="12,1 17,12 5,12" fill="#d5a64b" />
-        <rect x="3" y="12" width="18" height="2" fill="#a87c31" />
-        {common}
-        <rect x="8" y="15" width="2" height="2" fill="#f7d98d" />
-        <rect x="14" y="15" width="2" height="2" fill="#f7d98d" />
-      </>
-    ),
-    BRAMBLE: (
-      <>
-        <rect x="2" y="4" width="2" height="7" fill="#7a6146" />
-        <rect x="4" y="2" width="2" height="4" fill="#7a6146" />
-        <rect x="20" y="4" width="2" height="7" fill="#7a6146" />
-        <rect x="18" y="2" width="2" height="4" fill="#7a6146" />
-        <polygon points="12,3 17,12 7,12" fill="#b1712f" />
-        <rect x="5" y="12" width="14" height="2" fill="#84501f" />
-        {common}
-        <rect x="8" y="15" width="2" height="2" fill="#cfe07a" />
-        <rect x="14" y="15" width="2" height="2" fill="#cfe07a" />
-        <rect x="7" y="19" width="10" height="3" fill="#cdd6b4" />
-      </>
-    ),
-    CINDER: (
-      <>
-        <polygon points="12,2 16,11 8,11" fill="#b9763c" />
-        <rect x="4" y="11" width="16" height="2" fill="#8a5a1e" />
-        <rect x="5" y="14" width="14" height="4" fill="#3a3b47" />
-        <rect x="7" y="15" width="3" height="2" fill="#ffb15c" />
-        <rect x="14" y="15" width="3" height="2" fill="#ffb15c" />
-        <rect x="4" y="18" width="16" height="6" fill="currentColor" />
-      </>
-    ),
-    ORBIT: (
-      <>
-        <polygon points="12,1 18,11 6,11" fill="#5a5d92" />
-        <rect x="4" y="11" width="16" height="2" fill="#3f416b" />
-        <rect x="5" y="14" width="14" height="3" fill="#7bc9ce" />
-        <rect x="4" y="18" width="16" height="6" fill="currentColor" />
-      </>
-    ),
-  }
-  return (
-    <svg viewBox="0 0 24 24" shapeRendering="crispEdges" aria-hidden="true">
-      {faces[wizard]}
-    </svg>
-  )
-}
 
 type TipTarget = AbilitySlot | 'passive' | 'basic' | null
 
@@ -296,7 +239,7 @@ function AbilityBook({ onClose }: { onClose: () => void }) {
   )
 }
 
-export function CombatHud() {
+export function CombatHud({ wizard, style }: { wizard: WizardId; style: MothStyle }) {
   const [, bump] = useState(0)
   const [tip, setTip] = useState<TipTarget>(null)
   const [book, setBook] = useState(false)
@@ -431,7 +374,7 @@ export function CombatHud() {
           onBlur={() => setTip(null)}
           aria-label={`${battleState.wizard}, level ${battleState.level}`}
         >
-          <Portrait wizard={battleState.wizard} />
+          <WizardPortrait wizard={wizard} style={style} />
           <b className="cbt-level" data-max={battleState.maxed ? 'yes' : 'no'}>
             {battleState.maxed ? 'MAX' : battleState.level}
           </b>

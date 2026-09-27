@@ -94,7 +94,7 @@ function filesIn(dir: string): string[] {
 let leaks = 0
 const targets = needles()
 
-console.log('Wally World · bundle credential audit')
+console.log('Voxels · bundle credential audit')
 console.log(`  searching   ${DIRS.join(', ')}`)
 console.log(`  needles     ${targets.length}`)
 const configured = CREDENTIAL_VARS.filter(name => process.env[name])

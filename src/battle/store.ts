@@ -178,6 +178,7 @@ export function registerBattleCommands(next: BattleCommands) {
 }
 
 export function requestUpgrade(slot: AbilitySlot) {
+  if (typeof window !== 'undefined' && (window as unknown as { __pvpLocked?: () => boolean }).__pvpLocked?.()) return false
   return commands?.upgrade(slot) ?? false
 }
 

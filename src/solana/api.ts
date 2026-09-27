@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ *
- * Typed client for the Wally World API.
+ * Typed client for the Voxels API.
  *
  * The only credential this module handles is an opaque session bearer
  * token issued after a wallet signature. It is not a key, it cannot sign
@@ -78,7 +78,7 @@ async function call<T>(path: string, options: { method?: string; body?: unknown;
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     })
   } catch {
-    throw new ApiError(0, 'network_error', `Cannot reach the Wally World API at ${API_BASE_URL}. Is \`npm run server\` running?`)
+    throw new ApiError(0, 'network_error', `Cannot reach the Voxels API at ${API_BASE_URL}. Is \`npm run server\` running?`)
   }
 
   const text = await response.text()

@@ -17,7 +17,7 @@ await click('Enter the world')
 await sleep(200)
 await click('Continue with')
 await sleep(250)
-await click('Enter Wally World')
+await click('Enter Voxels')
 await page.waitForFunction('!!window.__wally && window.__wally.wildlife.animals.length > 0', { timeout: 25000 })
 
 // Stand east of the wildwood so the compass has to swing left of straight

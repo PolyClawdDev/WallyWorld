@@ -66,6 +66,12 @@ export type FrameContext = {
   hover: Animal | null
   /** True while the player is driving with WASD this frame. */
   manualMove: boolean
+  /**
+   * Live Shift hold this frame. Path following (click-to-move, attack-move,
+   * chase) reads this every tick so releasing Shift drops back to a walk
+   * mid-route. False while a popup has paused input.
+   */
+  sprinting: boolean
   safe: boolean
   paused: boolean
 }
@@ -1593,7 +1599,7 @@ export function createBattle(deps: BattleDeps) {
       }
     }
 
-    const moveSpeed = kit.stats.moveSpeed
+    const moveSpeed = ctx.sprinting ? kit.stats.runSpeed : kit.stats.moveSpeed
     if (order === 'move' || (order === 'attackMove' && !alive(attackTarget))) {
       if (!advanceAlongPath(dt, moveSpeed)) {
         if (order === 'attackMove' && attackMoveGoal && player.position.distanceTo(attackMoveGoal) < 1.2) clearOrder()

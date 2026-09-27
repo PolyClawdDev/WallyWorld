@@ -13,7 +13,7 @@ import { WorldMap } from './WorldMap'
 import { ambientNpcs, buildingSpecs, perimeterTrees, serviceNpcs, townLayout } from './townData'
 import type { BuildingSpec } from './townData'
 import { registerWorld } from './worldBridge'
-import { createWildlife, huntingArea, isInTown, isSafeZone, speciesSpecs } from './wildlife'
+import { compassHuntRegion, createWildlife, highHuntArea, isInTown, isSafeZone, speciesSpecs } from './wildlife'
 import { animateWildscape, createWildscape } from './wildscape'
 import { createVitals } from './combat'
 import { huntState, pingHunt, resetHuntState } from './huntStore'
@@ -27,7 +27,7 @@ import { createBattle } from './battle/engine'
 import type { BattleSystem } from './battle/engine'
 import { createNavGrid } from './battle/nav'
 import type { Obstacle } from './battle/nav'
-import { XP_PER_SPECIES } from './battle/kits'
+import { killXp } from './battle/huntXp'
 import { primeAudio } from './battle/audio'
 import {
   battleState,
@@ -39,6 +39,11 @@ import {
 } from './battle/store'
 import { progressFor } from './battle/progression'
 import { CombatHud } from './combatHud'
+import { PvpOverlay } from './pvp/ui'
+import { refreshPvpIdentity, send, startPvp, stopPvp } from './pvp/net'
+import { isDuelLocked, pvpState } from './pvp/store'
+import { applyDuelPose, disposePvpWorld, inspectRemote, pickRemote, updatePvpWorld } from './pvp/world'
+import { createCharacterNameplate, displayNameFor } from './nameplate'
 
 import './styles.css'
 // Loads last on purpose: the UI kit restyles the panels and HUD chrome that
@@ -366,15 +371,178 @@ function CharacterPreview({ wizard, style = defaultMothStyle }: { wizard: Wizard
   return <div ref={mount} className="character-preview" aria-label={`${wizard} 3D character preview`} />
 }
 
-function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold, onAction }: { wizard: WizardId; style?: MothStyle; paused: boolean; onNear: (target: string | null) => void; onGold: (amount: number) => void; onAction: (target: string) => void }) {
+const CAST = Object.keys(wizards) as WizardId[]
+
+/** Landing-only hop / sway so the four wayfinders look alive without changing world idle. */
+function danceWayfinder(id: WizardId, slot: THREE.Group, time: number) {
+  const phase = slot.userData.phase as number
+  const restX = slot.userData.restX as number
+  const restZ = slot.userData.restZ as number
+  const t = time * 0.001 + phase
+  if (id === 'MOTH') {
+    const hop = Math.abs(Math.sin(t * 4.6))
+    slot.position.set(restX + Math.sin(t * 1.4) * 0.08, hop * hop * 0.2, restZ)
+    slot.rotation.set(0, 0.18 + Math.sin(t * 1.7) * 0.42, Math.sin(t * 2.1) * 0.07)
+    slot.scale.set(1, 1 - (1 - hop) * 0.04, 1)
+    return
+  }
+  if (id === 'BRAMBLE') {
+    const hop = Math.abs(Math.sin(t * 6.4))
+    slot.position.set(restX, hop * hop * 0.32, restZ)
+    slot.rotation.set(0, -0.12 + Math.sin(t * 2.2) * 0.22, Math.sin(t * 3.1) * 0.05)
+    slot.scale.set(1 + (1 - hop) * 0.07, 1 - (1 - hop) * 0.08, 1 + (1 - hop) * 0.07)
+    return
+  }
+  if (id === 'CINDER') {
+    const beat = (t * 2.4) % (Math.PI * 2)
+    const jump = Math.max(0, Math.sin(beat))
+    slot.position.set(restX + Math.sin(t * 1.1) * 0.05, jump * jump * 0.46, restZ)
+    slot.rotation.set(0, 0.1 + Math.sin(t * 1.5) * 0.28, Math.sin(t * 2.6) * 0.1)
+    slot.scale.set(1 + (1 - jump) * 0.05, 1 - (1 - jump) * 0.06, 1)
+    return
+  }
+  slot.position.set(restX + Math.sin(t * 1.3) * 0.1, 0.14 + Math.sin(t * 3.2) * 0.2, restZ)
+  slot.rotation.set(Math.sin(t * 1.6) * 0.04, -0.16 + Math.sin(t * 1.15) * 0.58, Math.sin(t * 1.9) * 0.06)
+  slot.scale.setScalar(1)
+}
+
+function EntryStage() {
+  const mount = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!mount.current) return
+    const scene = new THREE.Scene()
+    scene.background = new THREE.Color('#141c28')
+    scene.fog = new THREE.Fog('#141c28', 18, 36)
+    const camera = new THREE.PerspectiveCamera(34, 1, 0.1, 60)
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' })
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5))
+    renderer.shadowMap.enabled = true
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap
+    mount.current.appendChild(renderer.domElement)
+
+    scene.add(new THREE.HemisphereLight('#c5d2e2', '#1a2430', 2.2))
+    const warm = new THREE.DirectionalLight('#ffd48a', 3.0)
+    warm.position.set(-5, 8, 6)
+    warm.castShadow = true
+    warm.shadow.mapSize.set(512, 512)
+    scene.add(warm)
+    const fill = new THREE.PointLight('#7bc9ce', 1.05, 16)
+    fill.position.set(3, 2.4, 3)
+    scene.add(fill)
+    const rim = new THREE.DirectionalLight('#9fd7ff', 2.2)
+    rim.position.set(2, 3.4, -7)
+    scene.add(rim)
+
+    const ground = new THREE.Mesh(new THREE.BoxGeometry(28, 0.08, 16), material('#1c2834'))
+    ground.position.y = -0.06
+    ground.receiveShadow = true
+    scene.add(ground)
+    const dais = new THREE.Mesh(new THREE.BoxGeometry(12.6, 0.16, 5.2), material('#263848'))
+    dais.position.y = 0.06
+    dais.receiveShadow = true
+    scene.add(dais)
+
+    const halo = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: radialGlow('#8fd0e8'),
+        transparent: true,
+        opacity: 0.28,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
+    )
+    halo.scale.set(16, 10, 1)
+    halo.position.set(0, 2.1, -2.4)
+    scene.add(halo)
+
+    const moteTexture = radialGlow('#ffe9b8')
+    const motes = Array.from({ length: 16 }, (_, index) => {
+      const mote = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: moteTexture,
+          transparent: true,
+          opacity: 0.5,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      )
+      const size = 0.08 + (index % 4) * 0.03
+      mote.scale.set(size, size, 1)
+      mote.userData.radius = 2.2 + (index % 6) * 0.45
+      mote.userData.phase = (index / 16) * Math.PI * 2
+      mote.userData.speed = 0.0001 + (index % 3) * 0.00004
+      mote.userData.baseY = 0.4 + (index % 8) * 0.32
+      scene.add(mote)
+      return mote
+    })
+
+    const spacing = 2.15
+    const slots = CAST.map((id, index) => {
+      const slot = new THREE.Group()
+      const x = (index - 1.5) * spacing
+      const z = index === 0 || index === 3 ? 0.28 : 0
+      slot.position.set(x, 0, z)
+      slot.userData.phase = index * 0.85
+      slot.userData.restX = x
+      slot.userData.restZ = z
+      const character = createWizard(id, 0.72)
+      character.position.y = 0.08
+      slot.add(character)
+      scene.add(slot)
+      return { id, slot, character }
+    })
+
+    const frameCamera = () => {
+      if (!mount.current) return
+      const { width, height } = mount.current.getBoundingClientRect()
+      const aspect = width / Math.max(height, 1)
+      camera.aspect = aspect
+      camera.position.set(0, aspect < 1.05 ? 2.85 : 2.55, aspect < 1.05 ? 18.6 : 13.4)
+      camera.lookAt(0, 1.15, 0)
+      camera.updateProjectionMatrix()
+      renderer.setSize(width, height)
+    }
+    frameCamera()
+    window.addEventListener('resize', frameCamera)
+
+    let frame = 0
+    const animate = (time: number) => {
+      for (const { id, slot, character } of slots) {
+        danceWayfinder(id, slot, time)
+        animateCharacter(character, time, slot.userData.phase)
+      }
+      halo.material.opacity = 0.22 + Math.sin(time * 0.0007) * 0.05
+      for (const mote of motes) {
+        const { radius, phase, speed, baseY } = mote.userData
+        const angle = time * speed + phase
+        mote.position.set(Math.cos(angle) * radius, baseY + Math.sin(time * 0.0009 + phase) * 0.2, Math.sin(angle) * radius * 0.55)
+        mote.material.opacity = 0.22 + (Math.sin(time * 0.0015 + phase) + 1) * 0.2
+      }
+      renderer.render(scene, camera)
+      frame = requestAnimationFrame(animate)
+    }
+    frame = requestAnimationFrame(animate)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.removeEventListener('resize', frameCamera)
+      renderer.dispose()
+      mount.current?.removeChild(renderer.domElement)
+    }
+  }, [])
+  return <div ref={mount} className="entry-stage" aria-label="Four voxel wayfinders on the Voxels stage" />
+}
+
+function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused, onNear, onGold, onAction }: { wizard: WizardId; style?: MothStyle; playerName?: string; paused: boolean; onNear: (target: string | null) => void; onGold: (amount: number) => void; onAction: (target: string) => void }) {
   const mount = useRef<HTMLDivElement>(null)
   const keysRef = useRef(new Set<string>())
   const firstPerson = useRef(false)
   const pausedRef = useRef(paused)
+  const nameRef = useRef(playerName)
   const handlers = useRef({ onNear, onGold, onAction })
   // The render loop reads changing props through refs: rebuilding the scene would
   // teleport the player back to spawn and drop their loot.
   useEffect(() => { handlers.current = { onNear, onGold, onAction } })
+  useEffect(() => { nameRef.current = playerName }, [playerName])
   useEffect(() => { pausedRef.current = paused; if (paused) keysRef.current.clear() }, [paused])
   useEffect(() => {
     if (!mount.current) return
@@ -400,6 +568,16 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
     player.position.set(0, 0, 8)
     player.visible = !firstPerson.current
     scene.add(player)
+    const nameplate = createCharacterNameplate()
+    const refreshNameplate = () => {
+      nameplate.setLabel(displayNameFor(nameRef.current, wizards[wizard].name), battleState.level, {
+        maxed: battleState.maxed,
+        accent: wizards[wizard].accent,
+      })
+    }
+    player.updateMatrixWorld(true)
+    refreshNameplate()
+    nameplate.attachTo(player)
     serviceNpcs.forEach(({ name, x, z, color }) => scene.add(createNpc(name, x, z, true, color)))
     ambientNpcs.forEach(({ x, z }) => scene.add(createNpc(`townsperson-${x}-${z}`, x, z, false)))
     const wildscape = createWildscape()
@@ -468,7 +646,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
         // ledger entry and the XP award below all happen exactly once.
         recordKill(kill.label, kill.goldBaseUnits)
         dropGold(kill.position, kill.coins, 0.55 + kill.coins.length * 0.12)
-        battle?.awardXp(XP_PER_SPECIES[kill.species] ?? 0)
+        battle?.awardXp(killXp(kill.species, progressFor(wizard).level))
         huntState.kills += 1
         pingHunt()
       },
@@ -559,11 +737,16 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       if (!pressedAt.has(key)) pressedAt.set(key, performance.now())
       primeAudio()
       if (key === 'v') { firstPerson.current = !firstPerson.current; player.visible = !firstPerson.current }
-      if (key === 'q') castSlot('Q')
-      if (key === 'e') castSlot('E')
-      if (key === 'r') castSlot('R')
-      // With the mouse doing the walking these are unambiguous.
-      if (!keyboardMove) command(key)
+      const liveDuel = pvpState.duel
+      if (liveDuel && liveDuel.phase === 'active' && (key === 'q' || key === 'w' || key === 'e' || key === 'r')) {
+        const seq = (window as unknown as { __pvpSeq?: number }).__pvpSeq = ((window as unknown as { __pvpSeq?: number }).__pvpSeq ?? 0) + 1
+        send({ t: 'input', duelId: liveDuel.duelId, seq, kind: 'cast', slot: key.toUpperCase() as 'Q' | 'W' | 'E' | 'R', x: cursorGround?.x, z: cursorGround?.z, sprinting: keys.has('shift') })
+      } else if (!(liveDuel && liveDuel.phase !== 'ended')) {
+        if (key === 'q') castSlot('Q')
+        if (key === 'e') castSlot('E')
+        if (key === 'r') castSlot('R')
+        if (!keyboardMove) command(key)
+      }
       // Arrow keys are the no-middle-button way to work the camera.
       if (key === 'arrowleft') yaw += 0.12
       if (key === 'arrowright') yaw -= 0.12
@@ -601,6 +784,22 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       // Shift plus the left button is a camera drag, not a selection.
       if (e.button === 0 && e.shiftKey) return
       resolveCursor()
+      const remoteId = pickRemote(raycaster)
+      if (e.button === 0 && remoteId && !isDuelLocked()) {
+        inspectRemote(remoteId)
+        return
+      }
+      const duel = pvpState.duel
+      if (duel && duel.phase !== 'ended') {
+        if (duel.phase !== 'active') return
+        const seq = (window as unknown as { __pvpSeq?: number }).__pvpSeq = ((window as unknown as { __pvpSeq?: number }).__pvpSeq ?? 0) + 1
+        if (e.button === 2 && cursorGround) {
+          send({ t: 'input', duelId: duel.duelId, seq, kind: 'move', x: cursorGround.x, z: cursorGround.z, sprinting: keys.has('shift') })
+        } else if (e.button === 0) {
+          send({ t: 'input', duelId: duel.duelId, seq, kind: 'attack', sprinting: keys.has('shift') })
+        }
+        return
+      }
       const target = hover && hover.state !== 'dead' ? hover : null
       if (e.button === 0) {
         battle?.primaryClick(cursorGround, target)
@@ -651,14 +850,19 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
         nav.slide(player.position, vitals.impulse.x * dt, vitals.impulse.z * dt)
       }
       if (!pausedRef.current) resolveCursor()
-      const advanced = battle?.update(dt, now, {
+      const dueling = isDuelLocked()
+      const advanced = dueling ? undefined : battle?.update(dt, now, {
         cursorGround,
         hover: hover && hover.state !== 'dead' ? hover : null,
         manualMove: manual,
+        // Same live key set the WASD branch already reads — a ref, not a
+        // captured boolean — so Shift mid-path switches walk ↔ run this frame.
+        sprinting: held('shift'),
         safe: isSafeZone(player.position.x, player.position.z),
         paused: pausedRef.current,
       })
       walking = manual || !!advanced?.moved
+      refreshNameplate()
       nav.resolve(player.position)
       player.position.x = THREE.MathUtils.clamp(player.position.x, -96, 96); player.position.z = THREE.MathUtils.clamp(player.position.z, -96, 96)
       player.position.y = walking ? Math.abs(Math.sin(now * 0.012 * (speed / 3.2))) * 0.045 : Math.sin(now * 0.002) * 0.012
@@ -700,8 +904,16 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
 
       /* --- hunt: wildlife, abilities, vitals, HUD ------------------------- */
       const safe = isSafeZone(player.position.x, player.position.z)
-      vitals.update(dt, now, safe)
-      wildlife.update(dt, now, player.position, camera, vitals.hp > 0 && !vitals.isInvulnerable(now))
+      if (!isDuelLocked()) vitals.update(dt, now, safe)
+      wildlife.update(dt, now, player.position, camera, !isDuelLocked() && vitals.hp > 0 && !vitals.isInvulnerable(now))
+      updatePvpWorld(scene, dt, now, {
+        x: player.position.x,
+        z: player.position.z,
+        facing: player.rotation.y,
+        anim: walking ? (held('shift') ? 'run' : 'walk') : 'idle',
+        sprinting: held('shift'),
+      })
+      if (pvpState.playerId) applyDuelPose(player, pvpState.playerId)
       animateWildscape(wildscape, now)
       // The plate follows the committed target first and the cursor second, so
       // it stops flickering the moment you actually pick a fight.
@@ -728,11 +940,13 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       huntState.safe = safe
       huntState.invulnerable = vitals.isInvulnerable(now)
       huntState.aggro = wildlife.aggroCount()
-      const toHunt = new THREE.Vector3(huntingArea.x - player.position.x, 0, huntingArea.z - player.position.z)
+      const huntDest = compassHuntRegion(progressFor(wizard).level)
+      const toHunt = new THREE.Vector3(huntDest.x - player.position.x, 0, huntDest.z - player.position.z)
       huntState.compassDistance = toHunt.length()
+      huntState.compassLabel = huntDest.label
       const view = camera.getWorldDirection(new THREE.Vector3())
       // Negated: bearings measured from +z grow the opposite way round to CSS
-      // rotation, so without this the needle points away from the wildwood.
+      // rotation, so without this the needle points away from the destination.
       huntState.compassDegrees = -THREE.MathUtils.radToDeg(Math.atan2(toHunt.x, toHunt.z) - Math.atan2(view.x, view.z))
 
       const animal = wildlife.nearest(player.position, INTERACT_RANGE)
@@ -746,7 +960,9 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       probe.__wally = {
         player, camera, renderer, keys, isFirstPerson: () => firstPerson.current,
         wildlife, vitals, speciesSpecs, isInTown, isSafeZone, huntState,
+        killXp, compassHuntRegion, highHuntArea,
         nav, battle, battleState, progress: () => progressFor(wizard),
+        nameplate: nameplate.object,
         resolveCursor, getHover: () => hover, getCursorGround: () => cursorGround,
         // Drives the camera-relative pointer without a real mouse, so the
         // verification scripts can aim at a world point directly.
@@ -771,11 +987,11 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       renderer.domElement.removeEventListener('wheel', onWheel)
       renderer.domElement.removeEventListener('contextmenu', blockMenu)
       unregisterCommands(); unregisterKeyboardMove()
-      huntState.active = false; wildlife.dispose(); battle?.dispose()
+      huntState.active = false; wildlife.dispose(); battle?.dispose(); nameplate.dispose(); disposePvpWorld(scene)
       renderer.dispose(); mount.current?.removeChild(renderer.domElement)
     }
   }, [wizard, style])
-  return <div ref={mount} className="world-canvas" aria-label="Wally World explorable town" />
+  return <div ref={mount} className="world-canvas" aria-label="Voxels explorable town" />
 }
 
 function App() {
@@ -796,12 +1012,29 @@ function App() {
   useEffect(() => registerPlayer({
     read: () => ({ character: wizard, style, playerName, gold }),
     apply: saved => {
+      if (isDuelLocked()) return false
       setWizard(saved.character)
       setStyle(saved.style)
       setPlayerName(saved.playerName)
       setGold(saved.gold)
     },
   }), [wizard, style, playerName, gold])
+  useEffect(() => {
+    const probe = window as unknown as { __pvpLocked?: () => boolean }
+    probe.__pvpLocked = () => isDuelLocked()
+    return () => { delete probe.__pvpLocked }
+  }, [])
+  useEffect(() => {
+    if (tab !== 'world') return
+    const progress = progressFor(wizard)
+    startPvp(playerName || wizards[wizard].name, { character: wizard, style, level: progress.level, ranks: progress.ranks })
+    return () => stopPvp()
+  }, [tab])
+  useEffect(() => {
+    if (tab !== 'world' || isDuelLocked()) return
+    const progress = progressFor(wizard)
+    refreshPvpIdentity(playerName || wizards[wizard].name, { character: wizard, style, level: progress.level, ranks: progress.ranks })
+  }, [tab, wizard, style, playerName])
   useEffect(() => {
     const onShortcut = (event: KeyboardEvent) => {
       if (!entered) return
@@ -832,16 +1065,29 @@ function App() {
     window.setTimeout(() => setTask('running'), 900)
     window.setTimeout(() => { setTask('delivered'); setReceipt(true); localStorage.setItem('wally-receipt', 'true'); setToast('Report delivered · receipt saved to your journal') }, 2500)
   }
-  if (!entered && tab === 'select') return <main className="entry">
-    <div className="entry-scene"><div className="moon" /><div className="mountain m1" /><div className="mountain m2" /><div className="entry-town"><i /><i /><i /><i /><i /></div><div className="lantern"><span /></div><div className="bridge" /></div>
-    <div className="entry-copy"><div className="eyebrow">A SMALL WORLD FOR USEFUL AGENTS</div><h1>WALLY<br /><em>WORLD</em></h1><p>Your wallet has a world.</p><button className="primary" onClick={() => setEntered(true)}>Enter the world <span>→</span></button><div className="entry-foot"><span>Single-player demo</span><FundsBadge variant="foot" /></div></div>
-  </main>
-  if (entered && tab === 'select') return <main className="select"><header><div className="brand">WALLY <span>WORLD</span></div><FundsBadge variant="dot" /></header><div className="select-layout"><section className="menu-panel"><div className="eyebrow">CREATE YOUR WAYFINDER</div><h2>Name your<br />character.</h2><p className="muted">Start with {wizards[wizard].name}, the selected wayfinder. Shape the details,<br />then carry your look into the town.</p><label className="name-label" htmlFor="wayfinder-name">NAME YOUR CHARACTER:</label><input id="wayfinder-name" className="name-input" value={playerName} onChange={event => setPlayerName(event.target.value.slice(0, 24))} placeholder="Write any name" autoComplete="off" /><div className="arrow-options"><div className="arrow-choice character-choice"><label>CHARACTER</label><button onClick={() => cycleWizard(-1)} aria-label="Previous character">←</button><div><strong>{wizards[wizard].name}</strong><small>{wizards[wizard].role}</small></div><button onClick={() => cycleWizard(1)} aria-label="Next character">→</button></div>{styleSlots(wizard).map(slot => <div className="arrow-choice" key={slot.key}><label>{slot.label}</label><button onClick={() => cycle(slot.key, -1)} aria-label={`Previous ${slot.key}`}>←</button><div><strong>{styleLabel(wizard, style, slot.key).label}</strong><small>{styleLabel(wizard, style, slot.key).note}</small></div><button onClick={() => cycle(slot.key, 1)} aria-label={`Next ${slot.key}`}>→</button></div>)}</div><button className="primary" onClick={() => setTab('preview')}>Continue with {playerName || wizards[wizard].name} <span>→</span></button></section><section className="selection-art"><div className="selection-grid" /><CharacterPreview wizard={wizard} style={style} /><div className="art-caption"><span>WAYFINDER {Object.keys(wizards).indexOf(wizard) + 1} / 4</span><strong>{playerName || wizards[wizard].name}</strong><small>{wizards[wizard].name} · {wizards[wizard].role}</small></div></section></div></main>
-  if (entered && tab === 'preview') return <main className="preview"><div className="preview-left"><button className="back" onClick={() => setTab('select')}>← Back to archetypes</button><div className="eyebrow">WAYFINDER SELECTED</div><h2>{playerName || wizards[wizard].name}</h2><p>{wizards[wizard].name} · {wizards[wizard].desc}</p><div className="preview-facts"><span><b>01</b> Equal permissions</span><span><b>02</b> Cosmetic identity</span><span><b>03</b> Demo-ready</span></div><button className="primary" onClick={() => { setEntered(true); setTab('world') }}>Enter Wally World <span>→</span></button></div><div className="preview-stage"><div className="stage-stars" /><CharacterPreview wizard={wizard} style={style} /><div className="preview-label"><span>ARCHETYPE {Object.keys(wizards).indexOf(wizard) + 1} / 4</span><strong>{wizards[wizard].role}</strong></div></div></main>
+  if (!entered && tab === 'select') return (
+    <main className="entry">
+      <div className="entry-copy">
+        <div className="eyebrow">SINGLE-PLAYER DEMO</div>
+        <h1>Voxels</h1>
+        <p>Voxels is a playable wallet: walk a voxel town with the mouse, and the pouch holds your gold and tokens. Agents live there as a guide, shops, and services — useful, not flavor. You can hand items and gold to people in the world. Private transfers are the longer-term idea, not a live feature here.</p>
+        <button className="primary" onClick={() => setEntered(true)}>Enter world <span>→</span></button>
+        <div className="entry-foot">
+          <span>No real funds</span>
+          <FundsBadge variant="foot" />
+        </div>
+      </div>
+      <div className="entry-scene">
+        <EntryStage />
+      </div>
+    </main>
+  )
+  if (entered && tab === 'select') return <main className="select"><header><div className="brand">VOXELS</div><FundsBadge variant="dot" /></header><div className="select-layout"><section className="menu-panel"><div className="eyebrow">CREATE YOUR WAYFINDER</div><h2>Name your<br />character.</h2><p className="muted">Start with {wizards[wizard].name}, the selected wayfinder. Shape the details,<br />then carry your look into the town.</p><label className="name-label" htmlFor="wayfinder-name">NAME YOUR CHARACTER:</label><input id="wayfinder-name" className="name-input" value={playerName} onChange={event => setPlayerName(event.target.value.slice(0, 24))} placeholder="Write any name" autoComplete="off" /><div className="arrow-options"><div className="arrow-choice character-choice"><label>CHARACTER</label><button onClick={() => cycleWizard(-1)} aria-label="Previous character">←</button><div><strong>{wizards[wizard].name}</strong><small>{wizards[wizard].role}</small></div><button onClick={() => cycleWizard(1)} aria-label="Next character">→</button></div>{styleSlots(wizard).map(slot => <div className="arrow-choice" key={slot.key}><label>{slot.label}</label><button onClick={() => cycle(slot.key, -1)} aria-label={`Previous ${slot.key}`}>←</button><div><strong>{styleLabel(wizard, style, slot.key).label}</strong><small>{styleLabel(wizard, style, slot.key).note}</small></div><button onClick={() => cycle(slot.key, 1)} aria-label={`Next ${slot.key}`}>→</button></div>)}</div><button className="primary" onClick={() => setTab('preview')}>Continue with {playerName || wizards[wizard].name} <span>→</span></button></section><section className="selection-art"><div className="selection-grid" /><CharacterPreview wizard={wizard} style={style} /><div className="art-caption"><span>WAYFINDER {Object.keys(wizards).indexOf(wizard) + 1} / 4</span><strong>{playerName || wizards[wizard].name}</strong><small>{wizards[wizard].name} · {wizards[wizard].role}</small></div></section></div></main>
+  if (entered && tab === 'preview') return <main className="preview"><div className="preview-left"><button className="back" onClick={() => setTab('select')}>← Back to archetypes</button><div className="eyebrow">WAYFINDER SELECTED</div><h2>{playerName || wizards[wizard].name}</h2><p>{wizards[wizard].name} · {wizards[wizard].desc}</p><div className="preview-facts"><span><b>01</b> Equal permissions</span><span><b>02</b> Cosmetic identity</span><span><b>03</b> Demo-ready</span></div><button className="primary" onClick={() => { setEntered(true); setTab('world') }}>Enter Voxels <span>→</span></button></div><div className="preview-stage"><div className="stage-stars" /><CharacterPreview wizard={wizard} style={style} /><div className="preview-label"><span>ARCHETYPE {Object.keys(wizards).indexOf(wizard) + 1} / 4</span><strong>{wizards[wizard].role}</strong></div></div></main>
   if (!entered) return null
   const action = (target: string) => { if (target.startsWith('ANIMAL:')) { setToast('Right-click the animal to attack it · loot drops on the ground for anyone') } else if (target.startsWith('LYRA')) setPanel('journal'); else setToast(`${target} is preparing a demo service.`) }
   const talkable = npc && !npc.startsWith('ANIMAL:') ? npc : null
-  return <main className="game"><WorldCanvas wizard={wizard} style={style} paused={panel !== null} onNear={setNpc} onGold={amount => setGold(value => Math.max(0, value + amount))} onAction={action} /><HuntHud wizard={wizard} /><CombatHud /><MainnetWarningBanner /><div className="hud"><div className="topbar"><div className="avatar-chip"><span style={{ background: wizards[wizard].accent }} />{playerName || wizards[wizard].name}<small>{wizards[wizard].name} WAYFINDER</small></div><div className="gold-chip">✦ {gold} GOLD <small>DEMO LOOT</small></div><FundsBadge variant="chip" /><div className="fps-chip">WORLD 01 <span>●</span></div></div><div className="minimap"><div className="map-ring"><i /><b /><em /></div><small>OLD TOWN LOOP</small></div><div className="bottom-nav">{[['map','Map'],['journal','Journal'],['wallet','Wallet'],['settings','Settings']].map(([id, label]) => <button key={id} onClick={() => setPanel(id as Panel)}><span>{id === 'map' ? '⌖' : id === 'journal' ? '▤' : id === 'wallet' ? '◇' : '⚙'}</span>{label}</button>)}</div>{talkable && <button className="interact" onClick={() => { if (talkable.startsWith('LYRA')) setPanel('journal'); else setToast(`${talkable} is preparing a demo service.`) }}>F <span>Talk to</span> {talkable}</button>}{panel === 'wallet' && <Popup variant="pouch" eyebrow="THE HEARTH · PRIVATE" title="Your pouch" onClose={() => setPanel(null)}><WalletPouch gold={gold} onGoldChange={setGold} nearbyNpc={npc} onToast={setToast} /><WalletSolanaPanel /></Popup>}{panel === 'map' && <Popup variant="chart" size="wide" eyebrow="WALLY WORLD · DISTRICT 01" title="Old Town Loop" note={`${townLayout.ground}m × ${townLayout.ground}m · one grid square is 8m · surveyed from the live town layout`} onClose={() => setPanel(null)}><WorldMap /></Popup>}{panel === 'journal' && <Popup variant="book" eyebrow="THE ARCHIVE · LYRA" title="Your journal" onClose={() => setPanel(null)}><JournalPanel task={task} receipt={receipt} onApprove={doTask} /></Popup>}{panel === 'settings' && <Popup variant="plate" eyebrow="PREFERENCES" title="Control plate" onClose={() => setPanel(null)}><SettingsPanel /></Popup>}{toast && <div className="toast" onClick={() => setToast('')}>{toast}</div>}</div></main>
+  return <main className="game"><WorldCanvas wizard={wizard} style={style} playerName={playerName} paused={panel !== null} onNear={setNpc} onGold={amount => setGold(value => Math.max(0, value + amount))} onAction={action} /><HuntHud wizard={wizard} /><CombatHud wizard={wizard} style={style} /><PvpOverlay /><MainnetWarningBanner /><div className="hud"><div className="topbar"><div className="avatar-chip"><span style={{ background: wizards[wizard].accent }} />{playerName || wizards[wizard].name}<small>{wizards[wizard].name} WAYFINDER</small></div><div className="gold-chip">✦ {gold} GOLD <small>DEMO LOOT</small></div><FundsBadge variant="chip" /><div className="fps-chip">WORLD 01 <span>●</span></div></div><div className="minimap"><div className="map-ring"><i /><b /><em /></div><small>OLD TOWN LOOP</small></div><div className="bottom-nav">{[['map','Map'],['journal','Journal'],['wallet','Wallet'],['settings','Settings']].map(([id, label]) => <button key={id} onClick={() => setPanel(id as Panel)}><span>{id === 'map' ? '⌖' : id === 'journal' ? '▤' : id === 'wallet' ? '◇' : '⚙'}</span>{label}</button>)}</div>{talkable && <button className="interact" onClick={() => { if (talkable.startsWith('LYRA')) setPanel('journal'); else setToast(`${talkable} is preparing a demo service.`) }}>F <span>Talk to</span> {talkable}</button>}{panel === 'wallet' && <Popup variant="pouch" eyebrow="THE HEARTH · PRIVATE" title="Your pouch" onClose={() => setPanel(null)}><WalletPouch gold={gold} onGoldChange={setGold} nearbyNpc={npc} onToast={setToast} /><WalletSolanaPanel /></Popup>}{panel === 'map' && <Popup variant="chart" size="wide" eyebrow="VOXELS · DISTRICT 01" title="Old Town Loop" note={`${townLayout.ground}m × ${townLayout.ground}m · one grid square is 8m · surveyed from the live town layout`} onClose={() => setPanel(null)}><WorldMap /></Popup>}{panel === 'journal' && <Popup variant="book" eyebrow="THE ARCHIVE · LYRA" title="Your journal" onClose={() => setPanel(null)}><JournalPanel task={task} receipt={receipt} onApprove={doTask} /></Popup>}{panel === 'settings' && <Popup variant="plate" eyebrow="PREFERENCES" title="Control plate" onClose={() => setPanel(null)}><SettingsPanel /></Popup>}{toast && <div className="toast" onClick={() => setToast('')}>{toast}</div>}</div></main>
 }
 
 createRoot(document.getElementById('root')!).render(<App />)

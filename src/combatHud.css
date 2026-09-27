@@ -68,16 +68,20 @@
   background-color: #12161f;
   color: var(--kit, #d5a64b);
   box-shadow: inset 0 3px 0 #ffffff14, inset 0 -3px 0 #00000091, inset 0 0 0 2px var(--kit, #d5a64b);
+  overflow: hidden;
   clip-path: var(--vx-clip-sm, none);
   cursor: help;
 }
-.cbt-portrait svg {
+.cbt-portrait canvas,
+.cbt-portrait-canvas {
   width: 100%;
   height: 100%;
   display: block;
+  pointer-events: none;
 }
 .cbt-level {
   position: absolute;
+  z-index: 1;
   right: -4px;
   bottom: -4px;
   min-width: 20px;

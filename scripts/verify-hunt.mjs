@@ -50,7 +50,7 @@ async function enterWorld(page, wizardIndex = 0) {
   }
   await clickText(page, 'Continue with')
   await sleep(250)
-  await clickText(page, 'Enter Wally World')
+  await clickText(page, 'Enter Voxels')
   await page.waitForFunction('!!window.__wally && window.__wally.wildlife.animals.length > 0', { timeout: 25000 })
   await sleep(900)
   return errors

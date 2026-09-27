@@ -1,4 +1,5 @@
 import type { WizardId } from '../characters'
+import { speciesSpecs } from '../wildlife'
 import type { SoundId } from './audio'
 import type { AbilitySlot } from './progression'
 
@@ -635,9 +636,7 @@ export function attackRateAt(kit: CharacterKit, level: number) {
   return kit.basic.rate + kit.basic.ratePerLevel * (level - 1)
 }
 
-/** XP handed out for each species, tuned against the curve in progression.ts. */
-export const XP_PER_SPECIES: Record<string, number> = {
-  CHICKEN: 30,
-  REINDEER: 140,
-  BEAR: 420,
-}
+/** Unscaled kill XP, mirrored from speciesSpecs so older callers keep working. */
+export const XP_PER_SPECIES: Record<string, number> = Object.fromEntries(
+  Object.values(speciesSpecs).map(species => [species.id, species.xpBase]),
+)

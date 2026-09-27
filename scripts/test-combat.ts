@@ -44,7 +44,9 @@ import { checkCast } from '../src/battle/rules'
 import type { CastInput } from '../src/battle/rules'
 import { createBattle } from '../src/battle/engine'
 import { SHOT_CLEARANCE, createNavGrid } from '../src/battle/nav'
-import { createWildlife } from '../src/wildlife'
+import { createWildlife, isGreen, isInTown, speciesSpecs, wildRegions } from '../src/wildlife'
+import { compassHuntRegion, HIGH_HUNT_LEVEL, highHuntArea, huntingArea } from '../src/wildlife'
+import { killXp, xpScale } from '../src/battle/huntXp'
 import type { WizardId } from '../src/wizards'
 
 let passed = 0
@@ -329,8 +331,10 @@ group('kits: level growth changes real numbers', () => {
 })
 
 group('xp rewards', () => {
-  check('every huntable species pays xp', ['CHICKEN', 'REINDEER', 'BEAR'].every(s => (XP_PER_SPECIES[s] ?? 0) > 0))
+  const ids = Object.keys(speciesSpecs)
+  check('every huntable species pays xp', ids.every(s => (speciesSpecs[s as keyof typeof speciesSpecs].xpBase ?? 0) > 0))
   check('tougher animals pay more', XP_PER_SPECIES.CHICKEN < XP_PER_SPECIES.REINDEER && XP_PER_SPECIES.REINDEER < XP_PER_SPECIES.BEAR)
+  check('XP_PER_SPECIES matches species xpBase', ids.every(s => XP_PER_SPECIES[s] === speciesSpecs[s as keyof typeof speciesSpecs].xpBase))
   // A level-1 character should not vault to 15 off one chicken.
   const p = emptyProgress()
   applyXp(p, XP_PER_SPECIES.CHICKEN)
@@ -338,6 +342,69 @@ group('xp rewards', () => {
   const q = emptyProgress()
   applyXp(q, XP_PER_SPECIES.BEAR)
   check('one bear is worth at least a level', q.level > 1, `reached ${q.level}`)
+})
+
+group('xp overlevel scaling', () => {
+  check('at recommended level the award is full', killXp('CHICKEN', 1) === speciesSpecs.CHICKEN.xpBase)
+  check('underlevel still pays full', killXp('BOAR', 8) === speciesSpecs.BOAR.xpBase)
+  const chickenAt10 = killXp('CHICKEN', 10)
+  const wolfAt10 = killXp('WOLF', 10)
+  const boarAt10 = killXp('BOAR', 10)
+  const need = xpToNext(10)
+  check('level 10 chicken is a sliver of the bar', chickenAt10 < need * 0.02, `${chickenAt10} of ${need}`)
+  check('level 10 wolf is a real slice of the bar', wolfAt10 > need * 0.3, `${wolfAt10} of ${need}`)
+  check('level 10 boar pays more than a wolf', boarAt10 > wolfAt10)
+  check('gold does not scale with level', speciesSpecs.CHICKEN.goldBaseUnits === 2)
+  check('two levels over cuts 40%', Math.abs(xpScale(3, 1) - 0.6) < 1e-9)
+  check('scale floors at 5%', xpScale(15, 1) === 0.05)
+})
+
+group('high-level hunting ground', () => {
+  check('the Wildwood did not move', huntingArea.id === 'wildwood' && huntingArea.x === -58 && huntingArea.z === -58)
+  check('the Brasswood is a distinct destination', highHuntArea.id === 'brasswood')
+  check(
+    'the Brasswood is far from the Wildwood',
+    Math.hypot(highHuntArea.x - huntingArea.x, highHuntArea.z - huntingArea.z) > 80,
+    `${Math.round(Math.hypot(highHuntArea.x - huntingArea.x, highHuntArea.z - huntingArea.z))}m`,
+  )
+  check('compass stays on the Wildwood before the bracket', compassHuntRegion(HIGH_HUNT_LEVEL - 1).id === 'wildwood')
+  check('compass points at the Brasswood in the bracket', compassHuntRegion(HIGH_HUNT_LEVEL).id === 'brasswood')
+  check('headline Brasswood game outpays a bear', speciesSpecs.WOLF.goldBaseUnits > 45 && speciesSpecs.BOAR.goldBaseUnits > 45)
+  check('headline Brasswood game hits harder than a bear', speciesSpecs.WOLF.attackDamage > 22 && speciesSpecs.BOAR.attackDamage > 22)
+  check('headline Brasswood game has more HP than a bear', speciesSpecs.WOLF.maxHp > 200 && speciesSpecs.BOAR.maxHp > 200)
+
+  const starterIds = new Set(['eastmeadow', 'southfields', 'westoutskirts'])
+  const scene = new THREE.Scene()
+  const wildlife = createWildlife(scene, { onKill: () => {}, onPlayerDamage: () => {} })
+  const hard = wildlife.animals.filter(animal => animal.species.id === 'WOLF' || animal.species.id === 'BOAR')
+  check('wolves and boars spawn', hard.filter(a => a.species.id === 'WOLF').length >= 1 && hard.filter(a => a.species.id === 'BOAR').length >= 1, `${hard.length} hard animals`)
+  check(
+    'hard animals spawn only in the Brasswood',
+    hard.every(animal => animal.region.id === 'brasswood'),
+    hard.map(a => a.region.id).join(','),
+  )
+  check(
+    'hard animals never stand in town',
+    hard.every(animal => !isInTown(animal.group.position.x, animal.group.position.z)),
+  )
+  check(
+    'hard animals stand on green',
+    hard.every(animal => isGreen(animal.group.position.x, animal.group.position.z)),
+  )
+  check(
+    'hard animals never stand in starter meadows',
+    hard.every(animal => !starterIds.has(animal.region.id)),
+  )
+  const starters = wildlife.animals.filter(animal => starterIds.has(animal.region.id))
+  check(
+    'starter meadows still have no wolves or boars',
+    starters.every(animal => animal.species.id === 'CHICKEN' || animal.species.id === 'REINDEER'),
+  )
+  check(
+    'the Brasswood is on the published region list',
+    wildRegions.some(region => region.id === 'brasswood' && region.counts.WOLF && region.counts.BOAR),
+  )
+  wildlife.dispose()
 })
 
 /**
@@ -391,7 +458,7 @@ function castAtStationaryTarget(wizard: WizardId, slot: AbilitySlot, dt: number,
   const anchor = target.group.position.clone()
   const hp = target.hp
   let now = 1000
-  const ctx = { cursorGround: anchor.clone(), hover: target, manualMove: false, safe: false, paused: false }
+  const ctx = { cursorGround: anchor.clone(), hover: target, manualMove: false, sprinting: false, safe: false, paused: false }
   battle.update(dt, now, ctx)
   battle.pressSlot(slot, { cursorGround: anchor.clone(), hover: target })
   for (let i = 0; i < Math.ceil(3 / dt); i++) {

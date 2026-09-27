@@ -1,5 +1,5 @@
 import * as THREE from 'three'
-import { huntingArea, isGreen, trailWaypoints, wildRegions } from './wildlife'
+import { brassTrailWaypoints, highHuntArea, huntingArea, huntTrails, isGreen, trailWaypoints, wildRegions } from './wildlife'
 import type { WildRegion } from './wildlife'
 
 /* ------------------------------------------------------------------ *
@@ -31,8 +31,8 @@ function scatter(region: WildRegion, count: number, rng: () => number, margin: n
     const x = region.x + Math.cos(angle) * radius
     const z = region.z + Math.sin(angle) * radius
     if (!isGreen(x, z, margin)) continue
-    // Keep the trail walkable rather than growing a pine in the middle of it.
-    if (trailWaypoints.some(([tx, tz]) => Math.hypot(x - tx, z - tz) < 4)) continue
+    // Keep every hunt trail walkable rather than growing a pine in the middle.
+    if (huntTrails.some(trail => trail.some(([tx, tz]) => Math.hypot(x - tx, z - tz) < 4))) continue
     out.push({ x, z, scale: 0.75 + rng() * 0.6, rotation: rng() * Math.PI * 2 })
   }
   return out
@@ -180,20 +180,26 @@ export function createWildscape() {
   const ferns: Array<{ position: THREE.Vector3; scale: THREE.Vector3; rotationY: number }> = []
 
   for (const region of wildRegions) {
-    const dense = region.kind === 'wildwood' || region.kind === 'woods'
+    const dense = region.kind === 'wildwood' || region.kind === 'woods' || region.kind === 'brasswood'
     // Dense enough to read as woodland, open enough that game stays visible.
     const treeCount = dense ? Math.round(region.radius * 2.0) : Math.round(region.radius * 0.5)
     const fernCount = Math.round(region.radius * (dense ? 3.4 : 2.0))
-    const rockCount = dense ? Math.round(region.radius * 0.5) : Math.round(region.radius * 0.2)
+    const rockCount =
+      region.kind === 'brasswood'
+        ? Math.round(region.radius * 1.15)
+        : dense
+          ? Math.round(region.radius * 0.5)
+          : Math.round(region.radius * 0.2)
 
     for (const tree of scatter(region, treeCount, rng, 3)) {
-      // The clearing stays open: wide enough that the third-person camera has
-      // somewhere to sit during a fight instead of clipping into a pine.
+      // Clearings stay open so the third-person camera has somewhere to sit.
       if (region.kind === 'wildwood' && Math.hypot(tree.x - region.x, tree.z - region.z) < 15) continue
+      if (region.kind === 'brasswood' && Math.hypot(tree.x - region.x, tree.z - region.z) < 9) continue
       const position = new THREE.Vector3(tree.x, 0, tree.z)
       const scale = new THREE.Vector3(tree.scale, tree.scale * (0.85 + rng() * 0.5), tree.scale)
       trunks.push({ position, scale, rotationY: tree.rotation })
-      crowns[Math.floor(rng() * 3)].push({ position: position.clone(), scale, rotationY: tree.rotation })
+      const crownIndex = region.kind === 'brasswood' ? 2 : Math.floor(rng() * 3)
+      crowns[crownIndex].push({ position: position.clone(), scale, rotationY: tree.rotation })
     }
     for (const fern of scatter(region, fernCount, rng, 1)) {
       ferns.push({
@@ -267,44 +273,56 @@ export function createWildscape() {
     root.add(log)
   }
 
-  /* --- the trail out of town ------------------------------------------- */
+  /* --- the trails out of town ------------------------------------------ */
   const trailMaterial = new THREE.MeshStandardMaterial({ color: '#6b5a44', roughness: 0.95 })
   const lanternPosts: THREE.Mesh[] = []
-  for (let i = 0; i < trailWaypoints.length - 1; i++) {
-    const [ax, az] = trailWaypoints[i]
-    const [bx, bz] = trailWaypoints[i + 1]
-    const length = Math.hypot(bx - ax, bz - az)
-    const segments = Math.max(2, Math.round(length / 1.6))
-    for (let s = 0; s < segments; s++) {
-      const t = s / segments
-      const x = ax + (bx - ax) * t
-      const z = az + (bz - az) * t
-      const plank = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.12, 1.5), trailMaterial)
-      plank.position.set(x, 0.07, z)
-      plank.rotation.y = Math.atan2(bx - ax, bz - az)
-      plank.receiveShadow = true
-      root.add(plank)
+  const layTrail = (waypoints: Array<[number, number]>) => {
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      const [ax, az] = waypoints[i]
+      const [bx, bz] = waypoints[i + 1]
+      const length = Math.hypot(bx - ax, bz - az)
+      const segments = Math.max(2, Math.round(length / 1.6))
+      for (let s = 0; s < segments; s++) {
+        const t = s / segments
+        const x = ax + (bx - ax) * t
+        const z = az + (bz - az) * t
+        const plank = new THREE.Mesh(new THREE.BoxGeometry(3.1, 0.12, 1.5), trailMaterial)
+        plank.position.set(x, 0.07, z)
+        plank.rotation.y = Math.atan2(bx - ax, bz - az)
+        plank.receiveShadow = true
+        root.add(plank)
+      }
+      // A waist-high lantern every waypoint: the trail stays readable at night.
+      const lantern = new THREE.Mesh(
+        new THREE.BoxGeometry(0.4, 0.55, 0.4),
+        new THREE.MeshStandardMaterial({ color: '#f0b84d', emissive: '#f0b84d', emissiveIntensity: 2.4, roughness: 0.2 }),
+      )
+      lantern.position.set(bx + 1.9, 1.7, bz + 1.1)
+      root.add(lantern)
+      lanternPosts.push(lantern)
+      const pole = new THREE.Mesh(
+        new THREE.BoxGeometry(0.16, 1.7, 0.16),
+        new THREE.MeshStandardMaterial({ color: '#4c3b2d', roughness: 0.9 }),
+      )
+      pole.position.set(bx + 1.9, 0.85, bz + 1.1)
+      root.add(pole)
+      if (i % 2 === 0) {
+        const glow = new THREE.PointLight('#f0b84d', 1.6, 9)
+        glow.position.set(bx + 1.9, 1.7, bz + 1.1)
+        root.add(glow)
+      }
     }
-    // A waist-high lantern every waypoint: the trail stays readable at night.
-    const lantern = new THREE.Mesh(
-      new THREE.BoxGeometry(0.4, 0.55, 0.4),
-      new THREE.MeshStandardMaterial({ color: '#f0b84d', emissive: '#f0b84d', emissiveIntensity: 2.4, roughness: 0.2 }),
-    )
-    lantern.position.set(bx + 1.9, 1.7, bz + 1.1)
-    root.add(lantern)
-    lanternPosts.push(lantern)
-    const pole = new THREE.Mesh(
-      new THREE.BoxGeometry(0.16, 1.7, 0.16),
-      new THREE.MeshStandardMaterial({ color: '#4c3b2d', roughness: 0.9 }),
-    )
-    pole.position.set(bx + 1.9, 0.85, bz + 1.1)
-    root.add(pole)
-    if (i % 2 === 0) root.add(new THREE.PointLight('#f0b84d', 1.6, 9))
   }
+  layTrail(trailWaypoints)
+  layTrail(brassTrailWaypoints)
 
   const trailYaw = Math.atan2(trailWaypoints[0][0] - 0, trailWaypoints[0][1] - 8)
   signpost(root, trailWaypoints[0][0], trailWaypoints[0][1], trailYaw + Math.PI, ['HUNTING', 'THIS WAY →'], '#d5a64b')
   signpost(root, trailWaypoints[2][0] + 2.4, trailWaypoints[2][1] + 2.4, trailYaw + Math.PI, ['WILDWOOD', '40 PACES'], '#9ca66d')
+
+  const brassYaw = Math.atan2(brassTrailWaypoints[0][0] - 0, brassTrailWaypoints[0][1] - 8)
+  signpost(root, brassTrailWaypoints[0][0], brassTrailWaypoints[0][1], brassYaw + Math.PI, ['BRASSWOOD', 'HIGH GAME →'], '#c4893a')
+  signpost(root, brassTrailWaypoints[3][0] + 2.2, brassTrailWaypoints[3][1] + 1.6, brassYaw + Math.PI, ['BRASSWOOD', 'KEEP EAST'], '#c4893a')
 
   /* --- hunter's camp at the edge of the wildwood ------------------------ */
   const camp = new THREE.Group()
@@ -356,6 +374,90 @@ export function createWildscape() {
   // At the tree line, not in the middle of the clearing it names.
   signpost(root, huntingArea.x + 3, huntingArea.z + 16.5, 0, ['CLEARING', 'GAME GATHERS HERE'], '#9ca66d')
 
+  /* --- the brasswood: dry hollow, timber cribs, brass lamps, no camp --- */
+  const brass = highHuntArea
+  const hollow = new THREE.Mesh(
+    new THREE.CircleGeometry(5.2, 20),
+    new THREE.MeshStandardMaterial({ color: '#1a1814', roughness: 0.98 }),
+  )
+  hollow.rotation.x = -Math.PI / 2
+  hollow.position.set(brass.x - 3, 0.08, brass.z + 2)
+  root.add(hollow)
+
+  const stumpGeometry = new THREE.CylinderGeometry(0.42, 0.5, 0.7, 7)
+  const stumpMaterial = new THREE.MeshStandardMaterial({ color: '#2c241c', roughness: 0.95 })
+  const brassStumps: Array<{ x: number; z: number }> = []
+  for (let i = 0; i < 9; i++) {
+    const angle = (i / 9) * Math.PI * 2 + 0.3
+    const radius = 8 + (i % 3) * 1.4
+    const x = brass.x + Math.cos(angle) * radius
+    const z = brass.z + Math.sin(angle) * radius
+    if (!isGreen(x, z, 2)) continue
+    const stump = new THREE.Mesh(stumpGeometry, stumpMaterial)
+    stump.position.set(x, 0.35, z)
+    stump.rotation.y = rng() * Math.PI
+    stump.castShadow = true
+    root.add(stump)
+    brassStumps.push({ x, z })
+  }
+
+  const cribMaterial = new THREE.MeshStandardMaterial({ color: '#4a3a2c', roughness: 0.95 })
+  const cribs: Array<{ x: number; z: number }> = []
+  for (const offset of [
+    [6.5, -5.5],
+    [-7.2, -4.0],
+  ] as Array<[number, number]>) {
+    const x = brass.x + offset[0]
+    const z = brass.z + offset[1]
+    if (!isGreen(x, z, 2)) continue
+    const crib = new THREE.Group()
+    crib.position.set(x, 0, z)
+    crib.rotation.y = rng() * 0.6
+    for (let layer = 0; layer < 3; layer++) {
+      const log = new THREE.Mesh(logGeometry, cribMaterial)
+      log.position.set(0, 0.28 + layer * 0.42, 0)
+      log.rotation.set(Math.PI / 2, (layer % 2) * 0.9, 0)
+      log.castShadow = true
+      crib.add(log)
+    }
+    root.add(crib)
+    cribs.push({ x, z })
+  }
+
+  for (let i = 0; i < 6; i++) {
+    const angle = (i / 6) * Math.PI * 2 + 0.2
+    const x = brass.x + Math.cos(angle) * 12.5
+    const z = brass.z + Math.sin(angle) * 12.5
+    if (!isGreen(x, z, 1.5)) continue
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 2.4, 0.18),
+      new THREE.MeshStandardMaterial({ color: '#5a4630', roughness: 0.9 }),
+    )
+    post.position.set(x, 1.2, z)
+    post.castShadow = true
+    root.add(post)
+    const lamp = new THREE.Mesh(
+      new THREE.BoxGeometry(0.32, 0.4, 0.32),
+      new THREE.MeshStandardMaterial({ color: '#c4893a', emissive: '#c4893a', emissiveIntensity: 1.8, roughness: 0.25 }),
+    )
+    lamp.position.set(x, 2.5, z)
+    root.add(lamp)
+    lanternPosts.push(lamp)
+    const lampLight = new THREE.PointLight('#c4893a', 1.8, 10)
+    lampLight.position.set(x, 2.5, z)
+    root.add(lampLight)
+  }
+
+  signpost(
+    root,
+    brass.x - 2.2,
+    brass.z + 14.5,
+    Math.PI,
+    ['THE BRASSWOOD', 'WOLVES · BOARS'],
+    '#c4893a',
+  )
+  signpost(root, brass.x + 5.5, brass.z + 8.5, -0.4, ['DRY HOLLOW', 'HIGH GAME'], '#d5a64b')
+
   const flicker = { fire, fireLight, lanternPosts }
   root.userData.flicker = flicker
   /**
@@ -370,6 +472,8 @@ export function createWildscape() {
     ...rocks.map(rock => ({ kind: 'circle' as const, x: rock.position.x, z: rock.position.z, r: rock.scale.x * 0.8 })),
     ...standingStones.map(stone => ({ kind: 'circle' as const, x: stone.x, z: stone.z, r: 0.9 })),
     { kind: 'circle' as const, x: campX, z: campZ, r: 2.4 },
+    ...brassStumps.map(stump => ({ kind: 'circle' as const, x: stump.x, z: stump.z, r: 0.7 })),
+    ...cribs.map(crib => ({ kind: 'circle' as const, x: crib.x, z: crib.z, r: 1.6 })),
   ]
   return root
 }

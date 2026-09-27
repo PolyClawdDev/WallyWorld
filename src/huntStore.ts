@@ -36,9 +36,10 @@ export type HuntState = {
   cooldownRatio: number
   abilityId: WizardId
   target: HuntTarget | null
-  /** Metres to the wildwood, and its bearing relative to where the camera looks. */
+  /** Metres to the current hunt destination, and its bearing relative to the camera. */
   compassDistance: number
   compassDegrees: number
+  compassLabel: string
   kills: number
   aggro: number
   death: DeathNotice | null
@@ -57,6 +58,7 @@ export const huntState: HuntState = {
   target: null,
   compassDistance: 0,
   compassDegrees: 0,
+  compassLabel: 'THE WILDWOOD',
   kills: 0,
   aggro: 0,
   death: null,

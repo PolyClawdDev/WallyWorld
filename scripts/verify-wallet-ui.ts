@@ -107,7 +107,7 @@ async function main() {
   const fixture = fixtureKeypair('test-payer')
   const address = fixture.publicKey.toBase58()
 
-  console.log('Wally World · wallet UI verification')
+  console.log('Voxels · wallet UI verification')
   console.log(`  target   ${TARGET}`)
   console.log(`  expect   disconnected=${EXPECT_DISCONNECTED}  connected=${EXPECT_CONNECTED}`)
   console.log(`  mock     Phantom provider for ${address}`)
@@ -204,7 +204,7 @@ async function main() {
   console.log('\nIn the world')
   await clickText(page, 'Continue with')
   await sleep(500)
-  await clickText(page, 'Enter Wally World')
+  await clickText(page, 'Enter Voxels')
   await sleep(4000)
 
   const bannerVisible = await page.evaluate(() => !!document.querySelector('.mainnet-banner'))

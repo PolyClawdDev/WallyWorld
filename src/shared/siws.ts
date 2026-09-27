@@ -17,7 +17,7 @@
 
 /** Fixed wording. The server may not vary this, so the user always sees the same prompt. */
 export const SIWS_STATEMENT =
-  'Sign in to Wally World. This proves you control this wallet. It is not a transaction, it costs no fees, and it cannot move funds.'
+  'Sign in to Voxels. This proves you control this wallet. It is not a transaction, it costs no fees, and it cannot move funds.'
 
 export const SIWS_VERSION = '1'
 

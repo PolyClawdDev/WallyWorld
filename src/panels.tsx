@@ -1,4 +1,5 @@
 import React from 'react'
+import { PvpJournal } from './pvp/ui'
 
 /* ------------------------------------------------------------------ *
  * Journal and settings, as objects rather than dashboards: the journal
@@ -24,7 +25,7 @@ export function JournalPanel({ task, receipt, onApprove }: {
     <div className="jr-card">
       <div className="task-head"><span>DEMO SERVICE</span><b>{task === 'idle' ? 'READY' : task.toUpperCase()}</b></div>
       <h4>Town history brief</h4>
-      <p>One-page summary of Wally World landmarks, delivered as a simulated artifact.</p>
+      <p>One-page summary of Voxels landmarks, delivered as a simulated artifact.</p>
       <div className="jr-meta"><span>2 demo credits</span><span>~ 3 seconds</span><span>Scripted demo</span></div>
       <button className="primary full" disabled={task !== 'idle'} onClick={onApprove}>
         {task === 'idle' ? 'Approve · 2 credits' : task === 'delivered' ? 'Delivered' : `Task ${task}…`}
@@ -40,6 +41,7 @@ export function JournalPanel({ task, receipt, onApprove }: {
           </div>
         : <p className="jr-empty">No entries yet. Approved demo tasks are written here.</p>}
     </div>
+    <PvpJournal />
   </>
 }
 

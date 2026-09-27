@@ -129,7 +129,7 @@ function SignIn() {
         <div className="sol-block-head"><span>ACCOUNT</span><b className="sol-off">NOT SIGNED IN</b></div>
         <p className="sol-fine">
           Sign a one-time message to prove you control this wallet. The message is plain text issued by the
-          Wally World server, is valid once, and expires. It is not a transaction: approving it costs no fee
+          Voxels server, is valid once, and expires. It is not a transaction: approving it costs no fee
           and cannot move funds. There is no password, and you will never be asked for a seed phrase.
         </p>
         <button className="primary full" onClick={() => void signIn()} disabled={wallet.signingIn}>
@@ -515,7 +515,7 @@ export function WalletSolanaPanel() {
           </p>
           <a className="primary full" href={PHANTOM_DOWNLOAD_URL} target="_blank" rel="noopener noreferrer">Get Phantom ↗</a>
           <p className="sol-fine">
-            Only ever install a wallet from its official site. Wally World will never ask you for a seed phrase or a
+            Only ever install a wallet from its official site. Voxels will never ask you for a seed phrase or a
             private key — not here, and not anywhere else in the game.
           </p>
         </div>
@@ -551,7 +551,7 @@ export function WalletSolanaPanel() {
       <PayoutNotice />
 
       <p className="sol-fine sol-footer">
-        Non-custodial: Wally World never holds, stores, transmits, or displays your private key or seed phrase, and no
+        Non-custodial: Voxels never holds, stores, transmits, or displays your private key or seed phrase, and no
         part of the game will ever ask for one. Phantom signs; this app only asks.
       </p>
     </div>

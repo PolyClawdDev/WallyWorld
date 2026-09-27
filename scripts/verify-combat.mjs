@@ -129,7 +129,7 @@ async function enterWorld(page, wizardIndex = 0, { fresh = true } = {}) {
   }
   await clickText(page, 'Continue with')
   await sleep(250)
-  await clickText(page, 'Enter Wally World')
+  await clickText(page, 'Enter Voxels')
   await page.waitForFunction('!!window.__wally && window.__wally.wildlife.animals.length > 0', { timeout: 30000 })
   await page.waitForSelector('.cbt-bar', { timeout: 15000 })
   await sleep(900)
@@ -255,7 +255,8 @@ if (want('hud')) {
     const slots = [...document.querySelectorAll('.cbt-slot')]
     return {
       bar: !!document.querySelector('.cbt-bar'),
-      portrait: !!document.querySelector('.cbt-portrait svg'),
+      portrait: !!document.querySelector('.cbt-portrait canvas'),
+      portraitSvg: !!document.querySelector('.cbt-portrait svg'),
       level: document.querySelector('.cbt-level')?.textContent,
       hpText: document.querySelector('.cbt-hp span')?.textContent,
       resText: document.querySelector('.cbt-res span')?.textContent,
@@ -277,8 +278,18 @@ if (want('hud')) {
   })
   console.log('\nhud:', JSON.stringify(hud, null, 1).slice(0, 1400), '\n')
 
-  check(hud.bar && hud.portrait, 'combat HUD renders with a character portrait')
+  check(hud.bar && hud.portrait && !hud.portraitSvg, 'combat HUD renders a live character portrait, not a hat glyph')
   check(hud.level === '1', 'portrait carries the character level', hud.level)
+  const plate = await page.evaluate(() => {
+    const sprite = window.__wally?.nameplate ?? window.__wally?.player?.getObjectByName('nameplate')
+    const caption = sprite?.userData?.caption
+    return sprite
+      ? { name: caption?.name ?? '', levelText: caption?.levelText ?? '', scaleX: sprite.scale.x, raycastOff: sprite.raycast.length === 0 }
+      : null
+  })
+  check(!!plate && plate.name.length > 0, 'player carries a discreet in-world nameplate', JSON.stringify(plate))
+  check(!!plate && plate.levelText === hud.level, 'nameplate level matches the HUD badge', `${plate?.levelText} vs ${hud.level}`)
+  check(!!plate && plate.scaleX < 1.8, 'player nameplate is smaller than NPC shop signs', String(plate?.scaleX))
   check(/^\d+ \/ \d+$/.test(hud.hpText || ''), 'health bar shows current / max', hud.hpText)
   check(/^\d+ \/ \d+$/.test(hud.resText || ''), 'resource bar shows current / max', hud.resText)
   check(/^XP \d+ \/ \d+$/.test(hud.xpText || ''), 'xp bar shows progress', hud.xpText)
@@ -513,11 +524,19 @@ if (want('controls')) {
   for (let i = 0; i < 60; i++) await ctl.mouse.wheel({ deltaY: -220 })
   await settle(ctl, 12)
   const zoomedIn = await camAt()
-  console.log('zoom:', JSON.stringify({ zoomStart, zoomedOut, zoomedIn }))
+  // Keep scrolling past the limits: the clamp is proved by the distance no
+  // longer changing, not by matching a number the camera tuning may move.
+  for (let i = 0; i < 30; i++) await ctl.mouse.wheel({ deltaY: -220 })
+  await settle(ctl, 8)
+  const pinnedIn = await camAt()
+  for (let i = 0; i < 90; i++) await ctl.mouse.wheel({ deltaY: 220 })
+  await settle(ctl, 8)
+  const pinnedOut = await camAt()
+  console.log('zoom:', JSON.stringify({ zoomStart, zoomedOut, zoomedIn, pinnedIn, pinnedOut }))
   check(zoomedOut.wanted > zoomStart.wanted, 'the wheel zooms out', `${zoomStart.wanted} → ${zoomedOut.wanted}`)
   check(zoomedIn.wanted < zoomedOut.wanted, 'the wheel zooms back in', `${zoomedOut.wanted} → ${zoomedIn.wanted}`)
-  check(zoomedOut.wanted <= 21.01, 'zoom out is clamped at the far limit', String(zoomedOut.wanted))
-  check(zoomedIn.wanted >= 4.19, 'zoom in is clamped before the camera reaches the character', String(zoomedIn.wanted))
+  check(pinnedOut.wanted === zoomedOut.wanted, 'zoom out is clamped at the far limit', `${zoomedOut.wanted} then ${pinnedOut.wanted}`)
+  check(pinnedIn.wanted === zoomedIn.wanted, 'zoom in is clamped before the camera reaches the character', `${zoomedIn.wanted} then ${pinnedIn.wanted}`)
   check(zoomedIn.dist > 3.5, 'the camera never ends up inside the character', `${zoomedIn.dist}m away`)
   check(zoomedOut.camY > 1.4 && zoomedIn.camY > 1.4, 'the camera never dips under the street', `${zoomedIn.camY} / ${zoomedOut.camY}`)
   // Smooth, not instant: the eased distance should still be catching up.
@@ -861,10 +880,20 @@ if (want('controls')) {
       if (w.battle.currentOrder() === 'attack') break
       await new Promise(r => setTimeout(r, 100))
     }
-    return { armed, target: animal.species.id, acquired: w.battle.currentOrder() === 'attack', orders: [...new Set(orders)] }
+    return {
+      armed,
+      target: animal.species.id,
+      acquired: w.battle.currentOrder() === 'attack',
+      orders: [...new Set(orders)],
+      hp: Math.round(w.vitals.hp),
+      distance: +Math.hypot(w.player.position.x - at.x, w.player.position.z - at.z).toFixed(1),
+      canSee: w.nav.lineOfSight(w.player.position.x, w.player.position.z, at.x, at.z, 0.1, 1.6),
+      alive: animal.state !== 'dead',
+    }
   })
   check(!attackMove.noTarget, 'a live animal is available for the attack-move test')
   check(attackMove.armed, 'tapping A arms attack-move')
+  console.log('attack-move:', JSON.stringify(attackMove))
   check(attackMove.acquired, 'attack-move acquires an enemy on the way', `${attackMove.target}: ${JSON.stringify(attackMove.orders ?? [])}`)
 
   /* Escape cancels an aim before it reaches the menu. */

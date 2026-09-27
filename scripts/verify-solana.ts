@@ -169,7 +169,7 @@ async function main() {
   const other = fixtureKeypair('test-other')
   const payerAddress = payer.publicKey.toBase58()
 
-  console.log('Wally World · Solana verification')
+  console.log('Voxels · Solana verification')
   console.log(`  api      ${API}`)
   console.log(`  cluster  ${CLUSTER}`)
   console.log(`  rpc      ${RPC.ok ? RPC.endpoint : `MISCONFIGURED: ${RPC.problem}`}`)
