@@ -14,6 +14,7 @@
     "audit:bundle": "tsx --env-file-if-exists=.env scripts/audit-bundle.ts",
     "test:combat": "tsx scripts/test-combat.ts",
     "test:pvp": "tsx scripts/test-pvp.ts",
+    "verify:presence": "tsx scripts/verify-presence.ts",
     "verify:combat": "tsx scripts/verify-combat.mjs"
   },
   "dependencies": {

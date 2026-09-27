@@ -1,13 +1,14 @@
 import { API_BASE_URL } from '../solana/cluster'
-import { loadSession } from '../solana/api'
 import { PVP_PROTOCOL, type C2S, type S2C } from '../shared/pvp'
 import type { PublicLoadout } from '../shared/pvp'
+import { presenceTokenSync, resolvePresenceAuth } from './guest'
 import { pingPvp, pvpState } from './store'
 
 let socket: WebSocket | null = null
 let hello: { displayName: string; loadout: PublicLoadout } | null = null
 let retries = 0
 let timer: ReturnType<typeof setTimeout> | null = null
+let opening = false
 
 function wsUrl(token: string) {
   const base = API_BASE_URL.replace(/^http/, 'ws')
@@ -18,6 +19,7 @@ function apply(msg: S2C) {
   switch (msg.t) {
     case 'welcome':
       pvpState.connected = true
+      pvpState.signedIn = true
       pvpState.reconnecting = false
       pvpState.playerId = msg.playerId
       pvpState.gold = msg.gold
@@ -74,17 +76,25 @@ function apply(msg: S2C) {
   pingPvp()
 }
 
-function open() {
-  const session = loadSession()
-  pvpState.signedIn = Boolean(session)
-  if (!session || !hello) {
+async function open() {
+  if (!hello) {
     pvpState.connected = false
     pingPvp()
     return
   }
+  if (opening) return
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return
+  opening = true
+  const auth = await resolvePresenceAuth()
+  opening = false
+  pvpState.signedIn = Boolean(auth)
+  if (!auth) {
+    schedule()
+    pingPvp()
+    return
+  }
   try {
-    socket = new WebSocket(wsUrl(session.token))
+    socket = new WebSocket(wsUrl(auth.token))
   } catch {
     schedule()
     return
@@ -101,7 +111,7 @@ function open() {
   }
   socket.onclose = () => {
     pvpState.connected = false
-    pvpState.reconnecting = Boolean(pvpState.duel && pvpState.duel.phase !== 'ended')
+    pvpState.reconnecting = Boolean(pvpState.duel && pvpState.duel.phase !== 'ended') || Boolean(hello)
     pingPvp()
     socket = null
     schedule()
@@ -117,7 +127,7 @@ function schedule() {
   retries += 1
   timer = setTimeout(() => {
     timer = null
-    open()
+    void open()
   }, wait)
 }
 
@@ -127,7 +137,8 @@ export function send(msg: C2S) {
 
 export function startPvp(displayName: string, loadout: PublicLoadout) {
   hello = { displayName, loadout }
-  open()
+  retries = 0
+  void open()
 }
 
 export function stopPvp() {
@@ -143,11 +154,14 @@ export function refreshPvpIdentity(displayName: string, loadout: PublicLoadout) 
   send({ t: 'hello', protocol: PVP_PROTOCOL, displayName, loadout })
 }
 
+async function authHeader(): Promise<Record<string, string>> {
+  const token = presenceTokenSync() ?? (await resolvePresenceAuth())?.token
+  return token ? { Authorization: `Bearer ${token}` } : {}
+}
+
 export async function fetchPvpJournal() {
-  const session = loadSession()
-  if (!session) return
   try {
-    const res = await fetch(`${API_BASE_URL}/api/pvp/journal`, { headers: { Authorization: `Bearer ${session.token}` } })
+    const res = await fetch(`${API_BASE_URL}/api/pvp/journal`, { headers: await authHeader() })
     const body = await res.json() as { entries?: typeof pvpState.journal }
     if (res.ok && body.entries) {
       pvpState.journal = body.entries
@@ -159,10 +173,8 @@ export async function fetchPvpJournal() {
 }
 
 export async function fetchPvpCard(playerId: string) {
-  const session = loadSession()
-  if (!session) return
   try {
-    const res = await fetch(`${API_BASE_URL}/api/pvp/player/${playerId}`, { headers: { Authorization: `Bearer ${session.token}` } })
+    const res = await fetch(`${API_BASE_URL}/api/pvp/player/${playerId}`, { headers: await authHeader() })
     const body = await res.json() as { card?: typeof pvpState.inspect }
     if (res.ok && body.card) {
       pvpState.inspect = body.card

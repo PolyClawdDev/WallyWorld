@@ -1,14 +1,16 @@
 import * as THREE from 'three'
-import { animateCharacter, createWizard } from '../characters'
+import { animateCharacter, createWizard, wizards } from '../characters'
+import { createCharacterNameplate, displayNameFor, type CharacterNameplate } from '../nameplate'
 import { send } from './net'
-import { pingPvp, pvpState } from './store'
+import { pvpState } from './store'
 import { DUEL_RINGS } from '../shared/zones'
 import type { PublicPresence } from '../shared/pvp'
 
 type Remote = {
   id: string
   group: THREE.Group
-  label: THREE.Sprite
+  plate: CharacterNameplate
+  character: PublicPresence['loadout']['character']
   target: THREE.Vector3
   facing: number
 }
@@ -17,50 +19,44 @@ const remotes = new Map<string, Remote>()
 let rings: THREE.Group | null = null
 let lastPose = 0
 
-function nameplate(text: string, color: string) {
-  const canvas = document.createElement('canvas')
-  canvas.width = 256
-  canvas.height = 64
-  const ctx = canvas.getContext('2d')!
-  ctx.fillStyle = '#101923e8'
-  ctx.fillRect(4, 4, 248, 56)
-  ctx.strokeStyle = color
-  ctx.lineWidth = 3
-  ctx.strokeRect(5, 5, 246, 54)
-  ctx.font = '700 18px monospace'
-  ctx.textAlign = 'center'
-  ctx.textBaseline = 'middle'
-  ctx.fillStyle = '#e5ddc8'
-  ctx.fillText(text.slice(0, 18), 128, 32)
-  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, depthTest: false }))
-  sprite.scale.set(3.2, 0.8, 1)
-  sprite.userData.ignorePick = true
-  return sprite
-}
-
 function syncRemote(scene: THREE.Scene, presence: PublicPresence) {
   let remote = remotes.get(presence.playerId)
+  if (remote && remote.character !== presence.loadout.character) {
+    remote.plate.dispose()
+    scene.remove(remote.group)
+    remotes.delete(presence.playerId)
+    remote = undefined
+  }
   if (!remote) {
     const wizard = createWizard(presence.loadout.character, 1, presence.loadout.style)
-    const label = nameplate(presence.displayName, '#d5a64b')
-    label.position.set(0, 3.2, 0)
-    wizard.add(label)
     wizard.userData.pvpId = presence.playerId
+    wizard.userData.remotePlayer = true
+    const plate = createCharacterNameplate()
+    plate.attachTo(wizard)
     scene.add(wizard)
-    remote = { id: presence.playerId, group: wizard, label, target: new THREE.Vector3(presence.x, 0, presence.z), facing: presence.facing }
+    remote = {
+      id: presence.playerId,
+      group: wizard,
+      plate,
+      character: presence.loadout.character,
+      target: new THREE.Vector3(presence.x, 0, presence.z),
+      facing: presence.facing,
+    }
     remotes.set(presence.playerId, remote)
   }
   remote.target.set(presence.x, 0, presence.z)
   remote.facing = presence.facing
-  const map = remote.label.material.map
-  if (map && remote.label.userData.name !== presence.displayName) {
-    remote.label.userData.name = presence.displayName
-  }
+  remote.plate.setLabel(
+    displayNameFor(presence.displayName, wizards[presence.loadout.character].name),
+    presence.loadout.level,
+    { accent: wizards[presence.loadout.character].accent },
+  )
 }
 
 function dropMissing(scene: THREE.Scene, seen: Set<string>) {
   for (const [id, remote] of remotes) {
     if (seen.has(id)) continue
+    remote.plate.dispose()
     scene.remove(remote.group)
     remotes.delete(id)
   }
@@ -106,6 +102,17 @@ export function inspectRemote(playerId: string) {
   send({ t: 'inspect', playerId })
 }
 
+export function listRemotes() {
+  return [...remotes.values()].map(remote => ({
+    playerId: remote.id,
+    x: remote.group.position.x,
+    z: remote.group.position.z,
+    targetX: remote.target.x,
+    targetZ: remote.target.z,
+    character: remote.character,
+  }))
+}
+
 export function updatePvpWorld(scene: THREE.Scene, dt: number, now: number, local: {
   x: number
   z: number
@@ -143,7 +150,10 @@ export function applyDuelPose(player: THREE.Object3D, you: string) {
 }
 
 export function disposePvpWorld(scene: THREE.Scene) {
-  for (const remote of remotes.values()) scene.remove(remote.group)
+  for (const remote of remotes.values()) {
+    remote.plate.dispose()
+    scene.remove(remote.group)
+  }
   remotes.clear()
   if (rings) {
     scene.remove(rings)

@@ -38,6 +38,7 @@ import {
   SESSION_TTL_MS,
 } from './config'
 import { createSession, issueChallenge, isAllowedDomain, revokeFromAuthHeader, verifySignIn, walletFromAuthHeader } from './auth'
+import { issueGuestSession } from './pvp/guest'
 import { ensureAccount } from './pvp/ids'
 import { goldView } from './pvp/ledger'
 import {
@@ -506,6 +507,14 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const task = readDemoTask(path.slice('/api/tasks/'.length))
     if (!task) return fail(res, 404, 'not_found')
     return send(res, 200, { id: task.id, status: task.status, cost: task.cost, mode: 'demo' })
+  }
+
+  if (method === 'POST' && path === '/api/pvp/guest') {
+    const parsed = await readJson(req)
+    if (!parsed.ok) return failBody(res, parsed)
+    const issued = issueGuestSession((parsed.body as { guestKey?: unknown }).guestKey)
+    if (!issued) return fail(res, 400, 'bad_request', 'guestKey must be a hex secret from this browser.')
+    return send(res, 200, issued)
   }
 
   if (method === 'POST' && path === '/api/dev/session') {

@@ -42,7 +42,7 @@ import { CombatHud } from './combatHud'
 import { PvpOverlay } from './pvp/ui'
 import { refreshPvpIdentity, send, startPvp, stopPvp } from './pvp/net'
 import { isDuelLocked, pvpState } from './pvp/store'
-import { applyDuelPose, disposePvpWorld, inspectRemote, pickRemote, updatePvpWorld } from './pvp/world'
+import { applyDuelPose, disposePvpWorld, inspectRemote, listRemotes, pickRemote, updatePvpWorld } from './pvp/world'
 import { createCharacterNameplate, displayNameFor } from './nameplate'
 
 import './styles.css'
@@ -968,6 +968,8 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         // verification scripts can aim at a world point directly.
         setPointer: (x: number, y: number) => { pointer.set(x, y); resolveCursor() },
         camState: () => ({ zoom, zoomWanted, yaw, keyboardMove }),
+        remotes: () => listRemotes(),
+        pvp: () => ({ playerId: pvpState.playerId, others: pvpState.others, connected: pvpState.connected, self: pvpState.self }),
         aimAt: (target: THREE.Vector3 | { x: number; z: number }) => {
           const v = target instanceof THREE.Vector3 ? target : new THREE.Vector3(target.x, 0.6, target.z)
           const projected = v.clone().project(camera)

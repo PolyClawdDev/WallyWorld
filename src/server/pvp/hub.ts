@@ -73,6 +73,7 @@ const byAccount = new Map<string, PlayerId>()
 const duels = new Map<string, DuelSim>()
 const duelByPlayer = new Map<PlayerId, string>()
 const lastPoseAt = new Map<PlayerId, number>()
+let lastPresenceBroadcast = 0
 
 const insertDuel = db.prepare(`
   insert into pvp_duels (
@@ -303,6 +304,10 @@ function handle(live: Live, msg: C2S) {
       live.z = Math.max(-96, Math.min(96, msg.z))
       live.facing = Number.isFinite(msg.facing) ? msg.facing : live.facing
       live.anim = msg.anim
+      if (now - lastPresenceBroadcast > 80) {
+        lastPresenceBroadcast = now
+        broadcastPresence()
+      }
       return
     }
     case 'inspect': {

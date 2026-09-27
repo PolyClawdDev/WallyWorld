@@ -21,8 +21,7 @@ export function PvpOverlay() {
   const s = usePvp()
   return (
     <div className="pvp-layer" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
-      {!s.signedIn && <div className="pvp-chip">Sign in to appear to other players. Game gold stays off-chain.</div>}
-      {s.signedIn && !s.connected && <div className="pvp-chip">{s.reconnecting ? 'Reconnecting to your duel…' : 'Looking for the presence server…'}</div>}
+      {!s.connected && <div className="pvp-chip">{s.reconnecting ? 'Reconnecting to the shared town…' : 'Joining the shared town…'}</div>}
       {s.signedIn && s.connected && (
         <div className="pvp-chip pvp-gold-chip">
           ✦ {s.gold.available} GAME GOLD<small>{s.gold.reserved ? ` · ${s.gold.reserved} in escrow` : ''} · DEMO</small>
