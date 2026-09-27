@@ -1,4 +1,6 @@
 /// <reference types="vite/client" />
+// First, before anything reaches @solana/web3.js: give the browser a Buffer.
+import './solana/bufferPolyfill'
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import * as THREE from 'three'
@@ -27,7 +29,14 @@ import { createNavGrid } from './battle/nav'
 import type { Obstacle } from './battle/nav'
 import { XP_PER_SPECIES } from './battle/kits'
 import { primeAudio } from './battle/audio'
-import { battleState, escapeWasConsumed, markEscapeConsumed, registerBattleCommands } from './battle/store'
+import {
+  battleState,
+  escapeWasConsumed,
+  markEscapeConsumed,
+  onKeyboardMoveChange,
+  readKeyboardMove,
+  registerBattleCommands,
+} from './battle/store'
 import { progressFor } from './battle/progression'
 import { CombatHud } from './combatHud'
 
@@ -41,11 +50,16 @@ type Panel = 'journal' | 'wallet' | 'settings' | 'map' | null
 // Prompts and the F action must share one radius, otherwise F silently does nothing.
 const INTERACT_RANGE = 5
 /**
- * WASD is direct movement and Q/W/E/R are abilities, so W, A and S each carry
- * two jobs. A quick tap issues the combat command, holding the key moves; Q, E
- * and R are unambiguous and fire the instant they go down.
+ * Movement is mouse-only by default, which leaves Q/W/E/R/A/S free for combat.
+ * Keyboard walking is still available behind a setting for people who prefer
+ * it; when it is on, W, A and S carry two jobs and a quick tap means the
+ * combat command while a hold means the step.
  */
 const TAP_MS = 200
+/** Camera distance limits. Closer than the minimum puts the lens in the hat. */
+const ZOOM_MIN = 4.2
+const ZOOM_MAX = 21
+const ZOOM_STEP = 0.0016
 
 const buildings = [
   { name: 'THE HEARTH', sub: 'Your home', x: -15, z: 11, color: '#765b52', npc: '' },
@@ -234,6 +248,21 @@ function createGoldDrop(x: number, y: number, z: number, goldBaseUnits = 1) {
   return drop
 }
 
+/** Soft circular falloff used for the preview halo and its drifting motes. */
+function radialGlow(color: string) {
+  const canvas = document.createElement('canvas')
+  canvas.width = 128
+  canvas.height = 128
+  const ctx = canvas.getContext('2d')!
+  const gradient = ctx.createRadialGradient(64, 64, 0, 64, 64, 64)
+  gradient.addColorStop(0, color)
+  gradient.addColorStop(0.35, `${color}66`)
+  gradient.addColorStop(1, `${color}00`)
+  ctx.fillStyle = gradient
+  ctx.fillRect(0, 0, 128, 128)
+  return new THREE.CanvasTexture(canvas)
+}
+
 function CharacterPreview({ wizard, style = defaultMothStyle }: { wizard: WizardId; style?: MothStyle }) {
   const mount = useRef<HTMLDivElement>(null)
   useEffect(() => {
@@ -257,10 +286,49 @@ function CharacterPreview({ wizard, style = defaultMothStyle }: { wizard: Wizard
     const fill = new THREE.PointLight('#7bc9ce', 1.2, 8)
     fill.position.set(2, 2, 2)
     scene.add(fill)
+    // Behind the character, so the voxel silhouette catches a bright edge.
+    const rim = new THREE.DirectionalLight('#9fd7ff', 2.6)
+    rim.position.set(1.5, 3.2, -6)
+    scene.add(rim)
     const floor = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.2, 0.12, 12), material('#263848'))
     floor.position.y = -0.08
     floor.receiveShadow = true
     scene.add(floor)
+
+    const halo = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: radialGlow('#8fd0e8'),
+        transparent: true,
+        opacity: 0.32,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      }),
+    )
+    halo.scale.set(7.2, 7.2, 1)
+    halo.position.set(0, 1.5, -1.6)
+    scene.add(halo)
+
+    const moteTexture = radialGlow('#ffe9b8')
+    const motes = Array.from({ length: 14 }, (_, index) => {
+      const mote = new THREE.Sprite(
+        new THREE.SpriteMaterial({
+          map: moteTexture,
+          transparent: true,
+          opacity: 0.6,
+          depthWrite: false,
+          blending: THREE.AdditiveBlending,
+        }),
+      )
+      const size = 0.06 + (index % 4) * 0.025
+      mote.scale.set(size, size, 1)
+      mote.userData.radius = 1.05 + (index % 5) * 0.2
+      mote.userData.phase = (index / 14) * Math.PI * 2
+      mote.userData.speed = 0.00012 + (index % 3) * 0.00005
+      mote.userData.baseY = 0.35 + (index % 7) * 0.36
+      scene.add(mote)
+      return mote
+    })
+
     const character = createWizard(wizard, 0.84, style)
     character.position.y = 0
     scene.add(character)
@@ -277,6 +345,13 @@ function CharacterPreview({ wizard, style = defaultMothStyle }: { wizard: Wizard
     const animate = (time: number) => {
       character.rotation.y = Math.sin(time * 0.00025) * 0.45
       animateCharacter(character, time)
+      halo.material.opacity = 0.26 + Math.sin(time * 0.0008) * 0.06
+      for (const mote of motes) {
+        const { radius, phase, speed, baseY } = mote.userData
+        const angle = time * speed + phase
+        mote.position.set(Math.cos(angle) * radius, baseY + Math.sin(time * 0.0009 + phase) * 0.22, Math.sin(angle) * radius)
+        mote.material.opacity = 0.28 + (Math.sin(time * 0.0016 + phase) + 1) * 0.22
+      }
       renderer.render(scene, camera)
       frame = requestAnimationFrame(animate)
     }
@@ -338,6 +413,11 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
     const keys = keysRef.current
     keys.clear()
     let yaw = 0.25
+    /* Camera distance. The wheel moves `zoomWanted`; `zoom` chases it so the
+     * view glides instead of snapping, and both stay inside the clamp so the
+     * camera can never end up inside the wayfinder or under the street. */
+    let zoom = 9.5
+    let zoomWanted = zoom
     let last = performance.now()
     let nearbyNpc: string | null = null
     let walking = false
@@ -424,12 +504,18 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       raycaster.setFromCamera(pointer, camera)
       const behind = camera.position.distanceTo(player.position)
       // An exact hit first, then a small forgiving cone, which is what makes
-      // clicking a chicken at range possible at all.
+      // clicking a chicken at range possible at all. The cone is what keeps
+      // "right-click the enemy" reliable when it is standing against a wall
+      // or half off the edge of the screen.
       hover =
         wildlife.pick(raycaster, INSPECT_RANGE + behind) ??
         wildlife.aimAssist(raycaster.ray.origin, raycaster.ray.direction, 26 + behind, 0.045)
       const point = new THREE.Vector3()
+      // A ray aimed at the sky never meets the ground plane, and a move order
+      // to nowhere is worse than no order at all.
       cursorGround = raycaster.ray.intersectPlane(groundPlane, point) ? point : null
+      if (cursorGround && Math.abs(cursorGround.x) > 120) cursorGround = null
+      if (cursorGround && Math.abs(cursorGround.z) > 120) cursorGround = null
     }
 
     const isTyping = (target: EventTarget | null) => {
@@ -438,25 +524,33 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
     }
 
     /* --- input ---------------------------------------------------------
-     * WASD stays direct movement. Right-click issues move and attack orders,
-     * left-click selects or confirms an aimed spell, Q/W/E/R are abilities,
-     * F interacts and the middle mouse button rotates the camera. */
+     * The mouse moves you. Right-click walkable ground walks there, right-click
+     * an enemy attacks it, left-click selects or confirms an aimed spell,
+     * Q/W/E/R are abilities, A then click is attack-move, S stops, F interacts.
+     * The wheel zooms, middle-drag or shift-drag or the arrow keys turn the
+     * camera, and Space swings it back behind the wayfinder. The cursor is
+     * never captured. */
     const pressedAt = new Map<string, number>()
     let orbiting = false
+    let keyboardMove = readKeyboardMove()
     const castSlot = (slot: 'Q' | 'W' | 'E' | 'R') => battle?.pressSlot(slot, { cursorGround, hover })
+    const command = (key: string) => {
+      if (key === 'w') castSlot('W')
+      else if (key === 'a') battle?.armAttackMove()
+      else if (key === 's') battle?.pressStop()
+    }
     const onKey = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase()
       if (e.type === 'keyup') {
         keys.delete(key)
-        // The three shared keys decide on release: a flick was a command, a
-        // hold was a step. The movement half already happened either way.
         const down = pressedAt.get(key)
         pressedAt.delete(key)
+        if (!keyboardMove) return
+        // Only while keyboard walking is switched on do W, A and S carry two
+        // jobs: a flick is the command, a hold was the step.
         if (down === undefined || performance.now() - down > TAP_MS) return
         if (isTyping(e.target) || pausedRef.current) return
-        if (key === 'w') castSlot('W')
-        if (key === 'a') battle?.armAttackMove()
-        if (key === 's') battle?.pressStop()
+        command(key)
         return
       }
       if (isTyping(e.target) || pausedRef.current) return
@@ -465,10 +559,16 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       if (!pressedAt.has(key)) pressedAt.set(key, performance.now())
       primeAudio()
       if (key === 'v') { firstPerson.current = !firstPerson.current; player.visible = !firstPerson.current }
-      // Q, E and R are not movement keys, so they fire the moment they go down.
       if (key === 'q') castSlot('Q')
       if (key === 'e') castSlot('E')
       if (key === 'r') castSlot('R')
+      // With the mouse doing the walking these are unambiguous.
+      if (!keyboardMove) command(key)
+      // Arrow keys are the no-middle-button way to work the camera.
+      if (key === 'arrowleft') yaw += 0.12
+      if (key === 'arrowright') yaw -= 0.12
+      if (key === 'arrowup') zoomWanted = Math.max(ZOOM_MIN, zoomWanted - 1.4)
+      if (key === 'arrowdown') zoomWanted = Math.min(ZOOM_MAX, zoomWanted + 1.4)
       if (key === ' ') {
         // Recentre: swing the orbit round to sit behind whichever way the
         // character is actually facing.
@@ -480,12 +580,16 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
     }
     const releaseKeys = () => { keys.clear(); pressedAt.clear(); orbiting = false }
     const onMouseMove = (e: MouseEvent) => {
-      if (orbiting) yaw -= e.movementX * 0.004
+      // Shift-drag is the alternative to the middle button, which plenty of
+      // mice and every trackpad make awkward.
+      if (orbiting || (e.buttons === 1 && e.shiftKey)) yaw -= e.movementX * 0.004
       const rect = renderer.domElement.getBoundingClientRect()
       pointer.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
     }
     // Bound to the canvas, never to the document: a click on the HUD, a panel
-    // or a button can therefore never also issue a world command.
+    // or the pouch can therefore never also issue a world command, and a pouch
+    // drag that ends over the world never fires one either, because only the
+    // press is listened for and that press happened on the pouch.
     const onCanvasDown = (e: MouseEvent) => {
       if (pausedRef.current) return
       primeAudio()
@@ -494,6 +598,8 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
         orbiting = true
         return
       }
+      // Shift plus the left button is a camera drag, not a selection.
+      if (e.button === 0 && e.shiftKey) return
       resolveCursor()
       const target = hover && hover.state !== 'dead' ? hover : null
       if (e.button === 0) {
@@ -503,12 +609,22 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       }
     }
     const onMouseUp = (e: MouseEvent) => { if (e.button === 1) orbiting = false }
+    // Canvas-only and non-passive: the wheel over the pouch, the journal or the
+    // map scrolls that panel and the world never hears about it.
+    const onWheel = (e: WheelEvent) => {
+      if (pausedRef.current) return
+      e.preventDefault()
+      const step = e.deltaMode === 1 ? e.deltaY * 18 : e.deltaY
+      zoomWanted = THREE.MathUtils.clamp(zoomWanted + step * ZOOM_STEP * zoomWanted, ZOOM_MIN, ZOOM_MAX)
+    }
     const blockMenu = (e: MouseEvent) => e.preventDefault()
     window.addEventListener('keydown', onKey); window.addEventListener('keyup', onKey)
     window.addEventListener('blur', releaseKeys); document.addEventListener('visibilitychange', releaseKeys)
     document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp)
     renderer.domElement.addEventListener('contextmenu', blockMenu)
     renderer.domElement.addEventListener('mousedown', onCanvasDown)
+    renderer.domElement.addEventListener('wheel', onWheel, { passive: false })
+    const unregisterKeyboardMove = onKeyboardMoveChange(on => { keyboardMove = on })
     const resize = () => { if (!mount.current) return; const { width, height } = mount.current.getBoundingClientRect(); camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height) }
     resize(); window.addEventListener('resize', resize)
     let raf = 0
@@ -517,11 +633,11 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       const held = (...names: string[]) => !pausedRef.current && names.some(name => keys.has(name))
       const kit = battle?.kit
       const speed = held('shift') ? kit?.stats.runSpeed ?? 5.6 : kit?.stats.moveSpeed ?? 3.2
-      const dir = new THREE.Vector3(
-        (held('d', 'arrowright') ? 1 : 0) - (held('a', 'arrowleft') ? 1 : 0),
-        0,
-        (held('s', 'arrowdown') ? 1 : 0) - (held('w', 'arrowup') ? 1 : 0),
-      )
+      // Off by default: the world is walked with the mouse. The arrow keys are
+      // camera controls now, so they are deliberately not movement aliases.
+      const dir = keyboardMove
+        ? new THREE.Vector3((held('d') ? 1 : 0) - (held('a') ? 1 : 0), 0, (held('s') ? 1 : 0) - (held('w') ? 1 : 0))
+        : new THREE.Vector3()
       const manual = dir.lengthSq() > 0 && vitals.hp > 0
       if (manual) {
         dir.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
@@ -556,9 +672,18 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       const target = player.position.clone().add(new THREE.Vector3(0, 1.6, 0))
       if (firstPerson.current) { camera.position.copy(target); camera.position.y += 1.1; camera.rotation.set(0, yaw, 0) }
       else {
-        const desired = target.clone().add(new THREE.Vector3(Math.sin(yaw) * 6.8, 2.9, Math.cos(yaw) * 6.8))
-        const streetLook = target.clone().add(new THREE.Vector3(-Math.sin(yaw) * 5.5, 0.1, -Math.cos(yaw) * 5.5))
-        camera.position.lerp(desired, 0.12)
+        // Ease toward the wanted distance rather than snapping to it, and lift
+        // the lens as it pulls back so the far end of the range reads as a
+        // tactical overhead rather than a view of the rooftops edge-on.
+        zoom += (zoomWanted - zoom) * Math.min(1, dt * 9)
+        const height = 0.6 + zoom * 0.43
+        const ahead = Math.min(zoom * 0.81, 7)
+        const desired = target.clone().add(new THREE.Vector3(Math.sin(yaw) * zoom, height, Math.cos(yaw) * zoom))
+        // Never below the street, and never inside the wayfinder's own hat.
+        desired.y = Math.max(desired.y, 1.4)
+        const streetLook = target.clone().add(new THREE.Vector3(-Math.sin(yaw) * ahead, 0.1, -Math.cos(yaw) * ahead))
+        camera.position.lerp(desired, 0.18)
+        camera.position.y = Math.max(camera.position.y, 1.4)
         camera.lookAt(streetLook)
       }
       drops.forEach(drop => {
@@ -626,6 +751,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
         // Drives the camera-relative pointer without a real mouse, so the
         // verification scripts can aim at a world point directly.
         setPointer: (x: number, y: number) => { pointer.set(x, y); resolveCursor() },
+        camState: () => ({ zoom, zoomWanted, yaw, keyboardMove }),
         aimAt: (target: THREE.Vector3 | { x: number; z: number }) => {
           const v = target instanceof THREE.Vector3 ? target : new THREE.Vector3(target.x, 0.6, target.z)
           const projected = v.clone().project(camera)
@@ -642,8 +768,9 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       window.removeEventListener('resize', resize)
       document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp)
       renderer.domElement.removeEventListener('mousedown', onCanvasDown)
+      renderer.domElement.removeEventListener('wheel', onWheel)
       renderer.domElement.removeEventListener('contextmenu', blockMenu)
-      unregisterCommands()
+      unregisterCommands(); unregisterKeyboardMove()
       huntState.active = false; wildlife.dispose(); battle?.dispose()
       renderer.dispose(); mount.current?.removeChild(renderer.domElement)
     }
@@ -714,7 +841,7 @@ function App() {
   if (!entered) return null
   const action = (target: string) => { if (target.startsWith('ANIMAL:')) { setToast('Right-click the animal to attack it · loot drops on the ground for anyone') } else if (target.startsWith('LYRA')) setPanel('journal'); else setToast(`${target} is preparing a demo service.`) }
   const talkable = npc && !npc.startsWith('ANIMAL:') ? npc : null
-  return <main className="game"><WorldCanvas wizard={wizard} style={style} paused={panel !== null} onNear={setNpc} onGold={amount => setGold(value => Math.max(0, value + amount))} onAction={action} /><HuntHud wizard={wizard} /><CombatHud /><MainnetWarningBanner /><div className="hud"><div className="topbar"><div className="avatar-chip"><span style={{ background: wizards[wizard].accent }} />{playerName || wizards[wizard].name}<small>{wizards[wizard].name} WAYFINDER</small></div><div className="gold-chip">✦ {gold} GOLD <small>DEMO LOOT</small></div><FundsBadge variant="chip" /><div className="fps-chip">WORLD 01 <span>●</span></div></div><div className="minimap"><div className="map-ring"><i /><b /><em /></div><small>OLD TOWN LOOP</small></div><div className="controls">WASD move · SHIFT run · RIGHT-CLICK move or attack · LEFT-CLICK select or confirm · Q E R abilities · TAP W cast · TAP A then click attack-move · TAP S stop · HOLD WASD to walk · F interact · SPACE recentre · MIDDLE-DRAG look · V view · ESC cancel</div><div className="bottom-nav">{[['map','Map'],['journal','Journal'],['wallet','Wallet'],['settings','Settings']].map(([id, label]) => <button key={id} onClick={() => setPanel(id as Panel)}><span>{id === 'map' ? '⌖' : id === 'journal' ? '▤' : id === 'wallet' ? '◇' : '⚙'}</span>{label}</button>)}</div>{talkable && <button className="interact" onClick={() => { if (talkable.startsWith('LYRA')) setPanel('journal'); else setToast(`${talkable} is preparing a demo service.`) }}>F <span>Talk to</span> {talkable}</button>}{panel === 'wallet' && <Popup variant="pouch" eyebrow="THE HEARTH · PRIVATE" title="Your pouch" onClose={() => setPanel(null)}><WalletPouch gold={gold} onGoldChange={setGold} nearbyNpc={npc} onToast={setToast} /><WalletSolanaPanel /></Popup>}{panel === 'map' && <Popup variant="chart" size="wide" eyebrow="WALLY WORLD · DISTRICT 01" title="Old Town Loop" note={`${townLayout.ground}m × ${townLayout.ground}m · one grid square is 8m · surveyed from the live town layout`} onClose={() => setPanel(null)}><WorldMap /></Popup>}{panel === 'journal' && <Popup variant="book" eyebrow="THE ARCHIVE · LYRA" title="Your journal" onClose={() => setPanel(null)}><JournalPanel task={task} receipt={receipt} onApprove={doTask} /></Popup>}{panel === 'settings' && <Popup variant="plate" eyebrow="PREFERENCES" title="Control plate" onClose={() => setPanel(null)}><SettingsPanel /></Popup>}{toast && <div className="toast" onClick={() => setToast('')}>{toast}</div>}</div></main>
+  return <main className="game"><WorldCanvas wizard={wizard} style={style} paused={panel !== null} onNear={setNpc} onGold={amount => setGold(value => Math.max(0, value + amount))} onAction={action} /><HuntHud wizard={wizard} /><CombatHud /><MainnetWarningBanner /><div className="hud"><div className="topbar"><div className="avatar-chip"><span style={{ background: wizards[wizard].accent }} />{playerName || wizards[wizard].name}<small>{wizards[wizard].name} WAYFINDER</small></div><div className="gold-chip">✦ {gold} GOLD <small>DEMO LOOT</small></div><FundsBadge variant="chip" /><div className="fps-chip">WORLD 01 <span>●</span></div></div><div className="minimap"><div className="map-ring"><i /><b /><em /></div><small>OLD TOWN LOOP</small></div><div className="controls">WASD move · SHIFT run · RIGHT-CLICK to walk or attack · LEFT-CLICK select or confirm · Q W E R abilities · A then click attack-move · S stop · F interact · WHEEL zoom · MIDDLE-DRAG or SHIFT-DRAG or ← → turn · SPACE recentre · V view · ESC cancel</div><div className="bottom-nav">{[['map','Map'],['journal','Journal'],['wallet','Wallet'],['settings','Settings']].map(([id, label]) => <button key={id} onClick={() => setPanel(id as Panel)}><span>{id === 'map' ? '⌖' : id === 'journal' ? '▤' : id === 'wallet' ? '◇' : '⚙'}</span>{label}</button>)}</div>{talkable && <button className="interact" onClick={() => { if (talkable.startsWith('LYRA')) setPanel('journal'); else setToast(`${talkable} is preparing a demo service.`) }}>F <span>Talk to</span> {talkable}</button>}{panel === 'wallet' && <Popup variant="pouch" eyebrow="THE HEARTH · PRIVATE" title="Your pouch" onClose={() => setPanel(null)}><WalletPouch gold={gold} onGoldChange={setGold} nearbyNpc={npc} onToast={setToast} /><WalletSolanaPanel /></Popup>}{panel === 'map' && <Popup variant="chart" size="wide" eyebrow="WALLY WORLD · DISTRICT 01" title="Old Town Loop" note={`${townLayout.ground}m × ${townLayout.ground}m · one grid square is 8m · surveyed from the live town layout`} onClose={() => setPanel(null)}><WorldMap /></Popup>}{panel === 'journal' && <Popup variant="book" eyebrow="THE ARCHIVE · LYRA" title="Your journal" onClose={() => setPanel(null)}><JournalPanel task={task} receipt={receipt} onApprove={doTask} /></Popup>}{panel === 'settings' && <Popup variant="plate" eyebrow="PREFERENCES" title="Control plate" onClose={() => setPanel(null)}><SettingsPanel /></Popup>}{toast && <div className="toast" onClick={() => setToast('')}>{toast}</div>}</div></main>
 }
 
 createRoot(document.getElementById('root')!).render(<App />)

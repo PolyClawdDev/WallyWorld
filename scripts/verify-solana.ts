@@ -530,10 +530,14 @@ async function main() {
     console.log('\nSkipped (not verified here):')
     skipped.forEach(entry => console.log(`  - ${entry}`))
   }
-  console.log('\nNot covered by this script, and not verifiable in this environment:')
-  console.log('  - Phantom detection, connect/disconnect, and the accountChanged event')
-  console.log('  - Phantom signMessage and signAndSendTransaction approval dialogs')
-  console.log('  - Anything requiring the browser extension to be installed')
+  console.log('\nNot covered by this script:')
+  console.log('  - The UI, provider detection, connect/disconnect, and the signed-in')
+  console.log('    view. `npm run verify:ui` drives those in a real browser against a')
+  console.log('    mocked provider that returns genuine signatures.')
+  console.log('\nNot verifiable anywhere in this environment, and not claimed:')
+  console.log('  - The real Phantom extension: its approval dialogs, its own RPC')
+  console.log('    handling, and its behaviour on network switch. A mock cannot prove')
+  console.log('    the real extension agrees. This needs a human with Phantom installed.')
   process.exit(failed === 0 ? 0 : 1)
 }
 

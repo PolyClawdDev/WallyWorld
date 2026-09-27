@@ -502,7 +502,7 @@
   color: #e9dcc0;
   text-shadow: 0 2px 0 #00000080;
 }
-.cbt-book-tools { display: flex; align-items: center; gap: 12px; }
+.cbt-book-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
 .cbt-book-close {
   width: 24px;
   height: 24px;
@@ -639,6 +639,28 @@
 }
 .game .toast { bottom: 96px; }
 
+/* What is left of the old vitality plate: one word for whether the town is
+ * still protecting you. Lives here because the combat bar now owns health. */
+.hunt-standing {
+  position: absolute;
+  right: 28px;
+  top: 186px;
+  width: 116px;
+  padding: 6px 8px;
+  text-align: center;
+  background-color: #2f2216;
+  box-shadow: inset 0 2px 0 #6b5231, inset 0 -3px 0 #140d07, inset 2px 0 0 #0000004d, inset -2px 0 0 #0000004d;
+  clip-path: var(--vx-clip-sm);
+}
+.hunt-standing em {
+  font: 700 9px 'DM Mono', ui-monospace, monospace;
+  font-style: normal;
+  letter-spacing: 0.14em;
+  color: #c9b189;
+}
+.hunt-standing em.safe { color: #9fd06a; }
+.hunt-standing em.danger { color: #e9773f; }
+
 @media (max-width: 1180px) {
   .cbt-gauges { width: 158px; }
   .cbt-bar { gap: 8px; padding: 8px 10px; }
@@ -657,6 +679,7 @@
   .cbt-portrait { display: none; }
   .cbt-key, .cbt-slot { width: 42px; }
   .cbt-key { height: 42px; }
+  .hunt-standing { right: 15px; top: 176px; width: 104px; }
   .game .bottom-nav { width: 94px; bottom: 12px; }
   .game .bottom-nav button { padding: 7px 8px; font-size: 9px; }
   .cbt-tip { bottom: 104px; }

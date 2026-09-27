@@ -210,6 +210,41 @@ export function escapeWasConsumed() {
   return performance.now() - escapeConsumedAt < 80
 }
 
+/* ------------------------- keyboard walking -------------------------
+ * The game moves with the mouse. Keyboard walking stays available for
+ * people who want it, off by default, remembered between sessions, and
+ * read by both the world (to decide whether WASD steers) and the HUD
+ * (to draw the switch).
+ * ------------------------------------------------------------------ */
+
+const KEYBOARD_MOVE_KEY = 'wally.keyboardmove'
+const keyboardMoveListeners = new Set<(on: boolean) => void>()
+
+export function readKeyboardMove() {
+  try {
+    return localStorage.getItem(KEYBOARD_MOVE_KEY) === 'on'
+  } catch {
+    return false
+  }
+}
+
+export function setKeyboardMove(on: boolean) {
+  try {
+    localStorage.setItem(KEYBOARD_MOVE_KEY, on ? 'on' : 'off')
+  } catch {
+    /* storage is optional */
+  }
+  keyboardMoveListeners.forEach(listener => listener(on))
+  pingBattle()
+}
+
+export function onKeyboardMoveChange(listener: (on: boolean) => void) {
+  keyboardMoveListeners.add(listener)
+  return () => {
+    keyboardMoveListeners.delete(listener)
+  }
+}
+
 export function showNotice(text: string, kind: BattleNotice['kind']) {
   battleState.notice = { text, kind, at: performance.now() }
   pingBattle()

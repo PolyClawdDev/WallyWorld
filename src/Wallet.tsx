@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { isWorldReady, npcAtScreen } from './worldBridge'
 
 /* ------------------------------------------------------------------ *
@@ -389,11 +390,13 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
     <p className="pouch-note">{demo
       ? 'Dropped over open ground a stack goes to whoever you stand beside. Every stack here is simulated: no mint behind the items, no key in this panel, and it will never ask for a seed phrase.'
       : 'Dropped over open ground a stack goes to whoever you stand beside. Real funds: amounts are held as integer base units and formatted only for display. This panel will never ask for a seed phrase.'}</p>
-    {dragged && <>
+    {/* the pouch frame is cut out with clip-path, which clips fixed descendants,
+        so the carried stack has to hang off the body to follow the cursor */}
+    {dragged && createPortal(<>
       <div className="pouch-ghost" style={{ left: drag!.x, top: drag!.y }}><PixelIcon art={items[dragged.def].art} /></div>
       <div className={`pouch-hint${drag!.target ? ' on' : ''}`} style={{ left: drag!.x, top: drag!.y }}>
         {drag!.target ? `GIVE TO ${shortName(drag!.target).toUpperCase()}` : hovering ? `DROP ON SOMEONE · OR OFFER TO ${shortName(hovering).toUpperCase()}` : 'DROP ON A TOWNSPERSON'}
       </div>
-    </>}
+    </>, document.body)}
   </>
 }

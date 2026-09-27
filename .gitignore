@@ -14,3 +14,7 @@ scripts/.fixtures/
 
 # Build output from the mainnet verification build.
 dist-mainnet/
+dist-dev
+
+# Screenshots written by the verification scripts on every run.
+screenshots/

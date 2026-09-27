@@ -4,9 +4,11 @@ import { MAX_LEVEL } from './battle/progression'
 import type { AbilitySlot } from './battle/progression'
 import {
   battleState,
+  readKeyboardMove,
   requestCancelAim,
   requestQuickCast,
   requestUpgrade,
+  setKeyboardMove,
   subscribeBattle,
 } from './battle/store'
 import type { SlotView } from './battle/store'
@@ -220,6 +222,15 @@ function AbilityBook({ onClose }: { onClose: () => void }) {
             />
             <span />
             QUICK CAST
+          </label>
+          <label className="cbt-quick" title="Off by default: the world is walked with the mouse.">
+            <input
+              type="checkbox"
+              checked={readKeyboardMove()}
+              onChange={event => setKeyboardMove(event.target.checked)}
+            />
+            <span />
+            WASD WALKING
           </label>
           <button type="button" className="cbt-book-close" onClick={onClose} aria-label="Close abilities">
             ×

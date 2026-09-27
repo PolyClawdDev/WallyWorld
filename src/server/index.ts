@@ -97,7 +97,10 @@ function applyCors(req: IncomingMessage, res: ServerResponse): boolean {
   res.setHeader('Access-Control-Allow-Origin', origin)
   res.setHeader('Vary', 'Origin')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  // `solana-client` is added by @solana/web3.js to every request it makes. It
+  // is a version string, not a credential, but the preflight fails without it
+  // and every RPC call from the browser dies.
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, solana-client')
   res.setHeader('Access-Control-Max-Age', '600')
   return true
 }

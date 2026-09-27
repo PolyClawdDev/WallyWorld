@@ -1,10 +1,12 @@
 import puppeteer from 'puppeteer'
 import { mkdirSync } from 'node:fs'
+import { serveDist } from './serve-dist.mjs'
 
 /** Shoots every UI surface over the running world, so the chrome can be judged
  *  against the town it is supposed to belong to. */
 const shots = process.env.SHOTS ?? '/tmp/wally-ui'
 mkdirSync(shots, { recursive: true })
+const site = process.env.BASE ? { base: process.env.BASE, close: async () => {} } : await serveDist()
 
 const browser = await puppeteer.launch({
   executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
@@ -24,7 +26,7 @@ const clickText = async text => {
 }
 const key = async k => { await page.keyboard.press(k); await wait(500) }
 
-await page.goto((process.env.BASE ?? 'http://127.0.0.1:5173') + '/', { waitUntil: 'networkidle0' })
+await page.goto(`${site.base}/`, { waitUntil: 'networkidle0' })
 await clickText('Enter the world')
 await clickText('Continue with')
 await clickText('Enter Wally World')
@@ -58,11 +60,17 @@ await page.evaluate(() => {
   if (target) target.group.position.set(player.position.x + 4, 0, player.position.z - 2)
 })
 await wait(1400)
-await page.screenshot({ path: `${shots}/15-hunt-hud.png` })
+await page.screenshot({ path: `${shots}/15-hunt-hud.png`, clip: { x: 0, y: 420, width: 520, height: 480 } })
+await page.screenshot({ path: `${shots}/15b-hunt-hud-full.png` })
 await key('h')
 await page.screenshot({ path: `${shots}/16-hunt-ledger.png` })
 await key('h')
 
+// the ability card and the vitality gauge now belong to the combat HUD at the
+// bottom centre, so shoot that strip on its own
+await page.screenshot({ path: `${shots}/17-combat-hud.png`, clip: { x: 260, y: 700, width: 920, height: 200 } })
+
 console.log(errors.length ? `page errors: ${errors.slice(0, 4).join(' | ')}` : 'no page errors')
 console.log(`screenshots in ${shots}`)
 await browser.close()
+await site.close()

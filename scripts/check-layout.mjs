@@ -1,4 +1,5 @@
 import puppeteer from 'puppeteer'
+import { serveDist } from './serve-dist.mjs'
 
 /**
  * Geometry audit for the HUD and the panels. The chunky frames are wider and
@@ -6,6 +7,7 @@ import puppeteer from 'puppeteer'
  * surface at several viewport sizes and reports overlaps, off-screen edges and
  * clipped text instead of relying on eyeballing one screenshot.
  */
+const site = process.env.BASE ? { base: process.env.BASE, close: async () => {} } : await serveDist()
 const browser = await puppeteer.launch({
   executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: 'new',
@@ -20,7 +22,7 @@ const clickText = async text => {
 }
 
 await page.setViewport({ width: 1440, height: 900 })
-await page.goto((process.env.BASE ?? 'http://127.0.0.1:5173') + '/', { waitUntil: 'networkidle0' })
+await page.goto(`${site.base}/`, { waitUntil: 'networkidle0' })
 await clickText('Enter the world')
 await clickText('Continue with')
 await clickText('Enter Wally World')
@@ -101,4 +103,5 @@ for (const [width, height] of [[1440, 900], [1280, 800], [1024, 768], [860, 720]
 }
 console.log(failures ? `\n${failures} layout problems` : '\nno layout problems')
 await browser.close()
+await site.close()
 process.exit(failures ? 1 : 0)

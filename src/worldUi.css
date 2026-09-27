@@ -146,7 +146,9 @@
   outline: none;
 }
 .popup-wide { width: min(1180px, 100%); }
-.popup-pouch { width: min(352px, 100%); }
+/* a pouch, not a takeover: the body scrolls rather than the frame growing,
+   which also keeps the Solana panel's height out of the frame size */
+.popup-pouch { width: min(352px, 100%); max-height: min(640px, 86vh); }
 .popup-plate { width: min(420px, 100%); }
 @keyframes wui-rise {
   from { opacity: 0; }

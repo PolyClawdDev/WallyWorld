@@ -77,6 +77,16 @@ export function townObstacles(): Obstacle[] {
 
 /* ------------------------------ geometry ----------------------------- */
 
+/**
+ * Narrowest span of an obstacle. A shot is stopped by anything at least this
+ * wide; below it the thing is cover you can shoot past, not a wall.
+ */
+export const SHOT_CLEARANCE = 1.6
+
+export function obstacleWidth(o: Obstacle) {
+  return o.kind === 'circle' ? o.r * 2 : Math.min(o.halfW, o.halfD) * 2
+}
+
 /** Squared distance from a point to an obstacle's surface, negative inside. */
 function penetration(o: Obstacle, x: number, z: number, radius: number) {
   if (o.kind === 'circle') {
@@ -256,11 +266,21 @@ export function createNavGrid(extra: Obstacle[] = []) {
     resolve(position, radius)
   }
 
-  /** Clear line between two points, used for shots and for path smoothing. */
-  const lineOfSight = (ax: number, az: number, bx: number, bz: number, pad = 0.12) => {
+  /**
+   * Clear line between two points, used for shots and for path smoothing.
+   *
+   * `minWidth` exists because the two callers want different answers. Path
+   * smoothing must respect every trunk it would walk into, so it passes zero.
+   * Shooting passes SHOT_CLEARANCE: a wall stops an arrow, a pine trunk in a
+   * wood full of pine trunks would stop every arrow ever fired, and the
+   * wildwood is where the hunting is.
+   */
+  const lineOfSight = (ax: number, az: number, bx: number, bz: number, pad = 0.12, minWidth = 0) => {
     const reach = Math.hypot(bx - ax, bz - az) / 2 + 2
     for (const index of near((ax + bx) / 2, (az + bz) / 2, reach)) {
-      if (segmentHits(obstacles[index], ax, az, bx, bz, pad)) return false
+      const obstacle = obstacles[index]
+      if (minWidth > 0 && obstacleWidth(obstacle) < minWidth) continue
+      if (segmentHits(obstacle, ax, az, bx, bz, pad)) return false
     }
     return true
   }

@@ -10,6 +10,8 @@
     "server": "tsx --env-file-if-exists=.env src/server/index.ts",
     "verify:solana": "tsx --env-file-if-exists=.env scripts/verify-solana.ts",
     "verify:proxy": "tsx --env-file-if-exists=.env scripts/verify-rpc-proxy.ts",
+    "verify:ui": "tsx --env-file-if-exists=.env scripts/verify-wallet-ui.ts",
+    "audit:bundle": "tsx --env-file-if-exists=.env scripts/audit-bundle.ts",
     "test:combat": "tsx scripts/test-combat.ts",
     "verify:combat": "tsx scripts/verify-combat.mjs"
   },
@@ -19,6 +21,7 @@
     "@solana/web3.js": "^1.99.0",
     "better-sqlite3": "^13.0.3",
     "bs58": "^6.0.0",
+    "buffer": "6.0.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "three": "^0.169.0"

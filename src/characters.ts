@@ -413,6 +413,12 @@ type Ctx = {
   reach: number
   /** Feet to crown, in metres. */
   height: number
+  /**
+   * Z just clear of the front face. The four archetypes are extruded to
+   * different depths, so a prop pinned to a fixed multiple of `cell` sits
+   * proud of WICK and buried inside LOAM.
+   */
+  front: number
   /** World-space Y of the centre of one grid row. */
   y: (row: number) => number
 }
@@ -651,20 +657,18 @@ const loamCrowns: Record<MothStyle['hat'], string[]> = {
   ]),
 }
 
-// No shoulders, no neck, no arms: one wide barrel with a hollow in the front.
-// The fungus on the left side is deliberately off-centre.
+// No shoulders, no neck, no arms: one barrel wider than it is tall, with a
+// hollow in the front and bracket fungus low on one side, off-centre on purpose.
 const loamBody = grid('LOAM', [
   '.....WWWWWWWW.....',
   '...WWWWWWWWWWWW...',
   '..RRRRRRRRRRRRRR..',
-  '.RRRRRRRRRRRRRRRR.',
   '.RRRFFRRRRRRFFRRR.',
   '.RRRFERRRRRREFRRR.',
   'RRRRRRRFFFFRRRRRRR',
-  'NNRRRRRFFFFRRRRRRR',
-  'NRRRRRRRRRRRRRRRNN',
+  'NRRRRRRFFFFRRRRRRR',
+  'NNRRRRRRRRRRRRRRRR',
   'RRRRRRRRRRRRRRRRRN',
-  '.RRRRRRRRRRRRRRRR.',
   '.rrrrrrrrrrrrrrrr.',
   '..OOOO......OOOO..',
 ])
@@ -690,11 +694,14 @@ function loamAccessory(style: MothStyle, ctx: Ctx) {
   const { cell } = ctx
   const side = ctx.reach + cell * 1.2
   const shoulder = ctx.y(LOAM_CROWN_ROWS + 2)
+  // LOAM is extruded nine layers deep, so anything pinned to a small multiple
+  // of `cell` ends up inside the barrel. Everything here hangs off the front face.
+  const f = ctx.front
 
   if (style.accessory === 'lantern') {
     // Glowing caps growing straight out of the bark, in place of a held light.
     const caps = new THREE.Group()
-    caps.position.set(side * 0.72, shoulder, cell * 2.6)
+    caps.position.set(side * 0.72, shoulder, f - cell * 0.4)
     const glow = glowMaterial('#f2d488', 2.2)
     for (const [x, y, s] of [[0, 0, 2.3], [cell * 1.8, -cell * 1.1, 1.5], [-cell * 1.6, -cell * 1.4, 1.2]] as const) {
       slab(caps, [cell * s, cell * s * 0.7, cell * s], [x, y, 0], glow)
@@ -702,39 +709,39 @@ function loamAccessory(style: MothStyle, ctx: Ctx) {
     }
     caps.add(new THREE.PointLight('#f2d488', 1.2, 3.4))
     group.add(caps)
-    markCastOrigin(group, [side * 0.72, shoulder + cell, cell * 4])
+    markCastOrigin(group, [side * 0.72, shoulder + cell, f + cell])
     return group
   }
   if (style.accessory === 'satchel') {
-    slab(group, [cell * 3.6, cell * 3, cell * 1.4], [-side * 0.8, ctx.y(LOAM_CROWN_ROWS + 8), cell * 3], solid('#8a7a4e', 0.95))
-    slab(group, [cell * 0.8, cell * 5, cell * 0.8], [-side * 0.8, ctx.y(LOAM_CROWN_ROWS + 5), cell * 3], solid('#6f6238', 0.95), [0, 0, -0.25])
+    slab(group, [cell * 3.6, cell * 3, cell * 1.4], [-side * 0.8, ctx.y(LOAM_CROWN_ROWS + 7), f], solid('#8a7a4e', 0.95))
+    slab(group, [cell * 0.8, cell * 5, cell * 0.8], [-side * 0.8, ctx.y(LOAM_CROWN_ROWS + 4), f], solid('#6f6238', 0.95), [0, 0, -0.25])
     ;['#8fa64a', '#b8a24a', '#c9a25a'].forEach((color, index) => {
-      slab(group, [cell * 0.9, cell * 1.4, cell * 0.9], [-side * 0.8 + (index - 1) * cell * 1.2, ctx.y(LOAM_CROWN_ROWS + 7), cell * 3.6], solid(color, 0.9))
+      slab(group, [cell * 0.9, cell * 1.4, cell * 0.9], [-side * 0.8 + (index - 1) * cell * 1.2, ctx.y(LOAM_CROWN_ROWS + 6), f + cell * 0.6], solid(color, 0.9))
     })
-    markCastOrigin(group, [side * 0.9, ctx.y(LOAM_CROWN_ROWS + 7), cell * 3])
+    markCastOrigin(group, [side * 0.9, ctx.y(LOAM_CROWN_ROWS + 6), f])
     return group
   }
   if (style.accessory === 'talisman') {
     // Resin set into the trunk itself, so it reads as part of the creature.
-    slab(group, [cell * 2.6, cell * 2.6, cell * 1.6], [0, ctx.y(LOAM_CROWN_ROWS + 8), cell * 2.6], glowMaterial('#e0a13c', 1.5))
-    slab(group, [cell * 3.6, cell * 3.6, cell * 1.1], [0, ctx.y(LOAM_CROWN_ROWS + 8), cell * 2.2], solid('#3b2d1e', 0.95))
-    markCastOrigin(group, [0, ctx.y(LOAM_CROWN_ROWS + 8), cell * 3.6])
+    slab(group, [cell * 2.6, cell * 2.6, cell * 1.6], [0, ctx.y(LOAM_CROWN_ROWS + 7), f - cell * 0.4], glowMaterial('#e0a13c', 1.5))
+    slab(group, [cell * 3.6, cell * 3.6, cell * 1.1], [0, ctx.y(LOAM_CROWN_ROWS + 7), f - cell * 0.8], solid('#3b2d1e', 0.95))
+    markCastOrigin(group, [0, ctx.y(LOAM_CROWN_ROWS + 7), f + cell * 0.6])
     return group
   }
   if (style.accessory === 'book') {
-    slab(group, [cell * 3.4, cell * 4.4, cell * 0.9], [-side * 0.72, ctx.y(LOAM_CROWN_ROWS + 7), cell * 3], solid('#6b5335', 0.95), [0, 0, 0.2])
+    slab(group, [cell * 3.4, cell * 4.4, cell * 0.9], [-side * 0.72, ctx.y(LOAM_CROWN_ROWS + 6), f], solid('#6b5335', 0.95), [0, 0, 0.2])
     for (const [i, color] of ['#8fa64a', '#c07a34', '#d6dfc0'].entries()) {
-      slab(group, [cell * 1.6, cell * 0.8, cell * 0.5], [-side * 0.72 + cell * 0.4, ctx.y(LOAM_CROWN_ROWS + 6) - i * cell * 1.2, cell * 3.5], solid(color, 0.9), [0, 0, 0.2])
+      slab(group, [cell * 1.6, cell * 0.8, cell * 0.5], [-side * 0.72 + cell * 0.4, ctx.y(LOAM_CROWN_ROWS + 5) - i * cell * 1.2, f + cell * 0.5], solid(color, 0.9), [0, 0, 0.2])
     }
-    markCastOrigin(group, [-side * 0.72, ctx.y(LOAM_CROWN_ROWS + 6), cell * 4])
+    markCastOrigin(group, [-side * 0.72, ctx.y(LOAM_CROWN_ROWS + 5), f + cell])
     return group
   }
-  slab(group, [cell * 2.8, cell * 2, cell * 2.4], [side * 0.7, ctx.y(LOAM_CROWN_ROWS + 9), cell * 2.8], solid('#77808a', 0.6))
+  slab(group, [cell * 2.8, cell * 2, cell * 2.4], [side * 0.7, ctx.y(LOAM_CROWN_ROWS + 8), f - cell * 0.2], solid('#77808a', 0.6))
   const drop = new THREE.Mesh(new THREE.OctahedronGeometry(cell * 1.1), glowMaterial('#9ad7db', 2))
-  drop.position.set(side * 0.7, ctx.y(LOAM_CROWN_ROWS + 7), cell * 2.8)
+  drop.position.set(side * 0.7, ctx.y(LOAM_CROWN_ROWS + 6), f - cell * 0.2)
   group.add(drop)
   group.add(new THREE.PointLight('#9ad7db', 0.7, 2.4))
-  markCastOrigin(group, [side * 0.7, ctx.y(LOAM_CROWN_ROWS + 7), cell * 3.4])
+  markCastOrigin(group, [side * 0.7, ctx.y(LOAM_CROWN_ROWS + 6), f + cell * 0.4])
   return group
 }
 
@@ -788,23 +795,26 @@ const kilnCrowns: Record<MothStyle['hat'], string[]> = {
   ]),
 }
 
-// Lopsided on purpose: a small piston arm on one side, a clamp on the other.
+// Lopsided on purpose: a short piston arm on one side, a clamp that reaches
+// well past the casing on the other, and short legs with daylight between them.
 const kilnBody = grid('KILN', [
   '......MMMMMM......',
   '......MIIIIM......',
   '......MMMMMM......',
-  '....MMMMMMMMMM....',
-  '...PRRRRRRRRRRP...',
-  '..PPRRVVVVVVRRMMMM',
-  '..PPRRVVVVVVRRMMMM',
-  '..PPRRVVVVVVRRMMMM',
-  '..YYRRRRRRRRRRMMMM',
-  '...PRRRRRRRRRRYYYY',
-  '...GGGGGGGGGGGYYYY',
-  '...RRRRRRRRRRRR...',
-  '...rrrrrrrrrrrr...',
-  '...OOOOO..OOOOO...',
-  '...OOOOO..OOOOO...',
+  '.....MMMMMMMM.....',
+  '....PMMMMMMMMP....',
+  '...PPRRRRRRRRMMMM.',
+  '...PPRVRVVRVRMMMM.',
+  '...PPRVRVVRVRMMMM.',
+  '...PPRVRVVRVRMMMM.',
+  '...YYRRRRRRRRMMMMM',
+  '....PRRRRRRRRYYYYY',
+  '....GGGGGGGGGYYYYY',
+  '....RRRRRRRRRR....',
+  '....rrrrrrrrrr....',
+  '.....OOO..OOO.....',
+  '.....OOO..OOO.....',
+  '....OOOO..OOOO....',
 ])
 
 const kilnCasings: Record<MothStyle['robe'], { main: string; dark: string; trim: string }> = {
@@ -826,73 +836,78 @@ const kilnFlueColors: Record<MothStyle['hat'], { main: string; dark: string; acc
 function kilnAccessory(style: MothStyle, ctx: Ctx) {
   const group = new THREE.Group()
   const { cell } = ctx
-  const clampY = ctx.y(KILN_CROWN_ROWS + 9)
+  const clampY = ctx.y(KILN_CROWN_ROWS + 10)
   const side = ctx.reach + cell * 1.6
   const iron = solid('#4e5157', 0.45, 0.6)
   const brass = solid('#c79a48', 0.35, 0.65)
+  // Seven layers deep: front and back props are placed off the faces, not off `cell`.
+  const f = ctx.front
 
   if (style.accessory === 'lantern') {
     // Long-handled scoop held out by the clamp, with live coals in the pan.
     const scoop = new THREE.Group()
-    scoop.position.set(side, clampY, cell * 3)
+    scoop.position.set(side, clampY, f - cell)
     slab(scoop, [cell * 7, cell * 0.9, cell * 0.9], [-cell * 2, 0, 0], solid('#6b4d36', 0.9), [0, 0, 0.18])
     slab(scoop, [cell * 3.4, cell * 1, cell * 3], [cell * 2, cell * 0.6, 0], iron)
     slab(scoop, [cell * 3, cell * 1.2, cell * 2.6], [cell * 2, cell * 1.4, 0], glowMaterial('#ff8a3d', 2.6))
     scoop.add(new THREE.PointLight('#ff8a3d', 1.5, 3.6))
     group.add(scoop)
-    markCastOrigin(group, [side + cell * 2, clampY + cell * 2, cell * 3])
+    markCastOrigin(group, [side + cell * 2, clampY + cell * 2, f - cell])
     return group
   }
   if (style.accessory === 'satchel') {
+    // Slung to the back corner rather than squarely behind: a crate centred on
+    // the spine disappears entirely behind a body this wide.
     const crateY = ctx.y(KILN_CROWN_ROWS + 6)
-    slab(group, [cell * 5, cell * 4, cell * 3], [0, crateY, -cell * 4.4], solid('#7a5a38', 0.92))
-    slab(group, [cell * 5.4, cell * 0.7, cell * 3.2], [0, crateY + cell * 1.6, -cell * 4.4], solid('#4a3524', 0.9))
-    for (const x of [-cell * 3, cell * 3]) slab(group, [cell * 0.8, cell * 5, cell * 0.8], [x, crateY, -cell * 2], solid('#4a3524', 0.9), [0, 0, x > 0 ? -0.2 : 0.2])
-    markCastOrigin(group, [side, clampY, cell * 3])
+    const crateX = -(ctx.reach * 0.62)
+    slab(group, [cell * 5, cell * 4.4, cell * 3], [crateX, crateY, -(f + cell * 0.2)], solid('#7a5a38', 0.92))
+    slab(group, [cell * 5.4, cell * 0.7, cell * 3.2], [crateX, crateY + cell * 1.8, -(f + cell * 0.2)], solid('#4a3524', 0.9))
+    slab(group, [cell * 0.9, cell * 6, cell * 0.9], [crateX + cell * 2, crateY + cell * 2.4, -(f - cell * 2)], solid('#4a3524', 0.9), [0, 0, -0.3])
+    markCastOrigin(group, [side, clampY, f - cell])
     return group
   }
   if (style.accessory === 'talisman') {
-    const chestY = ctx.y(KILN_CROWN_ROWS + 5)
-    slab(group, [cell * 3.2, cell * 3.2, cell * 1], [-cell * 4.6, chestY, cell * 3], brass)
-    slab(group, [cell * 1.6, cell * 1.6, cell * 1.4], [-cell * 4.6, chestY, cell * 3.2], glowMaterial('#f0b84d', 1.4))
-    markCastOrigin(group, [side, clampY, cell * 3])
+    const chestY = ctx.y(KILN_CROWN_ROWS + 7)
+    slab(group, [cell * 3.2, cell * 3.2, cell * 1], [-cell * 4.6, chestY, f], brass)
+    slab(group, [cell * 1.6, cell * 1.6, cell * 1.4], [-cell * 4.6, chestY, f + cell * 0.2], glowMaterial('#f0b84d', 1.4))
+    markCastOrigin(group, [side, clampY, f - cell])
     return group
   }
   if (style.accessory === 'book') {
-    slab(group, [cell * 3.4, cell * 4.6, cell * 0.8], [side * 0.9, ctx.y(KILN_CROWN_ROWS + 8), cell * 3.2], iron, [0, 0, 0.16])
+    slab(group, [cell * 3.4, cell * 4.6, cell * 0.8], [side * 0.9, ctx.y(KILN_CROWN_ROWS + 10), f + cell * 0.2], iron, [0, 0, 0.16])
     for (let i = 0; i < 3; i++) {
-      slab(group, [cell * 2.2, cell * 0.4, cell * 0.5], [side * 0.9, ctx.y(KILN_CROWN_ROWS + 8) + (1 - i) * cell * 1.2, cell * 3.6], brass, [0, 0, 0.16])
+      slab(group, [cell * 2.2, cell * 0.4, cell * 0.5], [side * 0.9, ctx.y(KILN_CROWN_ROWS + 10) + (1 - i) * cell * 1.2, f + cell * 0.6], brass, [0, 0, 0.16])
     }
-    markCastOrigin(group, [side * 0.9, ctx.y(KILN_CROWN_ROWS + 8), cell * 4])
+    markCastOrigin(group, [side * 0.9, ctx.y(KILN_CROWN_ROWS + 10), f + cell])
     return group
   }
-  const dialY = ctx.y(KILN_CROWN_ROWS + 5)
+  const dialY = ctx.y(KILN_CROWN_ROWS + 7)
   const dial = new THREE.Mesh(new THREE.CylinderGeometry(cell * 2, cell * 2, cell * 0.9, 10), brass)
   dial.rotation.x = Math.PI / 2
-  dial.position.set(-cell * 4.4, dialY, cell * 3.2)
+  dial.position.set(-cell * 4.4, dialY, f + cell * 0.2)
   group.add(dial)
-  slab(group, [cell * 0.5, cell * 2.6, cell * 0.5], [-cell * 4.4, dialY, cell * 3.7], glowMaterial('#ff8a3d', 1.8), [0, 0, -0.7])
-  markCastOrigin(group, [side, clampY, cell * 3])
+  slab(group, [cell * 0.5, cell * 2.6, cell * 0.5], [-cell * 4.4, dialY, f + cell * 0.7], glowMaterial('#ff8a3d', 1.8), [0, 0, -0.7])
+  markCastOrigin(group, [side, clampY, f - cell])
   return group
 }
 
 /** Bellows and pipework welded to KILN's back, plus the light from the grate. */
 function kilnExtras(ctx: Ctx) {
   const parts: THREE.Object3D[] = []
-  const { cell } = ctx
+  const { cell, front: f } = ctx
   const back = new THREE.Group()
   back.name = 'bellows'
-  const bodyY = ctx.y(KILN_CROWN_ROWS + 6)
-  slab(back, [cell * 6, cell * 4.4, cell * 2.4], [0, bodyY, -cell * 3.4], solid('#5a4331', 0.92))
-  slab(back, [cell * 6.4, cell * 0.8, cell * 2.6], [0, bodyY + cell * 2, -cell * 3.4], solid('#8a6a3f', 0.6, 0.3))
+  const bodyY = ctx.y(KILN_CROWN_ROWS + 7)
+  slab(back, [cell * 6, cell * 4.4, cell * 2.4], [0, bodyY, -(f + cell * 0.4)], solid('#5a4331', 0.92))
+  slab(back, [cell * 6.4, cell * 0.8, cell * 2.6], [0, bodyY + cell * 2, -(f + cell * 0.4)], solid('#8a6a3f', 0.6, 0.3))
   for (const x of [-cell * 2.2, cell * 2.2]) {
-    slab(back, [cell * 1, cell * 5.5, cell * 1], [x, bodyY + cell * 4, -cell * 3], solid('#b9763c', 0.4, 0.6))
+    slab(back, [cell * 1, cell * 5.5, cell * 1], [x, bodyY + cell * 4, -f], solid('#b9763c', 0.4, 0.6))
   }
   parts.push(back)
 
   const fire = new THREE.PointLight('#ff8a3d', 1.6, 3.2)
   fire.name = 'furnaceGlow'
-  fire.position.set(0, ctx.y(KILN_CROWN_ROWS + 6), cell * 3)
+  fire.position.set(0, ctx.y(KILN_CROWN_ROWS + 7), ctx.front)
   parts.push(fire)
   return parts
 }
@@ -962,7 +977,7 @@ const vaneBody = grid('VANE', [
   '...MMRRRRRRRRMM...',
   '...MMRRRVVRRRMM...',
   '...MMRRRVVRRRMM...',
-  '....YRRRRRRRRY....',
+  '....YRRRVVRRRY....',
   '....YRRRRRRRRY....',
   '.....RGGGGGGR.....',
   '.....RRRRRRRR.....',
@@ -1002,8 +1017,9 @@ function vaneAccessory(style: MothStyle, ctx: Ctx) {
   if (style.accessory === 'lantern') {
     const rod = new THREE.Group()
     rod.position.set(side, handY, cell * 3)
-    slab(rod, [cell * 0.9, cell * 8, cell * 0.9], [0, cell * 1.4, 0], plate, [0, 0, 0.1])
-    slab(rod, [cell * 1.8, cell * 2.4, cell * 1.8], [cell * 0.6, cell * 5.6, 0], glowMaterial('#9ad7db', 2.6))
+    slab(rod, [cell * 0.7, cell * 9, cell * 0.7], [0, cell * 1.6, 0], plate, [0, 0, 0.08])
+    slab(rod, [cell * 1.1, cell * 1.1, cell * 1.1], [cell * 0.5, cell * 6.2, 0], glowMaterial('#9ad7db', 2.8))
+    slab(rod, [cell * 0.9, cell * 0.9, cell * 0.9], [cell * 0.4, cell * 5.1, 0], glowMaterial('#9ad7db', 1.6))
     rod.add(new THREE.PointLight('#9ad7db', 1.3, 3.6))
     group.add(rod)
     markCastOrigin(group, [side + cell * 0.6, handY + cell * 7, cell * 3])
@@ -1064,6 +1080,13 @@ function vaneExtras(ctx: Ctx) {
  * every option in the slot is a different silhouette and not a recolour.
  * ------------------------------------------------------------------ */
 
+/**
+ * Companions are sized in world units, not in the host's voxel size: LOAM's
+ * cubes are 40% larger than WICK's, and a companion scaled off those landed
+ * across the body instead of beside it.
+ */
+const COMPANION_UNIT = 0.09
+
 type CompanionLook = { body: string; wingUpper: string; wingLower: string; glow: string; charm: string }
 
 const companionLooks: Record<WizardId, CompanionLook> = {
@@ -1078,8 +1101,8 @@ function addWings(parent: THREE.Object3D, cell: number, upper: string, lower: st
   const wings: THREE.Object3D[] = []
   const segments: Array<[number, number, number, number, 0 | 1]> = stiff
     ? [
-        [4.2, 0.7, 2.4, 0.9, 0],
-        [2.6, 0.6, 4.6, 0.4, 0],
+        [3.2, 0.7, 2, 0.9, 0],
+        [2, 0.6, 3.7, 0.4, 0],
       ]
     : [
         [2.6, 2.8, 1.7, 0.9, 0],
@@ -1161,8 +1184,10 @@ type Archetype = {
   accessory: (style: MothStyle, ctx: Ctx) => THREE.Object3D
   /** Props welded into the body sprite, so a lean or a lunge carries them along. */
   extras?: (ctx: Ctx) => THREE.Object3D[]
-  /** Where the companion floats, as a fraction of height. */
-  companionY: number
+  /** Grid row the companion floats level with. Kept clear of hats, flues and crests. */
+  companionRow: number
+  /** How far out the companion sits, as a share of the figure's own half-width. */
+  companionSide: number
 }
 
 const shared = (id: WizardId) => ({
@@ -1182,7 +1207,8 @@ const archetypes: Record<WizardId, Archetype> = {
     crown: hat => wickHats[hat],
     body: wickBody,
     anchorRows: { head: HAT_ROWS + 2, chest: HAT_ROWS + 7, hand: HAT_ROWS + 8 },
-    companionY: 0.78,
+    companionRow: HAT_ROWS + 4,
+    companionSide: 1,
     accessory: wickAccessory,
     palette: style => {
       const robe = wickRobes[style.robe]
@@ -1204,13 +1230,16 @@ const archetypes: Record<WizardId, Archetype> = {
 
   /* LOAM */
   BRAMBLE: {
-    height: 2.52,
+    height: 2.4,
     depth: 9,
     crownRows: LOAM_CROWN_ROWS,
     crown: hat => loamCrowns[hat],
     body: loamBody,
-    anchorRows: { head: LOAM_CROWN_ROWS + 5, chest: LOAM_CROWN_ROWS + 7, hand: LOAM_CROWN_ROWS + 8 },
-    companionY: 0.95,
+    anchorRows: { head: LOAM_CROWN_ROWS + 4, chest: LOAM_CROWN_ROWS + 6, hand: LOAM_CROWN_ROWS + 7 },
+    // Negative rows are above the crown: a creature with no shoulders has
+    // nowhere at its side for a companion to sit without overlapping it.
+    companionRow: -1,
+    companionSide: 0.62,
     accessory: loamAccessory,
     palette: style => {
       const bark = loamBarks[style.robe]
@@ -1226,7 +1255,7 @@ const archetypes: Record<WizardId, Archetype> = {
         b: crown.dark,
         D: crown.accent,
         A: '#6b5335',
-        N: '#c9776a',
+        N: '#c98a4a',
         W: '#5f7a41',
         F: '#110d09',
         E: '#cfe07a',
@@ -1237,13 +1266,14 @@ const archetypes: Record<WizardId, Archetype> = {
 
   /* KILN */
   CINDER: {
-    height: 2.96,
+    height: 3.15,
     depth: 7,
     crownRows: KILN_CROWN_ROWS,
     crown: hat => kilnCrowns[hat],
     body: kilnBody,
-    anchorRows: { head: KILN_CROWN_ROWS + 1, chest: KILN_CROWN_ROWS + 6, hand: KILN_CROWN_ROWS + 9 },
-    companionY: 0.92,
+    anchorRows: { head: KILN_CROWN_ROWS + 1, chest: KILN_CROWN_ROWS + 7, hand: KILN_CROWN_ROWS + 10 },
+    companionRow: KILN_CROWN_ROWS + 1,
+    companionSide: 0.62,
     accessory: kilnAccessory,
     extras: kilnExtras,
     palette: style => {
@@ -1277,7 +1307,8 @@ const archetypes: Record<WizardId, Archetype> = {
     crown: hat => vaneHelmets[hat],
     body: vaneBody,
     anchorRows: { head: VANE_CROWN_ROWS + 1, chest: VANE_CROWN_ROWS + 6, hand: VANE_CROWN_ROWS + 8 },
-    companionY: 0.86,
+    companionRow: VANE_CROWN_ROWS + 6,
+    companionSide: 1.35,
     accessory: vaneAccessory,
     extras: vaneExtras,
     palette: style => {
@@ -1329,7 +1360,8 @@ export function createWizard(id: WizardId, scale = 1, style: MothStyle = default
   const cell = sprite.userData.cell as number
   const reach = sprite.userData.reach as number
   const y = (row: number) => (rows.length - 1 - row) * cell + cell / 2
-  const ctx: Ctx = { cell, reach, height: archetype.height, y }
+  const front = ((archetype.depth - 1) / 2 + 1) * cell
+  const ctx: Ctx = { cell, reach, height: archetype.height, front, y }
   root.add(sprite)
 
   // Welded props ride inside the sprite group, so a lean or a lunge carries
@@ -1340,8 +1372,10 @@ export function createWizard(id: WizardId, scale = 1, style: MothStyle = default
   accessory.name = 'accessory'
   root.add(accessory)
 
-  const companion = buildCompanion(id, style, cell)
-  companion.position.set(-(reach + cell * 2.4), archetype.height * archetype.companionY, cell * 3)
+  const companion = buildCompanion(id, style, COMPANION_UNIT)
+  // Held off the side by a share of the figure's own width: a fixed offset put
+  // LOAM's companion a metre clear of a creature only two metres tall.
+  companion.position.set(-(reach * archetype.companionSide + COMPANION_UNIT * 3), y(archetype.companionRow), front)
   companion.userData.restY = companion.position.y
   root.add(companion)
 
@@ -1358,12 +1392,12 @@ export function createWizard(id: WizardId, scale = 1, style: MothStyle = default
     return marker
   }
   const anchors = {
-    head: anchor('head', [0, y(archetype.anchorRows.head), cell * 3]),
-    chest: anchor('chest', [0, y(archetype.anchorRows.chest), cell * 3]),
-    handRight: anchor('handRight', [reach, y(archetype.anchorRows.hand), cell * 3]),
-    handLeft: anchor('handLeft', [-reach, y(archetype.anchorRows.hand), cell * 3]),
+    head: anchor('head', [0, y(archetype.anchorRows.head), front]),
+    chest: anchor('chest', [0, y(archetype.anchorRows.chest), front]),
+    handRight: anchor('handRight', [reach, y(archetype.anchorRows.hand), front]),
+    handLeft: anchor('handLeft', [-reach, y(archetype.anchorRows.hand), front]),
     feet: anchor('feet', [0, 0, 0]),
-    cast: accessory.getObjectByName('castOrigin') ?? anchor('castOrigin', [reach, y(archetype.anchorRows.hand), cell * 3], accessory),
+    cast: accessory.getObjectByName('castOrigin') ?? anchor('castOrigin', [reach, y(archetype.anchorRows.hand), front], accessory),
   }
 
   root.userData.cell = cell

@@ -31,6 +31,7 @@
     -->
     <div id="contact"></div>
     <div id="silhouette"></div>
+    <div id="bodyshape"></div>
     <div id="solid"></div>
     <div id="wardrobe"></div>
     <script type="module">
@@ -55,7 +56,7 @@
       }
 
       function render(parent, group, id, style, label, opts = {}) {
-        const { size = 240, bg = '#152231', yaw = 0.42, silhouette = false } = opts
+        const { size = 240, bg = '#152231', yaw = 0.42, silhouette = false, bare = false } = opts
         const scene = new THREE.Scene()
         scene.background = new THREE.Color(bg)
         const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 40)
@@ -70,6 +71,10 @@
         scene.add(rim)
         const character = createWizard(id, 1, style)
         character.rotation.y = yaw
+        // Held gear and a floating companion inflate the outline of every
+        // figure by roughly the same amount, which flattens out the difference
+        // between the body plans. Strip them when measuring proportion.
+        if (bare) for (const name of ['accessory', 'familiar']) character.getObjectByName(name)?.removeFromParent()
         if (silhouette) flatten(character)
         scene.add(character)
         renderer.setSize(size, size)
@@ -118,7 +123,19 @@
         document.getElementById('silhouette').appendChild(strip)
       }
 
-      /* 3. Solidity: any hole in a figure shows the magenta behind it. */
+      /* 3. Body plans only: gear and companion removed, for the proportion measurement. */
+      {
+        const strip = document.createElement('div')
+        strip.className = 'strip'
+        for (const id of ids) {
+          const { fig, cap } = caption(strip, `${wizards[id].name} body plan`)
+          render(fig, 'bodyshape', id, defaultMothStyle, wizards[id].name, { size: 320, bg: '#ffffff', silhouette: true, bare: true, yaw: 0 })
+          fig.appendChild(cap)
+        }
+        document.getElementById('bodyshape').appendChild(strip)
+      }
+
+      /* 4. Solidity: any hole in a figure shows the magenta behind it. */
       {
         const strip = document.createElement('div')
         strip.className = 'strip magenta'
@@ -130,7 +147,7 @@
         document.getElementById('solid').appendChild(strip)
       }
 
-      /* 4. Wardrobe matrix, using each archetype's own slot names. */
+      /* 5. Wardrobe matrix, using each archetype's own slot names. */
       {
         const wardrobe = document.getElementById('wardrobe')
         for (const id of ids) {

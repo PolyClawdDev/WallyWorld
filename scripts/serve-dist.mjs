@@ -3,15 +3,18 @@ import { readFile } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 
 /**
- * Serves the production build from inside the verification process.
+ * Serves a built copy of the app from inside the verification process.
  *
  * The dev server is shared with other agents working in this repo, and their
- * saves push HMR reloads that wipe a run half way through. A static server over
- * dist/ keeps the page still for the length of a test.
+ * saves push HMR reloads that wipe a run half way through. A static build keeps
+ * the page still for the length of a test. Build it in development mode so the
+ * window.__wally probe the checks rely on is still compiled in:
+ *
+ *   NODE_ENV=development npx vite build --mode development --outDir dist-dev
  */
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2' }
 
-export async function serveDist(root = 'dist') {
+export async function serveDist(root = process.env.DIST ?? 'dist-dev') {
   const server = createServer(async (request, response) => {
     const path = decodeURIComponent(new URL(request.url, 'http://x').pathname)
     const file = join(root, normalize(path === '/' ? '/index.html' : path).replace(/^(\.\.[/\\])+/, ''))

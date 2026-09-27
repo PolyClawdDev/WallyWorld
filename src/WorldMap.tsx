@@ -161,7 +161,7 @@ export function WorldMap() {
             <rect x={left + 1.6} y={top + 1.6} width={spec.width - 3.2} height={spec.depth - 3.2} fill="#e0cda2" stroke="none" />
             {/* the entrance sits on the -z face, exactly as createBuilding places it */}
             <rect x={spec.x - 1.2} y={top - 0.9} width="2.4" height="2" fill={spec.accent ?? '#d5a64b'} stroke="#4a3826" strokeWidth="0.4" />
-            <text className="mp-label" x={spec.x} y={spec.z + spec.depth / 2 + 4.2} fill="#3a2b1c" textAnchor="middle">{spec.sign}</text>
+            <text className="mp-label mp-sign" x={spec.x} y={spec.z + spec.depth / 2 + 4.2} fill="#3a2b1c" textAnchor="middle">{spec.sign}</text>
           </g>
         })}
 
@@ -181,7 +181,7 @@ export function WorldMap() {
         />)}
 
         {/* residents */}
-        {ambientNpcs.map((npc, index) => <rect key={index} x={npc.x - 1.3} y={npc.z - 1.3} width="2.6" height="2.6" fill="#9a9a86" stroke="#3a2b1c" strokeWidth="0.6" />)}
+        {ambientNpcs.map((npc, index) => <rect className="mp-resident" key={index} x={npc.x - 1.3} y={npc.z - 1.3} width="2.6" height="2.6" fill="#9a9a86" stroke="#3a2b1c" strokeWidth="0.6" />)}
 
         {/* named service NPCs */}
         {serviceNpcs.map(npc => <g key={npc.name}>

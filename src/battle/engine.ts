@@ -18,6 +18,7 @@ import {
 } from './kits'
 import type { AbilityDef, CharacterKit } from './kits'
 import type { NavGrid } from './nav'
+import { SHOT_CLEARANCE } from './nav'
 import {
   applyUpgrade,
   applyXp,
@@ -188,6 +189,11 @@ export function createBattle(deps: BattleDeps) {
   /** Guards against grinding forever at something that cannot be reached. */
   let chaseSince = 0
   let chaseBestDistance = Infinity
+  /* Wedged-on-a-corner detection for click-to-move. */
+  let moveGoal: THREE.Vector3 | null = null
+  let wedgeAnchor: THREE.Vector3 | null = null
+  let wedgeAsked = 0
+  let repaths = 0
 
   /* ------------------------------ combat ----------------------------- */
 
@@ -249,7 +255,14 @@ export function createBattle(deps: BattleDeps) {
   }
 
   function canSee(animal: Animal) {
-    return nav.lineOfSight(player.position.x, player.position.z, animal.group.position.x, animal.group.position.z, 0.1)
+    return nav.lineOfSight(
+      player.position.x,
+      player.position.z,
+      animal.group.position.x,
+      animal.group.position.z,
+      0.1,
+      SHOT_CLEARANCE,
+    )
   }
 
   function planarDistance(animal: Animal) {
@@ -493,20 +506,37 @@ export function createBattle(deps: BattleDeps) {
         if (scratch.lengthSq() > 1e-5) p.direction.copy(scratch.normalize())
       }
       const stepSize = p.speed * dt
+      const fromX = p.position.x
+      const fromZ = p.position.z
       p.position.addScaledVector(p.direction, stepSize)
       p.travelled += stepSize
       p.bolt.group.position.copy(p.position)
 
       let consumed = false
       if (!p.ghost) {
+        // A fast bolt covers more ground in one frame than a body is wide, so
+        // the test is against the segment it swept, not the point it landed
+        // on. Sampling points instead lets shots pass clean through animals
+        // whenever the frame rate dips.
+        const segX = p.position.x - fromX
+        const segZ = p.position.z - fromZ
+        const segLengthSq = segX * segX + segZ * segZ
         for (const animal of wildlife.animals) {
           if (animal.state === 'dead' || p.struck.has(animal.id)) continue
-          const dx = animal.group.position.x - p.position.x
-          const dz = animal.group.position.z - p.position.z
+          const toX = animal.group.position.x - fromX
+          const toZ = animal.group.position.z - fromZ
+          const along = segLengthSq > 1e-9 ? Math.min(1, Math.max(0, (toX * segX + toZ * segZ) / segLengthSq)) : 0
+          const dx = toX - segX * along
+          const dz = toZ - segZ * along
           const reach = p.radius + bodyRadius(animal)
           if (dx * dx + dz * dz > reach * reach) continue
+          const hitX = fromX + segX * along
+          const hitZ = fromZ + segZ * along
+          // Do not let the swept test reach through a wall the bolt would have
+          // died against partway along the step.
+          if (!nav.lineOfSight(fromX, fromZ, hitX, hitZ, 0.15, SHOT_CLEARANCE)) continue
           p.struck.add(animal.id)
-          p.onHit(animal, p.position.clone())
+          p.onHit(animal, new THREE.Vector3(hitX, p.position.y, hitZ))
           if (!p.pierce) {
             consumed = true
             break
@@ -515,8 +545,11 @@ export function createBattle(deps: BattleDeps) {
       }
 
       // Walls stop shots. This is what "no attacking through a building" means
-      // in practice: the bolt dies against the wall rather than the target.
-      const hitWall = !p.ghost && nav.blocked(p.position.x, p.position.z, 0.15)
+      // in practice: the bolt dies against the wall rather than the target. It
+      // uses the same clearance as the targeting check, so a shot that was
+      // allowed to be fired past a trunk is not quietly eaten by that trunk,
+      // and it sweeps the step so a thin wall cannot be jumped over.
+      const hitWall = !p.ghost && !nav.lineOfSight(fromX, fromZ, p.position.x, p.position.z, 0.15, SHOT_CLEARANCE)
       const spent = p.travelled >= p.maxDistance || (p.ghost && p.position.y <= 0.4)
       const home = p.returning && p.returnTo && p.position.distanceTo(p.returnTo.position) < 1.2
 
@@ -1262,12 +1295,23 @@ export function createBattle(deps: BattleDeps) {
     orderMarker?.end()
     orderMarker = null
     chaseBestDistance = Infinity
+    moveGoal = null
+    wedgeAnchor = null
+    wedgeAsked = 0
+    repaths = 0
   }
 
+  /**
+   * Movement is the whole game now that there is no keyboard fallback, so a
+   * click that lands on a roof, a wall or the canal is snapped to the nearest
+   * standable ground rather than refused. Only a click with nothing standable
+   * anywhere near it fails, and it says so.
+   */
   function setPath(to: THREE.Vector3, showMarker: boolean) {
-    const found = nav.findPath(player.position, to)
+    const goal = nav.blocked(to.x, to.z) ? nav.nearestOpen(to.x, to.z) : to
     orderMarker?.end()
     orderMarker = null
+    const found = goal ? nav.findPath(player.position, goal) : null
     if (!found) {
       showNotice('No route there', 'warn')
       playSound('deny')
@@ -1275,7 +1319,11 @@ export function createBattle(deps: BattleDeps) {
     }
     path = found
     pathIndex = 0
-    if (showMarker) orderMarker = vfx.marker(found[found.length - 1], kit.accent)
+    moveGoal = found[found.length - 1].clone()
+    wedgeAnchor = null
+    wedgeAsked = 0
+    repaths = 0
+    if (showMarker) orderMarker = vfx.marker(moveGoal, kit.accent)
     return true
   }
 
@@ -1436,6 +1484,52 @@ export function createBattle(deps: BattleDeps) {
     const stepSize = Math.min(speed * dt, distance)
     nav.slide(player.position, (dx / distance) * stepSize, (dz / distance) * stepSize)
     player.rotation.y = Math.atan2(dx, dz)
+    return unwedge(stepSize)
+  }
+
+  /**
+   * `slide` can leave the body grinding along a corner it will never round,
+   * which with mouse-only movement is the game locking up. Progress is judged
+   * in metres asked for versus metres actually gained, never in seconds: a
+   * slow frame rate is not a wedge. Once a stretch of walking has bought
+   * almost no ground, re-plan from where the body really is, and if a second
+   * re-plan does not help either, give the order up out loud rather than
+   * shuffling in place forever.
+   */
+  function unwedge(asked: number) {
+    if (!wedgeAnchor) {
+      wedgeAnchor = player.position.clone()
+      wedgeAsked = 0
+    }
+    wedgeAsked += asked
+    if (wedgeAsked < 2.5) return true
+    const gained = Math.hypot(player.position.x - wedgeAnchor.x, player.position.z - wedgeAnchor.z)
+    if (gained > wedgeAsked * 0.3) {
+      wedgeAnchor.copy(player.position)
+      wedgeAsked = 0
+      return true
+    }
+    wedgeAnchor = null
+    wedgeAsked = 0
+    if (!moveGoal || repaths >= 2) {
+      showNotice('Cannot get there', 'warn')
+      playSound('deny')
+      clearOrder()
+      return false
+    }
+    repaths += 1
+    const goal = moveGoal.clone()
+    nav.resolve(player.position)
+    const found = nav.findPath(player.position, goal)
+    if (!found) {
+      showNotice('Cannot get there', 'warn')
+      playSound('deny')
+      clearOrder()
+      return false
+    }
+    path = found
+    pathIndex = 0
+    moveGoal = goal
     return true
   }
 
@@ -1521,6 +1615,10 @@ export function createBattle(deps: BattleDeps) {
         }
         path = found
         pathIndex = 0
+        moveGoal = target.group.position.clone()
+        wedgeAnchor = null
+        wedgeAsked = 0
+        repaths = 0
       }
       if (!advanceAlongPath(dt, moveSpeed)) path = []
     }
@@ -1852,6 +1950,18 @@ export function createBattle(deps: BattleDeps) {
     currentOrder: () => order,
     isAiming: () => aiming,
     resourceValue: () => resource,
+    /**
+     * Only reached through the dev-only `window.__wally` probe, so the
+     * verification harness can test a four-ability kit without waiting out
+     * four regeneration cycles per character.
+     */
+    debugFill() {
+      resource = maxResourceAt(kit, progress.level)
+      readyAt.Q = 0
+      readyAt.W = 0
+      readyAt.E = 0
+      readyAt.R = 0
+    },
     maxResourceValue: () => maxResourceAt(kit, progress.level),
     cooldownRemaining: (slot: AbilitySlot) => Math.max(0, (readyAt[slot] - performance.now()) / 1000),
     floatText(text: string, at: THREE.Vector3, colour: string) {

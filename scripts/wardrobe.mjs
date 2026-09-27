@@ -18,7 +18,11 @@
 import puppeteer from 'puppeteer'
 import { createHash } from 'node:crypto'
 
-const HOST = 'http://127.0.0.1:5173'
+const HOST = process.env.HARNESS_HOST ?? 'http://127.0.0.1:5173'
+// Pass 2 prefers a preview build: other agents are editing this repo live, and
+// a Vite HMR update mid-run remounts the app and pulls the selector rows out
+// from under the click. Falls back to the dev server.
+const APP_HOST = process.env.APP_HOST ?? HOST
 const hash = png => createHash('sha1').update(png ?? '').digest('hex').slice(0, 10)
 
 const browser = await puppeteer.launch({
@@ -114,13 +118,14 @@ const shape = await harness.evaluate(async () => {
       img.src = png
     })
   const out = []
-  for (const tile of window.__roster.filter(t => t.group === 'silhouette')) {
+  for (const tile of window.__roster.filter(t => t.group === 'bodyshape')) {
     out.push({ name: tile.name, ...(await measure(tile.png)) })
   }
   return out
 })
 
-console.log('\nSilhouette measurements from the flat-black renders:\n')
+console.log('  ' + distinct('four body plans, gear removed', 'bodyshape', 4))
+console.log('\nBody-plan measurements from the flat-black renders (no gear, no companion):\n')
 for (const s of shape) {
   console.log(`  ${s.name.padEnd(6)} outline ${(s.w * 100).toFixed(1)}% wide × ${(s.h * 100).toFixed(1)}% tall of frame   ink coverage ${(s.coverage * 100).toFixed(2)}%`)
 }
@@ -134,9 +139,17 @@ if (spread < 1.8) failures.push(`silhouettes are too similar in proportion (only
  * ---------------------------------------------------------------- */
 
 const app = await browser.newPage()
+// The app currently fails to boot in a browser without a Buffer global:
+// @solana/spl-token touches it at module scope. That is in-flight work in
+// src/solana, so this stub is applied to the test page only — nothing in the
+// repo is changed by it — purely so the selection screen can be driven here.
+await app.evaluateOnNewDocument(() => {
+  const mk = n => new Uint8Array(typeof n === 'number' ? n : 0)
+  globalThis.Buffer = { from: () => mk(0), alloc: mk, allocUnsafe: mk, concat: () => mk(0), isBuffer: () => false, byteLength: () => 0 }
+})
 watch(app)
 await app.setViewport({ width: 1400, height: 900, deviceScaleFactor: 1 })
-await app.goto(`${HOST}/`, { waitUntil: 'networkidle0' })
+await app.goto(`${APP_HOST}/`, { waitUntil: 'networkidle0' })
 
 // A concurrent edit can trigger an HMR reload and destroy the execution
 // context mid-run, so retry once through a reload.
@@ -160,12 +173,27 @@ const click = async label => {
   }, label))
 }
 
-await click('Enter the world')
-await new Promise(r => setTimeout(r, 1500))
+/**
+ * A Vite HMR update from another agent's edit remounts the app on the entry
+ * screen mid-run, which leaves the selector rows missing. Re-enter instead of
+ * dying on the next click.
+ */
+const ensureSelect = async () => {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const rows = await retry(() => app.evaluate(() => document.querySelectorAll('.arrow-choice').length))
+    if (rows >= 5) return
+    await click('Enter the world').catch(() => {})
+    await new Promise(r => setTimeout(r, 1200))
+  }
+  throw new Error('selection screen never appeared')
+}
+
+await ensureSelect()
 
 console.log('\nLive selection screen, clicking every selector on every character:\n')
 let uiFailures = 0
 for (let c = 0; c < 4; c++) {
+  await ensureSelect()
   const shown = await retry(() => app.evaluate(() => ({
     name: document.querySelector('.character-choice strong')?.textContent?.trim() ?? '?',
     // The character row is first; the four wardrobe rows follow it.
@@ -183,10 +211,19 @@ for (let c = 0; c < 4; c++) {
         return row?.querySelector('strong')?.textContent?.trim() ?? '?'
       }, index))
       values.add(value)
-      await retry(() => app.evaluate(n => {
-        const row = [...document.querySelectorAll('.arrow-choice')].slice(1)[n]
-        row.querySelectorAll('button')[1].click()
-      }, index))
+      // Retried rather than asserted: a remount can drop the row between the
+      // read and the click, and that is the harness's problem, not the app's.
+      for (let tries = 0; tries < 5; tries++) {
+        await ensureSelect()
+        const clicked = await retry(() => app.evaluate(n => {
+          const row = [...document.querySelectorAll('.arrow-choice')].slice(1)[n]
+          if (!row) return false
+          row.querySelectorAll('button')[1].click()
+          return true
+        }, index))
+        if (clicked) break
+        await new Promise(r => setTimeout(r, 800))
+      }
       await new Promise(r => setTimeout(r, 120))
     }
     const ok = values.size === 5
@@ -244,6 +281,15 @@ await sheet(
   '/tmp/roster-silhouettes.png',
   'SILHOUETTES · all colour removed',
   byGroup('silhouette').map(t => ({ png: t.png, caption: `<b>${t.label}</b>` })),
+  4,
+  1360,
+  320,
+  false,
+)
+await sheet(
+  '/tmp/roster-bodyplans.png',
+  'BODY PLANS · colour, gear and companion removed',
+  byGroup('bodyshape').map(t => ({ png: t.png, caption: `<b>${t.label}</b>` })),
   4,
   1360,
   320,

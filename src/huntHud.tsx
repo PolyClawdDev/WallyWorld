@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react'
-import { abilities } from './combat'
+import { kits } from './battle/kits'
 import { huntState, subscribeHunt } from './huntStore'
 import type { HuntTarget } from './huntStore'
 import {
@@ -155,15 +155,11 @@ function HuntLog({ onClose }: { onClose: () => void }) {
 }
 
 export function HuntHud({ wizard }: { wizard: WizardId }) {
-  const spec = abilities[wizard]
   const [logOpen, setLogOpen] = useState(false)
   const [target, setTarget] = useState<HuntTarget | null>(null)
   const [death, setDeath] = useState(huntState.death)
   const flash = useRef<HTMLDivElement>(null)
-  const vitalsFill = useRef<HTMLDivElement>(null)
-  const vitalsValue = useRef<HTMLElement>(null)
-  const vitalsStatus = useRef<HTMLElement>(null)
-  const cooldown = useRef<HTMLElement>(null)
+  const standing = useRef<HTMLElement>(null)
   const compassArrow = useRef<HTMLElement>(null)
   const compassDistance = useRef<HTMLElement>(null)
 
@@ -186,16 +182,9 @@ export function HuntHud({ wizard }: { wizard: WizardId }) {
   useEffect(() => {
     let frame = 0
     const tick = (now: number) => {
-      const ratio = Math.max(0, Math.min(1, huntState.hp / huntState.maxHp))
-      if (vitalsFill.current) {
-        // Width only: the band colour is a flat field chosen in CSS, because a
-        // gradient would read as a browser progress bar rather than lantern glass.
-        vitalsFill.current.style.width = `${(ratio * 100).toFixed(1)}%`
-        const band = ratio > 0.55 ? 'good' : ratio > 0.25 ? 'warn' : 'low'
-        if (vitalsFill.current.dataset.band !== band) vitalsFill.current.dataset.band = band
-      }
-      if (vitalsValue.current) vitalsValue.current.textContent = `${Math.ceil(huntState.hp)} / ${huntState.maxHp}`
-      if (vitalsStatus.current) {
+      // The health readout moved to the combat HUD; what survives here is the
+      // one-word standing that tells you whether the town is protecting you.
+      if (standing.current) {
         const status = huntState.safe
           ? 'TOWN · SAFE'
           : huntState.aggro > 0
@@ -203,10 +192,9 @@ export function HuntHud({ wizard }: { wizard: WizardId }) {
             : huntState.invulnerable
               ? 'RECOVERING'
               : 'IN THE GREEN'
-        if (vitalsStatus.current.textContent !== status) vitalsStatus.current.textContent = status
-        vitalsStatus.current.className = huntState.safe ? 'safe' : huntState.aggro > 0 ? 'danger' : ''
+        if (standing.current.textContent !== status) standing.current.textContent = status
+        standing.current.className = huntState.safe ? 'safe' : huntState.aggro > 0 ? 'danger' : ''
       }
-      if (cooldown.current) cooldown.current.style.width = `${(huntState.cooldownRatio * 100).toFixed(0)}%`
       if (flash.current) {
         const since = now - huntState.hurtAt
         flash.current.style.opacity = huntState.hurtAt && since < 420 ? String(0.85 * (1 - since / 420)) : '0'
@@ -241,43 +229,15 @@ export function HuntHud({ wizard }: { wizard: WizardId }) {
     <div className="hunt-hud">
       <div className="hurt-flash" ref={flash} />
 
-      {/* One forged plate: ability above the rule, vitality below. Two separate
-          framed panels used to collide once the frames got chunky. */}
-      <div className="hunt-stack" style={{ ['--ability' as string]: spec.color }}>
-        <span className="stack-rivets" aria-hidden="true"><i /><i /><i /><i /></span>
-        <div className="ability">
-          <div className="ability-head">
-            <strong>{spec.name}</strong>
-            <span>{wizard}</span>
-          </div>
-          <p>{spec.note}</p>
-          <div className="ability-cd">
-            <i ref={cooldown} />
-          </div>
-          <div className="ability-keys">
-            <b>LEFT CLICK</b> or <b>F</b> attack · <b>E</b> hunt nearest · <b>H</b> ledger
-          </div>
-        </div>
-
-        <div className="vitals">
-          <div className="vitals-head">
-            <span>
-              VITALITY <b ref={vitalsValue}>100 / 100</b>
-            </span>
-            <em ref={vitalsStatus}>TOWN · SAFE</em>
-          </div>
-          <div className="vitals-track">
-            <div className="vitals-fill" ref={vitalsFill} data-band="good" />
-            <span className="vitals-glass" aria-hidden="true" />
-            {[20, 40, 60, 80].map(mark => (
-              <i key={mark} style={{ left: `${mark}%` }} />
-            ))}
-          </div>
-          <div className="vitals-foot">HEALS IN TOWN · SLOW REGEN AFTER 6S OUT OF COMBAT</div>
-        </div>
+      {/* Health, the ability card and its key legend now live in the combat
+          HUD at the bottom centre. What is left here is the hunt's own
+          furniture: what you are pointing at, where the wildwood is, and the
+          ledger. */}
+      <div className="hunt-standing">
+        <em ref={standing}>TOWN · SAFE</em>
       </div>
 
-      {target && <TargetPlate target={target} range={spec.range} />}
+      {target && <TargetPlate target={target} range={kits[wizard].basic.range} />}
 
       <div className="hunt-compass">
         <span>{huntingArea.label}</span>
