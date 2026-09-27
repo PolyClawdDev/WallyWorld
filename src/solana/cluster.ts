@@ -15,6 +15,7 @@
  * ------------------------------------------------------------------ */
 
 import { PUBLIC_RPC, chainIdFor, normaliseCluster, type Cluster } from '../shared/clusters'
+import { isLoopbackHostname } from '../shared/hosts'
 
 export type { Cluster }
 
@@ -33,7 +34,47 @@ const viteEnv: Record<string, string | undefined> =
 export const CLUSTER: Cluster = normaliseCluster(viteEnv.VITE_SOLANA_CLUSTER)
 export const IS_MAINNET = CLUSTER === 'mainnet-beta'
 
-export const API_BASE_URL = (viteEnv.VITE_API_BASE_URL ?? 'http://127.0.0.1:8787').trim().replace(/\/+$/, '')
+/**
+ * Where the browser talks to this world's API.
+ *
+ * A baked `VITE_API_BASE_URL=http://127.0.0.1:8787` is the default in local
+ * `.env` files. That is correct only when the page itself was loaded from
+ * loopback. If a friend opens `http://192.168.x.x:5173`, sending them to
+ * *their* 127.0.0.1 is a different computer — they never join this world.
+ *
+ * In the browser we therefore use the page origin (Vite proxies `/api` and
+ * `/ws` to the API on this machine) whenever the configured URL is loopback
+ * and the page is not. An explicit non-loopback `VITE_API_BASE_URL` still
+ * wins, for a real deploy. The QuickNode URL never belongs here.
+ */
+function resolveApiBaseUrl(): string {
+  const configured = (viteEnv.VITE_API_BASE_URL ?? '').trim().replace(/\/+$/, '')
+  if (typeof window !== 'undefined' && window.location?.hostname) {
+    if (configured) {
+      try {
+        const apiHost = new URL(configured).hostname
+        const pageHost = window.location.hostname
+        if (!(isLoopbackHostname(apiHost) && !isLoopbackHostname(pageHost))) return configured
+      } catch {
+        /* ignore an unparseable override and fall through to the page origin */
+      }
+    }
+    return window.location.origin.replace(/\/+$/, '')
+  }
+  return configured || 'http://127.0.0.1:8787'
+}
+
+export const API_BASE_URL = resolveApiBaseUrl()
+
+export function wsBaseUrl(apiBase = API_BASE_URL): string {
+  if (apiBase.startsWith('https:')) return apiBase.replace(/^https/, 'wss')
+  if (apiBase.startsWith('http:')) return apiBase.replace(/^http/, 'ws')
+  if (typeof window !== 'undefined') {
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    return `${proto}//${window.location.host}`
+  }
+  return 'ws://127.0.0.1:8787'
+}
 
 /** The backend's JSON-RPC proxy. Holds no credential, so it is safe in the bundle. */
 export const RPC_PROXY_URL = `${API_BASE_URL}/api/rpc`

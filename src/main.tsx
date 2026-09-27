@@ -44,6 +44,7 @@ import { refreshPvpIdentity, send, startPvp, stopPvp } from './pvp/net'
 import { isDuelLocked, pvpState } from './pvp/store'
 import { applyDuelPose, disposePvpWorld, inspectRemote, listRemotes, pickRemote, updatePvpWorld } from './pvp/world'
 import { createCharacterNameplate, displayNameFor } from './nameplate'
+import { API_BASE_URL } from './solana/cluster'
 
 import './styles.css'
 // Loads last on purpose: the UI kit restyles the panels and HUD chrome that
@@ -969,6 +970,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         setPointer: (x: number, y: number) => { pointer.set(x, y); resolveCursor() },
         camState: () => ({ zoom, zoomWanted, yaw, keyboardMove }),
         remotes: () => listRemotes(),
+        apiBase: API_BASE_URL,
         pvp: () => ({ playerId: pvpState.playerId, others: pvpState.others, connected: pvpState.connected, self: pvpState.self }),
         aimAt: (target: THREE.Vector3 | { x: number; z: number }) => {
           const v = target instanceof THREE.Vector3 ? target : new THREE.Vector3(target.x, 0.6, target.z)

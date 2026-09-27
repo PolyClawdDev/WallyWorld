@@ -1,9 +1,17 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+const apiProxy = {
+  '/api': { target: 'http://127.0.0.1:8787', changeOrigin: true },
+  '/ws': { target: 'http://127.0.0.1:8787', ws: true },
+} as const
+
 export default defineConfig({
   plugins: [react()],
-  server: { port: 5173 },
+  // Bind every interface and proxy /api + /ws so a browser that opened
+  // http://192.168.x.x:5173 talks to THIS world's API, not its own localhost.
+  server: { host: true, port: 5173, strictPort: true, proxy: { ...apiProxy } },
+  preview: { host: true, port: 5173, strictPort: true, proxy: { ...apiProxy } },
   // @solana/web3.js imports `buffer` by name. In a production build Rollup
   // resolves that to the npm package, but the dev server externalises it and
   // the app dies on load, so pin it to the userland implementation in both.

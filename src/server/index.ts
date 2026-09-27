@@ -24,10 +24,13 @@ import { randomUUID } from 'node:crypto'
 import { setInterval, setTimeout } from 'node:timers'
 import { validateProfile, DEFAULT_PROFILE } from '../shared/profile'
 import { looksLikeAddress } from '../shared/siws'
+import { networkInterfaces } from 'node:os'
 import {
-  ALLOWED_ORIGINS,
+  BIND_HOST,
   CHAIN_ID,
   CLUSTER,
+  isAllowedBrowserOrigin,
+  isAllowedPageHost,
   NPC_PAYEE_ADDRESS,
   PAYMENTS_ENABLED,
   PAYOUTS_ENABLED,
@@ -36,6 +39,7 @@ import {
   RPC_SOURCE_VAR,
   SERVICE_PRICE_LAMPORTS,
   SESSION_TTL_MS,
+  UI_PORT,
 } from './config'
 import { createSession, issueChallenge, isAllowedDomain, revokeFromAuthHeader, verifySignIn, walletFromAuthHeader } from './auth'
 import { issueGuestSession } from './pvp/guest'
@@ -93,11 +97,11 @@ function send(res: ServerResponse, status: number, body: Json) {
 const fail = (res: ServerResponse, status: number, error: string, detail?: string) =>
   send(res, status, detail ? { error, detail } : { error })
 
-/** Echoes the origin only when it is on the allowlist, so the header is never `*`. */
+/** Echoes the origin only when it is allowed, so the header is never `*`. */
 function applyCors(req: IncomingMessage, res: ServerResponse): boolean {
   const origin = req.headers.origin
   if (!origin) return true // same-origin or non-browser caller; no CORS headers needed
-  if (!ALLOWED_ORIGINS.includes(origin.replace(/\/+$/, ''))) return false
+  if (!isAllowedBrowserOrigin(origin)) return false
   res.setHeader('Access-Control-Allow-Origin', origin)
   res.setHeader('Vary', 'Origin')
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS')
@@ -234,10 +238,10 @@ function requireWallet(req: IncomingMessage, res: ServerResponse): string | null
  */
 function originContext(req: IncomingMessage): { domain: string; uri: string } | null {
   const origin = req.headers.origin?.replace(/\/+$/, '')
-  if (!origin || !ALLOWED_ORIGINS.includes(origin)) return null
+  if (!origin || !isAllowedBrowserOrigin(origin)) return null
   try {
     const url = new URL(origin)
-    return isAllowedDomain(url.host) ? { domain: url.host, uri: origin } : null
+    return isAllowedDomain(url.host) || isAllowedPageHost(url.host) ? { domain: url.host, uri: origin } : null
   } catch {
     return null
   }
@@ -572,10 +576,29 @@ setInterval(() => sweepExpired(), 10 * 60 * 1000).unref()
 setInterval(() => sweepBuckets(), 5 * 60 * 1000).unref()
 attachPvpUpgrade(server)
 
-server.listen(PORT, () => {
+function lanIpv4(): string[] {
+  const found: string[] = []
+  for (const list of Object.values(networkInterfaces())) {
+    for (const info of list ?? []) {
+      if (info.internal || info.family !== 'IPv4') continue
+      found.push(info.address)
+    }
+  }
+  return found
+}
+
+server.listen(PORT, BIND_HOST, () => {
   // Every line goes through `safeLog`. The endpoint URL is never printed — only
   // the name of the variable it came from, which is not a credential.
-  safeLog(`Voxels API on http://127.0.0.1:${PORT}`)
+  const lan = lanIpv4()
+  safeLog(`Voxels API on ${BIND_HOST}:${PORT} — one shared world`)
+  safeLog(`  local game     http://127.0.0.1:${UI_PORT}`)
+  if (lan.length) {
+    for (const ip of lan) safeLog(`  same Wi-Fi     http://${ip}:${UI_PORT}`)
+  } else {
+    safeLog('  same Wi-Fi     (no LAN IPv4 — only this machine can open the game)')
+  }
+  safeLog('  public         none. This process is not on the public internet. A friend on another network cannot join without a tunnel or a deployed host.')
   safeLog(`  cluster        ${CLUSTER}${CLUSTER === 'mainnet-beta' ? '  *** MAINNET · REAL FUNDS ***' : ''}`)
   safeLog(`  persistence    sqlite`)
   safeLog(`  rpc endpoint   from ${RPC_SOURCE_VAR}${RPC_IS_PUBLIC ? ' (public endpoint)' : ' (keyed — treated as a credential, never logged or served)'}`)

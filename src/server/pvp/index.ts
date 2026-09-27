@@ -1,6 +1,6 @@
 import type { IncomingMessage, Server } from 'node:http'
 import type { Duplex } from 'node:stream'
-import { ALLOWED_ORIGINS } from '../config'
+import { isAllowedBrowserOrigin } from '../config'
 import { handlePvpHttp, type Fail, type Send } from './http'
 import { attachLive } from './hub'
 import { acceptUpgrade, isUpgrade } from './socket'
@@ -16,7 +16,7 @@ export function attachPvpUpgrade(server: Server) {
       return
     }
     const origin = (req.headers.origin ?? '').replace(/\/+$/, '')
-    if (origin && !ALLOWED_ORIGINS.includes(origin)) {
+    if (origin && !isAllowedBrowserOrigin(origin)) {
       socket.write('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n')
       socket.destroy()
       return

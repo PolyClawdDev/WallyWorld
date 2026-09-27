@@ -1,4 +1,4 @@
-import { API_BASE_URL } from '../solana/cluster'
+import { API_BASE_URL, wsBaseUrl } from '../solana/cluster'
 import { PVP_PROTOCOL, type C2S, type S2C } from '../shared/pvp'
 import type { PublicLoadout } from '../shared/pvp'
 import { presenceTokenSync, resolvePresenceAuth } from './guest'
@@ -11,8 +11,7 @@ let timer: ReturnType<typeof setTimeout> | null = null
 let opening = false
 
 function wsUrl(token: string) {
-  const base = API_BASE_URL.replace(/^http/, 'ws')
-  return `${base}/ws/pvp?token=${encodeURIComponent(token)}`
+  return `${wsBaseUrl()}/ws/pvp?token=${encodeURIComponent(token)}`
 }
 
 function apply(msg: S2C) {

@@ -22,13 +22,13 @@ import { createHash, randomBytes, timingSafeEqual } from 'node:crypto'
 import { ed25519 } from '@noble/curves/ed25519.js'
 import bs58 from 'bs58'
 import { buildSiwsMessage, looksLikeAddress, looksLikeNonce, SIWS_STATEMENT, SIWS_VERSION, type SiwsFields } from '../shared/siws'
-import { CHAIN_ID, NONCE_TTL_MS, SESSION_TTL_MS, SIWS_DOMAINS } from './config'
+import { CHAIN_ID, isAllowedPageHost, NONCE_TTL_MS, SESSION_TTL_MS, SIWS_DOMAINS } from './config'
 import { consumeNonce, destroySession, peekNonce, resolveSession, saveNonce, saveSession } from './db'
 
 const ED25519_PUBLIC_KEY_BYTES = 32
 const ED25519_SIGNATURE_BYTES = 64
 
-export const isAllowedDomain = (domain: string) => SIWS_DOMAINS.includes(domain)
+export const isAllowedDomain = (domain: string) => SIWS_DOMAINS.includes(domain) || isAllowedPageHost(domain)
 
 /** The exact challenge the client is expected to assemble and sign. */
 export function issueChallenge(wallet: string, domain: string, uri: string, now = Date.now()): SiwsFields {

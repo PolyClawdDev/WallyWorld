@@ -9,6 +9,7 @@
  * ------------------------------------------------------------------ */
 
 import { PUBLIC_RPC, chainIdFor, normaliseCluster } from '../shared/clusters'
+import { hostnameOf, isPrivateSiteHostname } from '../shared/hosts'
 
 const env = (key: string): string => (process.env[key] ?? '').trim()
 
@@ -21,6 +22,10 @@ function intEnv(key: string, fallback: number): number {
 }
 
 export const PORT = intEnv('PORT', 8787)
+/** Listen on every interface so a second machine on the LAN can reach this world. */
+export const BIND_HOST = env('WALLY_BIND') || '0.0.0.0'
+/** Documented Vite / UI port. Logged so the host can send the LAN URL. */
+export const UI_PORT = intEnv('WALLY_UI_PORT', 5173)
 
 export const CLUSTER = normaliseCluster(env('SOLANA_CLUSTER'))
 export const IS_MAINNET = CLUSTER === 'mainnet-beta'
@@ -78,13 +83,34 @@ export const RPC_IS_PUBLIC = resolved.isPublic
 export const DB_PATH = env('WALLY_DB_PATH') || 'data/wally.db'
 
 /**
- * Browser origins allowed to call this API. An explicit allowlist rather than
- * `*`, because these requests carry a session bearer token.
+ * Extra browser origins allowed to call this API (comma-separated). Loopback
+ * and private LAN origins are always accepted in addition to this list, so a
+ * friend opening `http://192.168.x.x:5173` is not rejected as CORS. Public
+ * internet origins still need an explicit entry — this laptop is not a
+ * public host.
  */
 export const ALLOWED_ORIGINS: readonly string[] = (env('WALLY_ALLOWED_ORIGINS') || 'http://127.0.0.1:5173,http://localhost:5173')
   .split(',')
   .map(value => value.trim().replace(/\/+$/, ''))
   .filter(Boolean)
+
+export function isAllowedBrowserOrigin(origin: string | undefined): boolean {
+  if (!origin) return true
+  const clean = origin.replace(/\/+$/, '')
+  if (ALLOWED_ORIGINS.includes(clean)) return true
+  try {
+    const url = new URL(clean)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+    return isPrivateSiteHostname(url.hostname)
+  } catch {
+    return false
+  }
+}
+
+export function isAllowedPageHost(host: string): boolean {
+  if (SIWS_DOMAINS.includes(host)) return true
+  return isPrivateSiteHostname(hostnameOf(host))
+}
 
 /**
  * Hostnames accepted in the `domain` field of a sign-in message. Derived from

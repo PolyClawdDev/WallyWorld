@@ -1,16 +1,27 @@
 /*
- * Two separate Chrome profiles enter the same town. Proves a remote
- * voxel character appears, not an NPC, after one player walks.
+ * Two separate Chrome profiles enter the same town via the LAN URL
+ * (not 127.0.0.1) when this machine has a non-loopback IPv4.
  *
  * Usage: npm run verify:presence
  */
 import { mkdirSync } from 'node:fs'
 import { mkdtemp } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { networkInterfaces, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import puppeteer, { type Browser, type Page } from 'puppeteer'
 
-const TARGET = process.env.UI_TARGET ?? 'http://127.0.0.1:5173'
+function lanUiUrl(): string {
+  if (process.env.UI_TARGET) return process.env.UI_TARGET
+  for (const list of Object.values(networkInterfaces())) {
+    for (const info of list ?? []) {
+      if (info.internal || String(info.family) !== 'IPv4') continue
+      return `http://${info.address}:5173`
+    }
+  }
+  return 'http://127.0.0.1:5173'
+}
+
+const TARGET = lanUiUrl()
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const wait = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -25,7 +36,20 @@ const clickText = async (page: Page, text: string) => {
 }
 
 async function enterWorld(page: Page, name: string) {
-  await page.goto(TARGET, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  const notes: string[] = []
+  page.on('pageerror', error => notes.push(`pageerror ${error.message}`))
+  page.on('console', msg => {
+    if (msg.type() === 'error') notes.push(`console ${msg.text()}`)
+  })
+  page.on('requestfailed', req => {
+    const url = req.url()
+    if (/\/api\/|\/ws\//.test(url)) notes.push(`requestfailed ${req.failure()?.errorText ?? ''} ${url}`)
+  })
+  try {
+    await page.goto(TARGET, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  } catch (error) {
+    throw new Error(`Could not open ${TARGET}: ${error instanceof Error ? error.message : error}`)
+  }
   await wait(1500)
   await clickText(page, 'Enter')
   await page.waitForSelector('#wayfinder-name', { timeout: 30_000 })
@@ -40,7 +64,12 @@ async function enterWorld(page: Page, name: string) {
   await wait(800)
   await clickText(page, 'Enter Voxels')
   await page.waitForFunction('!!window.__wally && !!window.__wally.player && !!window.__wally.pvp', { timeout: 120_000 })
-  await page.waitForFunction('window.__wally.pvp().connected === true', { timeout: 30_000 })
+  try {
+    await page.waitForFunction('window.__wally.pvp().connected === true', { timeout: 30_000 })
+  } catch {
+    const hint = notes.slice(-8).join(' | ') || 'no browser network errors captured'
+    throw new Error(`${name} never connected presence at ${TARGET}. ${hint}`)
+  }
 }
 
 async function snapshot(page: Page) {
@@ -49,11 +78,13 @@ async function snapshot(page: Page) {
       __wally: {
         player: { position: { x: number; z: number } }
         remotes: () => Array<{ playerId: string; x: number; z: number; targetX: number; targetZ: number; character: string }>
+        apiBase?: string
         pvp: () => { playerId: string | null; connected: boolean; others: Array<{ playerId: string; displayName: string; x: number; z: number; loadout: { character: string; level: number } }> }
       }
     }
     const pvp = w.__wally.pvp()
     return {
+      apiBase: w.__wally.apiBase ?? '',
       playerId: pvp.playerId,
       connected: pvp.connected,
       x: w.__wally.player.position.x,
@@ -106,11 +137,15 @@ async function main() {
   }
 
   try {
+    console.log(`UI target ${TARGET}`)
     await enterWorld(pageA, 'Ash')
     await enterWorld(pageB, 'Birch')
 
     const startA = await snapshot(pageA)
     const startB = await snapshot(pageB)
+    const usingLan = !/127\.0\.0\.1|localhost/.test(TARGET)
+    check('opened via non-loopback URL', usingLan, TARGET)
+    check('A apiBase is not this machine loopback while on LAN', !usingLan || !/127\.0\.0\.1|localhost/.test(startA.apiBase), startA.apiBase)
     check('A connected', startA.connected, startA.playerId ?? '')
     check('B connected', startB.connected, startB.playerId ?? '')
     check('different player ids', Boolean(startA.playerId && startB.playerId && startA.playerId !== startB.playerId))
