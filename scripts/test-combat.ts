@@ -42,10 +42,27 @@ import {
 import type { AbilitySlot, CharacterProgress } from '../src/battle/progression'
 import { checkCast } from '../src/battle/rules'
 import type { CastInput } from '../src/battle/rules'
+import { createBattle } from '../src/battle/engine'
+import { SHOT_CLEARANCE, createNavGrid } from '../src/battle/nav'
 import { createWildlife } from '../src/wildlife'
+import type { WizardId } from '../src/wizards'
 
 let passed = 0
 const failures: string[] = []
+
+/*
+ * The engine draws damage numbers onto 2D canvases. Node has no DOM, so the
+ * canvas and its context are stubbed out: nothing here reads a pixel back, it
+ * only needs the calls to succeed so the combat logic can run headless.
+ */
+function shimDom() {
+  const context2d = new Proxy({}, { get: () => () => {} }) as CanvasRenderingContext2D
+  const canvas = () => ({ width: 0, height: 0, getContext: () => context2d, style: {} })
+  const globals = globalThis as unknown as { document?: unknown; window?: unknown }
+  if (!globals.document) globals.document = { createElement: () => canvas(), body: { appendChild: () => {} } }
+  if (!globals.window) globals.window = { setTimeout, clearTimeout, requestAnimationFrame: () => 0 }
+}
+shimDom()
 
 function check(name: string, condition: boolean, detail = '') {
   if (condition) passed++
@@ -323,6 +340,72 @@ group('xp rewards', () => {
   check('one bear is worth at least a level', q.level > 1, `reached ${q.level}`)
 })
 
+/**
+ * Stand a character on open ground with a clear line to one animal, hold that
+ * animal still, cast one slot and run the engine for three seconds of game
+ * time. Returns the damage the animal took.
+ */
+function castAtStationaryTarget(wizard: WizardId, slot: AbilitySlot, dt: number) {
+  const scene = new THREE.Scene()
+  const camera = new THREE.PerspectiveCamera(60, 1.6, 0.1, 400)
+  const player = new THREE.Object3D()
+  // The rig parents the muzzle to the character's body, and that offset is
+  // exactly what these checks are about, so the stand-in needs a body too.
+  player.add(new THREE.Object3D())
+  scene.add(player)
+  const wildlife = createWildlife(scene, { onKill: () => {}, onPlayerDamage: () => {} })
+  const nav = createNavGrid()
+  const vitals = { hp: 200, maxHp: 200, heal: () => {}, damage: () => false }
+  const battle = createBattle({ scene, camera, player, wizard, wildlife, nav, vitals })
+
+  // Level up so every slot is available, and cast without an aim step.
+  for (let i = 0; i < 40 && battle.progress.level < 15; i++) battle.awardXp(4000)
+  for (let i = 0; i < 20; i++) for (const s of SLOTS) battle.upgrade(s)
+  battle.setQuickCast(true)
+  battle.debugFill()
+
+  // A target on open ground with somewhere clear to shoot from.
+  let target = null as ReturnType<typeof wildlife.animalsIn>[number] | null
+  let spot: { x: number; z: number } | null = null
+  for (const animal of wildlife.animalsIn(new THREE.Vector3(0, 0, 0), 4000)) {
+    if (animal.state === 'dead') continue
+    const at = animal.group.position
+    if (nav.blocked(at.x, at.z)) continue
+    for (let a = 0; a < 24 && !spot; a++) {
+      const angle = (a / 24) * Math.PI * 2
+      const candidate = { x: at.x + Math.cos(angle) * 6, z: at.z + Math.sin(angle) * 6 }
+      if (nav.blocked(candidate.x, candidate.z)) continue
+      if (!nav.lineOfSight(candidate.x, candidate.z, at.x, at.z, 0.15, SHOT_CLEARANCE)) continue
+      spot = candidate
+    }
+    if (spot) { target = animal; break }
+  }
+  if (!target || !spot) {
+    failures.push(`${wizard} ${slot}: no clear firing position anywhere in the world`)
+    wildlife.dispose()
+    battle.dispose()
+    return 0
+  }
+
+  player.position.set(spot.x, 0, spot.z)
+  const anchor = target.group.position.clone()
+  const hp = target.hp
+  let now = 1000
+  const ctx = { cursorGround: anchor.clone(), hover: target, manualMove: false, safe: false, paused: false }
+  battle.update(dt, now, ctx)
+  battle.pressSlot(slot, { cursorGround: anchor.clone(), hover: target })
+  for (let i = 0; i < Math.ceil(3 / dt); i++) {
+    now += dt * 1000
+    // Hold the quarry still: this measures the ability, not the player's lead.
+    target.group.position.set(anchor.x, target.group.position.y, anchor.z)
+    battle.update(dt, now, ctx)
+  }
+  const dealt = hp - target.hp
+  wildlife.dispose()
+  battle.dispose()
+  return dealt
+}
+
 /* ------------------------------------------------------------------ *
  * 4. A kill pays out exactly once
  * ------------------------------------------------------------------ */
@@ -388,6 +471,34 @@ group('enemy death rewards land once', () => {
     }
   }
   wildlife.dispose()
+})
+
+/* ------------------------------------------------------------------ *
+ * 5. Every damaging ability connects with a clear shot
+ * ------------------------------------------------------------------ *
+ * Drives the real engine frame by frame against a stationary animal on
+ * open ground. A skillshot is allowed to miss a moving target — that is
+ * the player's aim — but a bolt fired down a clear line at something
+ * standing still must land, whatever the frame rate.
+ */
+group('every damaging ability connects with a clear shot', () => {
+  const damaging = (wizard: WizardId, slot: AbilitySlot) =>
+    Array.isArray((kits[wizard].abilities[slot].scale as Record<string, number[] | undefined>).damage)
+
+  for (const wizard of ['MOTH', 'BRAMBLE', 'CINDER', 'ORBIT'] as WizardId[]) {
+    for (const slot of SLOTS) {
+      if (!damaging(wizard, slot)) continue
+      // Two frame rates: a clean 60fps and the 20fps the engine clamps to.
+      for (const dt of [1 / 60, 1 / 20]) {
+        const dealt = castAtStationaryTarget(wizard, slot, dt)
+        check(
+          `${wizard} ${slot} (${kits[wizard].abilities[slot].name}) lands damage at ${Math.round(1 / dt)}fps`,
+          dealt > 0,
+          `dealt ${dealt.toFixed(1)}`,
+        )
+      }
+    }
+  }
 })
 
 console.log('')

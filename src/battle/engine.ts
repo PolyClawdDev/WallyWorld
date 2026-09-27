@@ -449,6 +449,14 @@ export function createBattle(deps: BattleDeps) {
   function spawnProjectile(config: {
     from: THREE.Vector3
     direction: THREE.Vector3
+    /**
+     * What the shot is actually aimed at. Bolts leave the staff, which is held
+     * about a metre to the character's side, so firing parallel to the line
+     * from the character's feet sends them that metre wide of everything. When
+     * an aim point is given the direction is taken from the muzzle to it
+     * instead, and the shot goes where the player pointed.
+     */
+    aimAt?: THREE.Vector3 | null
     speed: number
     maxDistance: number
     radius: number
@@ -467,6 +475,10 @@ export function createBattle(deps: BattleDeps) {
     bolt.group.position.copy(config.from)
     // Flatten only horizontal shots; a meteor needs to keep its vertical axis.
     const direction = config.direction.clone()
+    if (config.aimAt) {
+      const corrected = config.aimAt.clone().sub(config.from).setY(0)
+      if (corrected.lengthSq() > 1e-4) direction.copy(corrected)
+    }
     if (Math.abs(direction.y) < 1e-6) direction.setY(0)
     const projectile: Projectile = {
       bolt,
@@ -697,11 +709,12 @@ export function createBattle(deps: BattleDeps) {
 
   const behaviours: Record<string, (args: CastArgs) => void> = {
     /* ---------------- CINDER ---------------- */
-    'cinder.lance': ({ values, dir, def }) => {
+    'cinder.lance': ({ values, dir, def, point, target }) => {
       const from = muzzle()
       spawnProjectile({
         from,
         direction: dir,
+        aimAt: alive(target) ? target.group.position : point,
         speed: 42,
         maxDistance: def.range,
         radius: 0.55,
@@ -827,10 +840,11 @@ export function createBattle(deps: BattleDeps) {
     },
 
     /* ---------------- BRAMBLE ---------------- */
-    'bramble.snare': ({ values, dir, def }) => {
+    'bramble.snare': ({ values, dir, def, point, target }) => {
       spawnProjectile({
         from: muzzle(),
         direction: dir,
+        aimAt: alive(target) ? target.group.position : point,
         speed: 26,
         maxDistance: def.range,
         radius: 0.6,
@@ -1028,10 +1042,11 @@ export function createBattle(deps: BattleDeps) {
     },
 
     /* ---------------- MOTH ---------------- */
-    'moth.glaive': ({ values, dir, def }) => {
+    'moth.glaive': ({ values, dir, def, point, target }) => {
       spawnProjectile({
         from: muzzle(),
         direction: dir,
+        aimAt: alive(target) ? target.group.position : point,
         speed: 22,
         maxDistance: def.range,
         radius: 0.75,
@@ -1857,10 +1872,12 @@ export function createBattle(deps: BattleDeps) {
         if (ground) issueAttackMove(ground)
         return
       }
-      // Plain select. Never a move and never an attack, so a stray click in
-      // the world cannot start a fight.
+      // An enemy under the cursor is selected, open ground is a walk order.
+      // Clicking still never starts a fight on its own: that needs the right
+      // button or attack-move.
       selected = alive(hover) ? hover : null
       if (selected) playSound('select')
+      else if (ground) issueMove(ground)
       pingBattle()
     },
 
