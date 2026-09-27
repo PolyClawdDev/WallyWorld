@@ -1,0 +1,395 @@
+/* Hunt HUD. Shares the town HUD's palette: #121923 plates, hairline
+   #ffffff16 borders, DM Mono labels, amber #d5a64b and cyan #7bc9ce. */
+
+.hunt-hud {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  font-family: 'DM Mono', monospace;
+}
+.hunt-hud button {
+  pointer-events: auto;
+}
+
+.hurt-flash {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  background: radial-gradient(circle at 50% 55%, transparent 38%, #8f1f1fcc 100%);
+  transition: opacity 0.12s linear;
+}
+
+/* --- vitality + ability, stacked above the existing controls line --- */
+.vitals {
+  position: absolute;
+  left: 28px;
+  bottom: 108px;
+  width: 246px;
+  background: #121923dd;
+  border: 1px solid #ffffff16;
+  padding: 9px 11px 10px;
+}
+.vitals-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: #8e9a9b;
+}
+.vitals-head b {
+  color: #e5ddc8;
+  font-size: 11px;
+}
+.vitals-head em,
+.hunt-compass em {
+  font-style: normal;
+}
+.vitals-head .safe {
+  color: #7bc9ce;
+}
+.vitals-head .danger {
+  color: #e35e35;
+}
+.vitals-track {
+  position: relative;
+  height: 12px;
+  margin-top: 7px;
+  background: #0b111a;
+  border: 1px solid #ffffff14;
+  overflow: hidden;
+}
+.vitals-fill {
+  position: absolute;
+  inset: 1px auto 1px 1px;
+  width: 100%;
+  background: linear-gradient(90deg, #7bc9ce, #9fd98a);
+  transition: background 0.3s linear;
+}
+.vitals-track i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: #0b111a99;
+}
+.vitals-foot {
+  margin-top: 7px;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  color: #7f8b8c;
+}
+
+.ability {
+  position: absolute;
+  left: 28px;
+  bottom: 176px;
+  width: 246px;
+  background: #121923dd;
+  border: 1px solid #ffffff16;
+  border-left: 2px solid var(--ability, #d5a64b);
+  padding: 9px 11px 10px;
+}
+.ability-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.ability-head strong {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--ability, #d5a64b);
+}
+.ability-head span {
+  font-size: 8px;
+  color: #8e9a9b;
+  letter-spacing: 0.1em;
+}
+.ability p {
+  margin: 6px 0 0;
+  font-size: 9px;
+  line-height: 1.45;
+  color: #97a3a4;
+}
+.ability-cd {
+  height: 3px;
+  margin-top: 8px;
+  background: #0b111a;
+}
+.ability-cd i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--ability, #d5a64b);
+}
+.ability-keys {
+  margin-top: 8px;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  color: #7f8b8c;
+}
+.ability-keys b {
+  color: #d5a64b;
+}
+
+/* --- target plate --- */
+.target-plate {
+  position: absolute;
+  top: 78px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 320px;
+  background: #121923e8;
+  border: 1px solid #ffffff1c;
+  padding: 9px 12px 10px;
+  text-align: center;
+}
+.target-plate .row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  font-size: 9px;
+  letter-spacing: 0.12em;
+}
+.target-plate strong {
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  color: #e5ddc8;
+}
+.target-plate .threat-passive {
+  color: #7bc9ce;
+}
+.target-plate .threat-defensive {
+  color: #d5a64b;
+}
+.target-plate .threat-aggressive {
+  color: #e35e35;
+}
+.target-track {
+  height: 7px;
+  margin: 8px 0 7px;
+  background: #0b111a;
+  border: 1px solid #ffffff14;
+}
+.target-track i {
+  display: block;
+  height: 100%;
+  background: #8fbf5a;
+}
+.target-plate .meta {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  white-space: nowrap;
+  font-size: 8px;
+  color: #8e9a9b;
+  letter-spacing: 0.08em;
+}
+.target-plate .meta b {
+  color: #f0b84d;
+}
+.target-plate .reach.near {
+  color: #8fbf5a;
+}
+.target-plate .reach.far {
+  color: #b2673f;
+}
+
+/* --- compass out to the wildwood --- */
+.hunt-compass {
+  position: absolute;
+  right: 28px;
+  /* Clears the minimap and its caption above it. */
+  top: 228px;
+  width: 112px;
+  background: #121923dd;
+  border: 1px solid #ffffff16;
+  padding: 8px 9px 9px;
+  text-align: center;
+  color: #8e9a9b;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+}
+.hunt-compass .arrow {
+  display: block;
+  font-size: 22px;
+  line-height: 1;
+  color: #9ca66d;
+  margin: 2px 0 4px;
+  transform-origin: 50% 50%;
+}
+.hunt-compass b {
+  display: block;
+  color: #e5ddc8;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+/* --- hunt log --- */
+.hunt-log {
+  position: absolute;
+  right: 28px;
+  top: 326px;
+  width: 296px;
+  max-height: 48vh;
+  overflow: auto;
+  background: #121923f2;
+  border: 1px solid #d5a64b55;
+  padding: 14px 15px 15px;
+  pointer-events: auto;
+}
+.hunt-log h3 {
+  margin: 4px 0 2px;
+  font-family: Manrope, sans-serif;
+  font-size: 19px;
+  letter-spacing: -0.03em;
+}
+.hunt-log .eyebrow {
+  font-size: 9px;
+}
+.hunt-log .demo-line {
+  margin: 8px 0 0;
+  font-size: 9px;
+  line-height: 1.5;
+  color: #d5a64b;
+}
+.hunt-log .queue {
+  margin-top: 12px;
+  background: #1c2a37;
+  border: 1px solid #ffffff13;
+  padding: 10px;
+}
+.hunt-log .queue-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: #d5a64b;
+}
+.hunt-log .queue-head b {
+  color: #e35e35;
+}
+.hunt-log .queue p {
+  margin: 8px 0 0;
+  font-size: 9px;
+  line-height: 1.55;
+  color: #94a0a2;
+}
+.hunt-log table {
+  width: 100%;
+  margin-top: 12px;
+  border-collapse: collapse;
+  font-size: 9px;
+}
+.hunt-log th {
+  text-align: left;
+  color: #7f8b8c;
+  font-weight: 400;
+  padding: 0 0 5px;
+  border-bottom: 1px solid #ffffff14;
+}
+.hunt-log td {
+  padding: 4px 0;
+  color: #aab3b1;
+  border-bottom: 1px solid #ffffff0a;
+}
+.hunt-log td.amount {
+  text-align: right;
+  color: #f0b84d;
+}
+.hunt-log td.amount.negative {
+  color: #e35e35;
+}
+.hunt-log .empty {
+  margin-top: 12px;
+  font-size: 9px;
+  color: #7f8b8c;
+}
+.hunt-log .close-log {
+  position: absolute;
+  right: 10px;
+  top: 8px;
+  font-size: 18px;
+  color: #849394;
+}
+
+/* --- species key + death banner --- */
+.hunt-key {
+  display: grid;
+  gap: 4px;
+  margin-top: 12px;
+}
+.hunt-key div {
+  display: grid;
+  grid-template-columns: 10px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 9px;
+  color: #aab3b1;
+}
+.hunt-key i {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+.hunt-key b {
+  color: #f0b84d;
+}
+
+.death-banner {
+  position: absolute;
+  left: 50%;
+  top: 34%;
+  transform: translate(-50%, -50%);
+  width: min(430px, 82vw);
+  background: #180f12f0;
+  border: 1px solid #e35e3577;
+  padding: 20px 22px;
+  text-align: center;
+}
+.death-banner .eyebrow {
+  color: #e35e35;
+  font-size: 9px;
+}
+.death-banner h3 {
+  margin: 10px 0 6px;
+  font-family: Manrope, sans-serif;
+  font-size: 26px;
+  letter-spacing: -0.04em;
+  color: #e5ddc8;
+}
+.death-banner p {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.6;
+  color: #c2a19a;
+}
+.death-banner p b {
+  color: #f0b84d;
+}
+.death-banner small {
+  display: block;
+  margin-top: 10px;
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  color: #9a8a86;
+}
+
+@media (max-width: 800px) {
+  .vitals,
+  .ability {
+    left: 15px;
+    width: 200px;
+  }
+  .hunt-compass {
+    right: 15px;
+    top: 196px;
+  }
+  .hunt-log {
+    right: 15px;
+    left: 15px;
+    width: auto;
+    top: auto;
+    bottom: 90px;
+  }
+}

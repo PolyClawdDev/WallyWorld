@@ -1,0 +1,98 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Character harness</title>
+    <style>
+      body { margin: 0; background: #0d141c; font: 11px ui-monospace, monospace; color: #cfe3f0; }
+      .row { display: grid; grid-template-columns: repeat(5, 240px); gap: 2px; margin: 0 12px 18px; }
+      h2 { color: #d5a64b; font: 600 17px system-ui; margin: 14px 12px 6px; }
+      h3 { color: #7bc9ce; font: 600 11px ui-monospace; margin: 8px 12px 4px; letter-spacing: .12em; }
+      figcaption { padding: 3px 2px 0; }
+      canvas { display: block; background: #152231; }
+      #grid { display: grid; grid-template-columns: repeat(4, 320px); }
+      #grid canvas { background: #ff00ff; }
+    </style>
+  </head>
+  <body>
+    <div id="solidity"></div>
+    <div id="wardrobe"></div>
+    <script type="module">
+      import * as THREE from 'three'
+      const fill = new URLSearchParams(location.search).get('fill')
+      if (fill) globalThis.__voxelFill = Number(fill)
+      const { createWizard, defaultMothStyle, mothStyleOptions } = await import('/src/characters.ts')
+
+      const ids = ['MOTH', 'BRAMBLE', 'CINDER', 'ORBIT']
+
+      // One shared WebGL context, blitted into plain 2D canvases. Creating a
+      // context per tile blows past the browser's WebGL context limit.
+      const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true })
+      renderer.setPixelRatio(2)
+
+      function render(parent, id, style, opts = {}) {
+        const { size = 240, bg = '#152231', yaw = 0.42, magenta = false } = opts
+        const scene = new THREE.Scene()
+        scene.background = new THREE.Color(magenta ? '#ff00ff' : bg)
+        const camera = new THREE.PerspectiveCamera(30, 1, 0.1, 40)
+        camera.position.set(0, 1.85, 8.2)
+        camera.lookAt(0, 1.75, 0)
+        scene.add(new THREE.HemisphereLight('#ffffff', '#3a4450', 2.2))
+        const key = new THREE.DirectionalLight('#fff3d6', 2.6)
+        key.position.set(-4, 7, 6)
+        scene.add(key)
+        const rim = new THREE.DirectionalLight('#7bc9ce', 0.9)
+        rim.position.set(5, 3, -4)
+        scene.add(rim)
+        const character = createWizard(id, 1, style)
+        character.rotation.y = yaw
+        scene.add(character)
+        renderer.setSize(size, size)
+        renderer.render(scene, camera)
+
+        const out = document.createElement('canvas')
+        out.width = size * 2
+        out.height = size * 2
+        out.style.width = `${size}px`
+        out.style.height = `${size}px`
+        out.getContext('2d').drawImage(renderer.domElement, 0, 0)
+        parent.appendChild(out)
+      }
+
+      // 1. Solidity strip: every character, front and three-quarter, over magenta.
+      const solidity = document.createElement('div')
+      solidity.id = 'grid'
+      for (const yaw of [0, Math.PI / 4]) {
+        for (const id of ids) render(solidity, id, defaultMothStyle, { size: 320, yaw, magenta: true })
+      }
+      document.getElementById('solidity').appendChild(solidity)
+
+      // 2. Wardrobe matrix: every slot option on every character.
+      const wardrobe = document.getElementById('wardrobe')
+      for (const id of ids) {
+        const h2 = document.createElement('h2')
+        h2.textContent = id
+        wardrobe.appendChild(h2)
+        for (const slot of ['hat', 'robe', 'familiar', 'accessory']) {
+          const h3 = document.createElement('h3')
+          h3.textContent = slot.toUpperCase()
+          wardrobe.appendChild(h3)
+          const row = document.createElement('div')
+          row.className = 'row'
+          for (const option of mothStyleOptions[slot]) {
+            const fig = document.createElement('figure')
+            fig.style.margin = '0'
+            render(fig, id, { ...defaultMothStyle, [slot]: option.id })
+            const cap = document.createElement('figcaption')
+            cap.textContent = option.label
+            fig.appendChild(cap)
+            row.appendChild(fig)
+          }
+          wardrobe.appendChild(row)
+        }
+      }
+
+      window.__voxelTestReady = true
+    </script>
+  </body>
+</html>
