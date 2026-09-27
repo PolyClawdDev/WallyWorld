@@ -1,0 +1,251 @@
+/* ------------------------------------------------------------------ *
+ * Styles for the Solana wallet panel and the network badge.
+ *
+ * Kept in this file rather than added to styles.css so the Solana work
+ * does not collide with concurrent edits there. Palette matches the town:
+ * brass #d5a64b, cyan #7bc9ce, ember #e35e35.
+ *
+ * The three funds states are colour-coded and deliberately not subtle:
+ * demo is brass and quiet, devnet is cyan, mainnet is ember and moves.
+ * ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------ the badge */
+
+.funds-badge {
+  background: #121923dd;
+  border: 1px solid #ffffff16;
+  padding: 9px 13px;
+  font: 11px "DM Mono", monospace;
+  letter-spacing: .08em;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.funds-chip { margin: auto; }
+
+.funds-badge.funds-demo { color: #d5a64b; }
+.funds-badge.funds-test { color: #7bc9ce; border-color: #7bc9ce55; }
+
+/* Mainnet: ember, a heavier border, a glow and a live indicator. Nobody should
+   be able to glance at this and think they are in a demo. */
+.funds-badge.funds-live {
+  color: #ffd8c4;
+  background: #3a1108ee;
+  border: 1px solid #e35e35;
+  box-shadow: 0 0 0 1px #e35e3555, 0 6px 26px #e35e3540;
+  font-weight: 700;
+}
+
+.funds-siren {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e35e35;
+  box-shadow: 0 0 9px 2px #e35e35;
+  animation: funds-pulse 1.1s ease-in-out infinite;
+}
+
+@keyframes funds-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: .35; transform: scale(.72); }
+}
+
+/* Pre-game header and entry footer variants sit in existing typography. */
+.funds-dot, .funds-foot { background: none; border: 0; padding: 0; }
+.funds-dot { font: 10px "DM Mono", monospace; }
+.funds-foot { font: 10px "DM Mono", monospace; text-transform: uppercase; }
+.funds-dot.funds-live, .funds-foot.funds-live {
+  background: #3a1108ee;
+  border: 1px solid #e35e35;
+  padding: 7px 10px;
+}
+
+/* Full-width strip pinned above the HUD. Sits outside `.hud` so it is not
+   caught by that layer's `pointer-events: none`, and above it in z-order so the
+   warning is never covered by a chip or a panel edge. */
+.mainnet-banner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 16px;
+  background: #4a1409f2;
+  border-bottom: 2px solid #e35e35;
+  color: #ffd8c4;
+  font: 11px "DM Mono", monospace;
+  letter-spacing: .1em;
+  text-align: center;
+}
+
+/* The topbar would otherwise sit under the banner. */
+.mainnet-banner ~ .hud .topbar { top: 52px; }
+
+.mainnet-banner strong { color: #ff9b78; }
+.mainnet-banner span { letter-spacing: 0; color: #f0c6b6; }
+
+@media (max-width: 800px) {
+  /* Mirrors the existing rule that hides the demo chip on narrow screens — but
+     never for mainnet, where the warning matters more than the layout. */
+  .funds-chip.funds-demo, .funds-chip.funds-test { display: none; }
+}
+
+/* ------------------------------------------------------------- the panel */
+
+.sol-panel { display: grid; gap: 14px; margin-top: 18px; }
+
+.sol-banner {
+  display: grid;
+  gap: 5px;
+  padding: 11px 13px;
+  border: 1px solid #ffffff1a;
+  background: #16212c;
+}
+
+.sol-banner strong { font: 700 11px "DM Mono", monospace; letter-spacing: .14em; }
+.sol-banner span { font-size: 11px; line-height: 1.6; color: #96a3a4; }
+.sol-banner.funds-demo { border-color: #d5a64b66; }
+.sol-banner.funds-demo strong { color: #f0b84d; }
+.sol-banner.funds-test { border-color: #7bc9ce66; }
+.sol-banner.funds-test strong { color: #7bc9ce; }
+.sol-banner.funds-live {
+  border: 2px solid #e35e35;
+  background: #3a1108;
+  box-shadow: 0 0 24px #e35e3540;
+}
+.sol-banner.funds-live strong { color: #ff9b78; }
+.sol-banner.funds-live span { color: #f0c6b6; }
+
+.sol-block {
+  padding: 13px;
+  background: #1b2836;
+  border: 1px solid #ffffff12;
+  display: grid;
+  gap: 9px;
+}
+
+.sol-block-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  color: #d5a64b;
+  font: 10px "DM Mono", monospace;
+  letter-spacing: .1em;
+}
+
+.sol-block-head button {
+  color: #7bc9ce;
+  font: 9px "DM Mono", monospace;
+  letter-spacing: .08em;
+  border: 1px solid #7bc9ce44;
+  padding: 4px 7px;
+}
+.sol-block-head button:disabled { color: #5d6b6c; border-color: #ffffff12; }
+
+.sol-on { color: #7bc9ce; }
+.sol-off { color: #8b9899; }
+.sol-warn { color: #f0b84d; }
+.sol-bad-text { color: #e35e35; }
+
+.sol-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  border-top: 1px solid #ffffff0d;
+  padding-top: 8px;
+}
+.sol-row:first-of-type { border-top: 0; padding-top: 0; }
+.sol-row > span { color: #8b9899; font: 9px "DM Mono", monospace; letter-spacing: .1em; text-transform: uppercase; flex: none; }
+.sol-row > div { text-align: right; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+
+.sol-address { display: flex; align-items: center; gap: 5px; }
+.sol-address code { font: 11px "DM Mono", monospace; color: #e5ddc8; }
+.sol-address button, .sol-address a {
+  color: #7bc9ce;
+  font-size: 11px;
+  text-decoration: none;
+  padding: 2px 4px;
+  border: 1px solid #7bc9ce33;
+  line-height: 1;
+}
+.sol-address button:hover, .sol-address a:hover { border-color: #7bc9ce; }
+
+.sol-balance-main { display: flex; align-items: baseline; gap: 7px; }
+.sol-balance-main strong { font: 600 30px "DM Mono", monospace; color: #e5ddc8; }
+.sol-balance-main small { color: #d5a64b; font: 11px "DM Mono", monospace; }
+
+.sol-fine { margin: 0; color: #8b9899; font-size: 10px; line-height: 1.65; }
+.sol-footer { border-top: 1px solid #ffffff12; padding-top: 12px; }
+
+.sol-error {
+  margin: 0;
+  padding: 9px 11px;
+  background: #3a1108;
+  border: 1px solid #e35e3588;
+  color: #ffc9b5;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.sol-tokens { border-top: 1px solid #ffffff12; padding-top: 10px; display: grid; gap: 7px; }
+.sol-token { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 7px 9px; background: #16212c; border: 1px solid #ffffff10; }
+.sol-token strong { display: block; font: 600 12px "DM Mono", monospace; }
+.sol-token small { display: block; color: #8b9899; font: 8px "DM Mono", monospace; margin-top: 2px; letter-spacing: .08em; }
+
+.sol-actions { display: flex; gap: 7px; flex-wrap: wrap; }
+.sol-actions .primary, .sol-actions .ghost { flex: 1 1 auto; font-size: 11px; padding: 10px 12px; }
+
+.ghost {
+  background: none;
+  border: 1px solid #ffffff22;
+  color: #adb7b6;
+  padding: 11px 14px;
+  font-size: 12px;
+  border-radius: 2px;
+}
+.ghost:hover { border-color: #d5a64b; color: #d5a64b; }
+.ghost:disabled { color: #5d6b6c; border-color: #ffffff10; }
+.ghost.full { width: 100%; }
+
+/* Pre-signature confirmation: cyan frame, because this is the moment the user
+   is asked to agree to something specific. */
+.sol-confirm { display: grid; gap: 8px; padding: 11px; background: #142028; border: 1px solid #7bc9ce66; }
+.sol-confirm-head { color: #7bc9ce; font: 700 10px "DM Mono", monospace; letter-spacing: .14em; }
+.sol-confirm small { color: #8b9899; font: 9px "DM Mono", monospace; }
+
+.sol-net { font: 10px "DM Mono", monospace; letter-spacing: .1em; padding: 3px 7px; border: 1px solid; }
+.sol-net-demo, .sol-net-test { color: #7bc9ce; border-color: #7bc9ce66; }
+.sol-net-live { color: #ff9b78; border-color: #e35e35; background: #3a1108; font-weight: 700; }
+
+.sol-pending { display: grid; gap: 7px; padding: 11px; background: #16212c; border: 1px solid #d5a64b55; }
+.sol-pending.sol-bad { border-color: #e35e3588; background: #2a1310; }
+.sol-pending strong { font: 700 11px "DM Mono", monospace; letter-spacing: .12em; }
+.sol-pending a { color: #7bc9ce; font-size: 10px; }
+.sol-pending code { font: 10px "DM Mono", monospace; }
+
+.sol-receipts { border-top: 1px solid #ffffff12; padding-top: 10px; display: grid; gap: 6px; }
+.sol-receipt { display: flex; align-items: center; gap: 9px; padding: 8px 9px; background: #16212c; border: 1px solid #ffffff10; }
+.sol-receipt i { font-style: normal; font-size: 14px; flex: none; }
+.sol-receipt strong { display: block; font-size: 11px; }
+.sol-receipt small { display: block; margin-top: 3px; color: #8b9899; font-size: 9px; }
+.sol-receipt small a { color: #7bc9ce; }
+.sol-receipt > div { flex: 1 1 auto; min-width: 0; }
+.sol-receipt button { flex: none; font: 9px "DM Mono", monospace; padding: 5px 7px; }
+
+/* The payout block is styled as switched off, not as a call to action. */
+.sol-disabled-block { opacity: .92; border-style: dashed; border-color: #ffffff1f; }
+.sol-disabled-block .primary:disabled {
+  background: #2a3340;
+  color: #77848a;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+.sol-disabled-block .primary:disabled:hover { transform: none; background: #2a3340; }

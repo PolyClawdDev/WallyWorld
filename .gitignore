@@ -2,3 +2,15 @@ node_modules
 dist
 *.tsbuildinfo
 .env
+.env.local
+.env.*.local
+
+# SQLite database created by src/server/index.ts (player records, sessions, receipts).
+data/
+
+# Throwaway devnet keypairs used only by scripts/verify-solana.mjs as test
+# fixtures. Never a user wallet, and never committed.
+scripts/.fixtures/
+
+# Build output from the mainnet verification build.
+dist-mainnet/

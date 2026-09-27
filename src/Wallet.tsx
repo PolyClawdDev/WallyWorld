@@ -166,11 +166,24 @@ function PixelIcon({ art }: { art: PixelArt }) {
 
 type DragState = { from: number; x: number; y: number; ox: number; oy: number; moved: boolean; target: string | null }
 
-export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast }: {
+export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection, demo = true }: {
   gold: number
   onGoldChange: (next: number) => void
   nearbyNpc: string | null
   onToast: (message: string) => void
+  /**
+   * Slot for the Solana integration: render connection state, the wallet
+   * address, and any live balances here. It is drawn inside the pouch strap
+   * area, above the demo stacks, and this component never reads or writes it.
+   */
+  connection?: React.ReactNode
+  /**
+   * True while the pouch holds simulated items only. Pass false once real
+   * custody is wired up so the money state plate switches from
+   * "Demo — no real funds" to a live-funds warning instead of the label
+   * being permanent decoration.
+   */
+  demo?: boolean
 }) {
   const initial = useRef(load())
   const [slots, setSlots] = useState<Slots>(initial.current.slots)
@@ -317,14 +330,22 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast }: {
   const chosen = selected !== null ? slots[selected] : null
 
   return <>
-    <div className="eyebrow">THE HEARTH · POUCH</div>
-    <h2>Your<br />pouch.</h2>
-    <div className="pouch-demo">DEMO — NO REAL FUNDS</div>
+    <div className="pouch-strap">
+      <span className="pouch-buckle" aria-hidden="true" />
+      <div>
+        <strong>WAYFINDER'S POUCH</strong>
+        <small>{slots.filter(Boolean).length} of {SLOT_COUNT} compartments filled</small>
+      </div>
+      <span className={`wui-state ${demo ? 'demo' : 'live'}`}>
+        <i aria-hidden="true" />{demo ? 'DEMO — NO REAL FUNDS' : 'LIVE FUNDS — REAL VALUE'}
+      </span>
+    </div>
+    {connection && <div className="pouch-connect">{connection}</div>}
     <div className="pouch-balances">
       {balances.map(({ def, amount }) => <div key={def.id} className="pouch-bal">
         <PixelIcon art={def.art} />
         <div><strong>{formatUnits(amount, def.decimals)}</strong><small>{def.symbol}</small></div>
-        <em>DEMO</em>
+        <em>{demo ? 'DEMO' : 'LIVE'}</em>
       </div>)}
     </div>
     <div className="pouch-grid" role="group" aria-label="Pouch inventory grid">
@@ -356,9 +377,8 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast }: {
         <button className="primary full" disabled={!hovering} onClick={() => selected !== null && hovering && give(selected, hovering, true)}>
           {hovering ? `Give to ${shortName(hovering)}` : 'No one nearby to give this to'}
         </button>
-      </> : <span>Pick up a stack and drop it on a townsperson in the world, or tap a slot to select it.</span>}
+      </> : <span>Tap a slot to select it, or drag a stack onto a townsperson in the world.</span>}
     </div>
-    <p className="muted">Drag any stack out of the pouch and release it over a townsperson to offer it. Released over open ground it goes to whoever you are standing next to. Gifts are simulated in-world only.</p>
     {gifts.length > 0 && <div className="pouch-gifts">
       <div className="task-head"><span>GIFT LOG</span><b>SIMULATED</b></div>
       {gifts.map(gift => <div key={gift.at} className="pouch-gift">
@@ -366,7 +386,9 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast }: {
         <div><strong>{gift.label} → {gift.npc}</strong><small>{gift.proximity ? 'Offered to the nearest townsperson' : 'Dropped directly on them'} · no real funds moved</small></div>
       </div>)}
     </div>}
-    <p className="muted">No wallet is connected and no key is held: this pouch cannot deposit, send, or withdraw anything, and it will never ask for a seed phrase. The SOL and shard stacks are demo items with no mint behind them. Real Solana or token movement would require a verified server-side adapter that does not exist in this build.</p>
+    <p className="pouch-note">{demo
+      ? 'Dropped over open ground a stack goes to whoever you stand beside. Every stack here is simulated: no mint behind the items, no key in this panel, and it will never ask for a seed phrase.'
+      : 'Dropped over open ground a stack goes to whoever you stand beside. Real funds: amounts are held as integer base units and formatted only for display. This panel will never ask for a seed phrase.'}</p>
     {dragged && <>
       <div className="pouch-ghost" style={{ left: drag!.x, top: drag!.y }}><PixelIcon art={items[dragged.def].art} /></div>
       <div className={`pouch-hint${drag!.target ? ' on' : ''}`} style={{ left: drag!.x, top: drag!.y }}>

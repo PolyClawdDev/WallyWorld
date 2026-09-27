@@ -92,13 +92,15 @@ function signpost(root: THREE.Group, x: number, z: number, faceYaw: number, line
   group.position.set(x, 0, z)
   group.rotation.y = faceYaw
 
-  const post = new THREE.Mesh(
-    new THREE.BoxGeometry(0.22, 3.1, 0.22),
-    new THREE.MeshStandardMaterial({ color: '#59422c', roughness: 0.9 }),
-  )
-  post.position.y = 1.55
-  post.castShadow = true
-  group.add(post)
+  const timber = new THREE.MeshStandardMaterial({ color: '#59422c', roughness: 0.9 })
+
+  // Posts flank the board and sit behind it, so nothing crosses the lettering.
+  for (const px of [-1.12, 1.12]) {
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.2, 3.1, 0.2), timber)
+    post.position.set(px, 1.55, -0.18)
+    post.castShadow = true
+    group.add(post)
+  }
 
   const board = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.04, 0.14), woodSign(lines, accent))
   board.position.y = 2.6
@@ -113,13 +115,23 @@ function signpost(root: THREE.Group, x: number, z: number, faceYaw: number, line
   backing.position.set(0, 2.6, -0.11)
   group.add(backing)
 
+  // Lamp hangs outboard of the 2.6-wide board, so it can never cover lettering.
+  const lampX = 1.78
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.72, 0.09, 0.09), timber)
+  arm.position.set((1.12 + lampX) / 2, 3.24, 0)
+  group.add(arm)
+  const chain = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.24, 0.05), timber)
+  chain.position.set(lampX, 3.08, 0)
+  group.add(chain)
   const lamp = new THREE.Mesh(
-    new THREE.BoxGeometry(0.34, 0.5, 0.34),
-    new THREE.MeshStandardMaterial({ color: '#f0b84d', emissive: '#f0b84d', emissiveIntensity: 2.6, roughness: 0.2 }),
+    new THREE.BoxGeometry(0.24, 0.3, 0.24),
+    new THREE.MeshStandardMaterial({ color: '#f0b84d', emissive: '#f0b84d', emissiveIntensity: 1.4, roughness: 0.2 }),
   )
-  lamp.position.set(0, 3.35, 0)
+  lamp.position.set(lampX, 2.81, 0)
   group.add(lamp)
-  group.add(new THREE.PointLight('#f0b84d', 2.2, 11))
+  const glow = new THREE.PointLight('#f0b84d', 2.2, 11)
+  glow.position.copy(lamp.position)
+  group.add(glow)
   root.add(group)
   return group
 }
@@ -225,6 +237,7 @@ export function createWildscape() {
       rotationY: rng() * Math.PI,
     })
   }
+  const standingStones: Array<{ x: number; z: number }> = []
   for (let i = 0; i < 5; i++) {
     const angle = (i / 5) * Math.PI * 2 + 0.4
     const stone = new THREE.Mesh(
@@ -235,6 +248,7 @@ export function createWildscape() {
     stone.rotation.z = (rng() - 0.5) * 0.14
     stone.castShadow = true
     root.add(stone)
+    standingStones.push({ x: stone.position.x, z: stone.position.z })
   }
   instanced(root, rockGeometry, rockMaterial, bankStones)
 
@@ -344,6 +358,19 @@ export function createWildscape() {
 
   const flicker = { fire, fireLight, lanternPosts }
   root.userData.flicker = flicker
+  /**
+   * What the navigation grid in src/battle/nav.ts should treat as solid out
+   * here. Published rather than re-derived: the scatter above consumes one
+   * shared RNG in sequence, so any second pass would produce a different wood.
+   * Only trunks, boulders and standing stones block — ferns, trail planks and
+   * the pond surface stay walkable on purpose.
+   */
+  root.userData.obstacles = [
+    ...trunks.map(tree => ({ kind: 'circle' as const, x: tree.position.x, z: tree.position.z, r: 0.62 })),
+    ...rocks.map(rock => ({ kind: 'circle' as const, x: rock.position.x, z: rock.position.z, r: rock.scale.x * 0.8 })),
+    ...standingStones.map(stone => ({ kind: 'circle' as const, x: stone.x, z: stone.z, r: 0.9 })),
+    { kind: 'circle' as const, x: campX, z: campZ, r: 2.4 },
+  ]
   return root
 }
 

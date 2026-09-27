@@ -2,7 +2,7 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import * as THREE from 'three'
-import { animateCharacter, createWizard, defaultMothStyle, mothStyleOptions, wizards } from './characters'
+import { animateCharacter, createWizard, cycleStyle, defaultMothStyle, styleLabel, styleSlots, wizards } from './characters'
 import type { MothStyle, WizardId } from './characters'
 import { createTownsfolk, npcAccent, placeNpcLabel } from './npcs'
 import { Popup } from './Popup'
@@ -13,17 +13,39 @@ import type { BuildingSpec } from './townData'
 import { registerWorld } from './worldBridge'
 import { createWildlife, huntingArea, isInTown, isSafeZone, speciesSpecs } from './wildlife'
 import { animateWildscape, createWildscape } from './wildscape'
-import { createCombat, createVitals } from './combat'
+import { createVitals } from './combat'
 import { huntState, pingHunt, resetHuntState } from './huntStore'
 import { HuntHud } from './huntHud'
 import { creditPickup, debitDeath, recordKill } from './rewards'
+import { JournalPanel, SettingsPanel } from './panels'
+import { FundsBadge, MainnetWarningBanner } from './solana/FundsBadge'
+import { WalletSolanaPanel } from './solana/WalletPanel'
+import { registerPlayer } from './solana/playerBridge'
+import { createBattle } from './battle/engine'
+import type { BattleSystem } from './battle/engine'
+import { createNavGrid } from './battle/nav'
+import type { Obstacle } from './battle/nav'
+import { XP_PER_SPECIES } from './battle/kits'
+import { primeAudio } from './battle/audio'
+import { battleState, escapeWasConsumed, markEscapeConsumed, registerBattleCommands } from './battle/store'
+import { progressFor } from './battle/progression'
+import { CombatHud } from './combatHud'
 
 import './styles.css'
+// Loads last on purpose: the UI kit restyles the panels and HUD chrome that
+// styles.css and hunt.css set up, so it has to win on equal specificity.
+import './worldUi.css'
 
 type Panel = 'journal' | 'wallet' | 'settings' | 'map' | null
 
-// Prompts and the E action must share one radius, otherwise E silently does nothing.
+// Prompts and the F action must share one radius, otherwise F silently does nothing.
 const INTERACT_RANGE = 5
+/**
+ * WASD is direct movement and Q/W/E/R are abilities, so W, A and S each carry
+ * two jobs. A quick tap issues the combat command, holding the key moves; Q, E
+ * and R are unambiguous and fire the instant they go down.
+ */
+const TAP_MS = 200
 
 const buildings = [
   { name: 'THE HEARTH', sub: 'Your home', x: -15, z: 11, color: '#765b52', npc: '' },
@@ -307,6 +329,10 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
     ambientNpcs.forEach(({ x, z }) => scene.add(createNpc(`townsperson-${x}-${z}`, x, z, false)))
     const wildscape = createWildscape()
     scene.add(wildscape)
+    // The town's own footprints plus whatever the wildscape registered for its
+    // pines and boulders. Click-to-move paths and shots are resolved against it.
+    const nav = createNavGrid((wildscape.userData.obstacles as Obstacle[] | undefined) ?? [])
+    nav.resolve(player.position)
     // Lets the pouch raycast drops onto NPCs and the map read the player's pose.
     const unregisterWorld = registerWorld({ scene, camera, canvas: renderer.domElement, player })
     const keys = keysRef.current
@@ -333,6 +359,9 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
         drops.push(drop)
       })
     }
+    // Assigned once the wildlife it damages exists; the callbacks below only
+    // ever run inside the render loop, long after that.
+    let battle: BattleSystem | null = null
     const vitals = createVitals(killer => {
       // Death forfeits a slice of carried gold onto the ground, where anyone
       // can pick it up again — the same rule as every other drop in town.
@@ -348,120 +377,175 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       huntState.death = { killer, goldDroppedBaseUnits: lost, at: Date.now() }
       pingHunt()
       wildlife.clearAggro()
+      battle?.onPlayerDied()
       player.position.set(0, 0, 8)
       vitals.reset(performance.now())
+      battle?.onRespawn()
     })
     const wildlife = createWildlife(scene, {
       onKill: kill => {
+        // wildlife.kill() is reachable only once per animal, so gold, the
+        // ledger entry and the XP award below all happen exactly once.
         recordKill(kill.label, kill.goldBaseUnits)
         dropGold(kill.position, kill.coins, 0.55 + kill.coins.length * 0.12)
+        battle?.awardXp(XP_PER_SPECIES[kill.species] ?? 0)
         huntState.kills += 1
         pingHunt()
       },
       onPlayerDamage: (amount, species, from) => {
         const away = player.position.clone().sub(from)
         vitals.damage(amount, away, species.label, performance.now())
+        battle?.onPlayerHurt()
         huntState.hurtAt = performance.now()
       },
     })
-    const combat = createCombat(scene, wizard, {
-      applyDamage: (centre, radius, damage) => wildlife.damageIn(centre, radius, damage, performance.now()),
-      pull: (centre, radius, strength) => wildlife.pull(centre, radius, strength),
+    battle = createBattle({ scene, camera, player, wizard, wildlife, nav, vitals })
+    const unregisterCommands = registerBattleCommands({
+      upgrade: slot => battle?.upgrade(slot) ?? false,
+      setQuickCast: on => battle?.setQuickCast(on),
+      cancelAim: () => battle?.cancel(),
     })
     resetHuntState(wizard, vitals.maxHp)
+
+    /* --- pointing ------------------------------------------------------
+     * Everything the player aims at comes from one free cursor: no pointer
+     * lock anywhere. Each frame the cursor is resolved into a ground point
+     * (for move orders and ground-targeted spells) and, separately, into the
+     * animal under it (for attack orders and unit-targeted spells). */
     const pointer = new THREE.Vector2(0, 0)
     const raycaster = new THREE.Raycaster()
-    let aimed: ReturnType<typeof wildlife.nearest> = null
-    let aimedKey: string | null = null
-    /**
-     * Aim follows the free cursor: an exact hit first, then a forgiving cone.
-     * Distances are budgeted from the camera, which sits well behind the
-     * player, so a short-range ability can still inspect what it is pointing
-     * at. Reach is enforced later, when the ability resolves.
-     */
-    const INSPECT_RANGE = 46
-    let aimHeldUntil = 0
-    const resolveAim = () => {
+    const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0)
+    const INSPECT_RANGE = 60
+    let cursorGround: THREE.Vector3 | null = null
+    let hover: ReturnType<typeof wildlife.nearest> = null
+    let hoverKey: string | null = null
+
+    const resolveCursor = () => {
       raycaster.setFromCamera(pointer, camera)
       const behind = camera.position.distanceTo(player.position)
-      const found =
+      // An exact hit first, then a small forgiving cone, which is what makes
+      // clicking a chicken at range possible at all.
+      hover =
         wildlife.pick(raycaster, INSPECT_RANGE + behind) ??
-        wildlife.aimAssist(raycaster.ray.origin, raycaster.ray.direction, combat.spec.range + behind, 0.12)
-      if (found) {
-        aimHeldUntil = performance.now() + 1500
-        return found
-      }
-      // Animals move, and a plate that vanishes the moment your quarry steps
-      // aside makes the hunt feel like a fight with the cursor. Hold briefly.
-      if (aimed && aimed.state !== 'dead' && performance.now() < aimHeldUntil) return aimed
-      return null
+        wildlife.aimAssist(raycaster.ray.origin, raycaster.ray.direction, 26 + behind, 0.045)
+      const point = new THREE.Vector3()
+      cursorGround = raycaster.ray.intersectPlane(groundPlane, point) ? point : null
     }
-    const attack = () => {
-      if (pausedRef.current || vitals.hp <= 0) return false
-      const now = performance.now()
-      if (!combat.ready(now)) return false
-      const target = aimed && aimed.state !== 'dead' ? aimed.group.position.clone().setY(aimed.species.height * 0.55) : null
-      // No target under the cursor: fire along the camera's forward axis, which
-      // is the opposite of the orbit angle the camera sits at.
-      const facing = target ? Math.atan2(target.x - player.position.x, target.z - player.position.z) : yaw + Math.PI
-      player.rotation.y = facing
-      return combat.attack(player.position, facing, target, now)
-    }
-    const huntNearby = () => {
-      const near = wildlife.nearest(player.position, INTERACT_RANGE + 1)
-      if (near) aimed = near
-      return attack()
-    }
+
     const isTyping = (target: EventTarget | null) => {
       const el = target as HTMLElement | null
       return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
     }
+
+    /* --- input ---------------------------------------------------------
+     * WASD stays direct movement. Right-click issues move and attack orders,
+     * left-click selects or confirms an aimed spell, Q/W/E/R are abilities,
+     * F interacts and the middle mouse button rotates the camera. */
+    const pressedAt = new Map<string, number>()
+    let orbiting = false
+    const castSlot = (slot: 'Q' | 'W' | 'E' | 'R') => battle?.pressSlot(slot, { cursorGround, hover })
     const onKey = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase()
-      // Releases are always honoured, otherwise a key can stay latched down forever.
-      if (e.type === 'keyup') { keys.delete(key); return }
+      if (e.type === 'keyup') {
+        keys.delete(key)
+        // The three shared keys decide on release: a flick was a command, a
+        // hold was a step. The movement half already happened either way.
+        const down = pressedAt.get(key)
+        pressedAt.delete(key)
+        if (down === undefined || performance.now() - down > TAP_MS) return
+        if (isTyping(e.target) || pausedRef.current) return
+        if (key === 'w') castSlot('W')
+        if (key === 'a') battle?.armAttackMove()
+        if (key === 's') battle?.pressStop()
+        return
+      }
       if (isTyping(e.target) || pausedRef.current) return
       keys.add(key)
       if (e.repeat) return
+      if (!pressedAt.has(key)) pressedAt.set(key, performance.now())
+      primeAudio()
       if (key === 'v') { firstPerson.current = !firstPerson.current; player.visible = !firstPerson.current }
-      // F attacks whatever the cursor is on; it never touches the pointer lock.
-      if (key === 'f') attack()
-      if (key === 'e' && nearbyNpc) {
-        if (nearbyNpc.startsWith('ANIMAL:')) huntNearby()
-        else handlers.current.onAction(nearbyNpc)
+      // Q, E and R are not movement keys, so they fire the moment they go down.
+      if (key === 'q') castSlot('Q')
+      if (key === 'e') castSlot('E')
+      if (key === 'r') castSlot('R')
+      if (key === ' ') {
+        // Recentre: swing the orbit round to sit behind whichever way the
+        // character is actually facing.
+        e.preventDefault()
+        yaw = player.rotation.y + Math.PI
       }
+      if (key === 'escape' && battle?.cancel()) markEscapeConsumed()
+      if (key === 'f' && nearbyNpc && !nearbyNpc.startsWith('ANIMAL:')) handlers.current.onAction(nearbyNpc)
     }
-    const releaseKeys = () => keys.clear()
-    const onMouse = (e: MouseEvent) => { if (e.buttons === 2) yaw -= e.movementX * 0.003 }
-    // Aim tracks the free cursor in NDC. No pointer lock anywhere in the hunt.
-    const onAim = (e: MouseEvent) => {
+    const releaseKeys = () => { keys.clear(); pressedAt.clear(); orbiting = false }
+    const onMouseMove = (e: MouseEvent) => {
+      if (orbiting) yaw -= e.movementX * 0.004
       const rect = renderer.domElement.getBoundingClientRect()
       pointer.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
     }
-    const onAttackClick = (e: MouseEvent) => { if (e.button === 0) attack() }
+    // Bound to the canvas, never to the document: a click on the HUD, a panel
+    // or a button can therefore never also issue a world command.
+    const onCanvasDown = (e: MouseEvent) => {
+      if (pausedRef.current) return
+      primeAudio()
+      if (e.button === 1) {
+        e.preventDefault()
+        orbiting = true
+        return
+      }
+      resolveCursor()
+      const target = hover && hover.state !== 'dead' ? hover : null
+      if (e.button === 0) {
+        battle?.primaryClick(cursorGround, target)
+      } else if (e.button === 2) {
+        battle?.secondaryClick(cursorGround, target)
+      }
+    }
+    const onMouseUp = (e: MouseEvent) => { if (e.button === 1) orbiting = false }
     const blockMenu = (e: MouseEvent) => e.preventDefault()
     window.addEventListener('keydown', onKey); window.addEventListener('keyup', onKey)
     window.addEventListener('blur', releaseKeys); document.addEventListener('visibilitychange', releaseKeys)
-    document.addEventListener('mousemove', onMouse); renderer.domElement.addEventListener('contextmenu', blockMenu)
-    document.addEventListener('mousemove', onAim); renderer.domElement.addEventListener('mousedown', onAttackClick)
+    document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp)
+    renderer.domElement.addEventListener('contextmenu', blockMenu)
+    renderer.domElement.addEventListener('mousedown', onCanvasDown)
     const resize = () => { if (!mount.current) return; const { width, height } = mount.current.getBoundingClientRect(); camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height) }
     resize(); window.addEventListener('resize', resize)
     let raf = 0
     const tick = (now: number) => {
       const dt = Math.min((now - last) / 1000, 0.05); last = now
       const held = (...names: string[]) => !pausedRef.current && names.some(name => keys.has(name))
-      const speed = held('shift') ? 6 : 3.2
+      const kit = battle?.kit
+      const speed = held('shift') ? kit?.stats.runSpeed ?? 5.6 : kit?.stats.moveSpeed ?? 3.2
       const dir = new THREE.Vector3(
         (held('d', 'arrowright') ? 1 : 0) - (held('a', 'arrowleft') ? 1 : 0),
         0,
         (held('s', 'arrowdown') ? 1 : 0) - (held('w', 'arrowup') ? 1 : 0),
       )
-      walking = dir.lengthSq() > 0
-      if (walking) { dir.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw); player.position.addScaledVector(dir, speed * dt); player.rotation.y = Math.atan2(dir.x, dir.z); }
+      const manual = dir.lengthSq() > 0 && vitals.hp > 0
+      if (manual) {
+        dir.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
+        // Slide rather than step: walking into a wall at an angle now runs
+        // along it instead of straight through it.
+        nav.slide(player.position, dir.x * speed * dt, dir.z * speed * dt)
+        player.rotation.y = Math.atan2(dir.x, dir.z)
+      }
+      // A hit shoves you: the impulse decays inside vitals.update.
+      if (vitals.impulse.lengthSq() > 0.0004) {
+        nav.slide(player.position, vitals.impulse.x * dt, vitals.impulse.z * dt)
+      }
+      if (!pausedRef.current) resolveCursor()
+      const advanced = battle?.update(dt, now, {
+        cursorGround,
+        hover: hover && hover.state !== 'dead' ? hover : null,
+        manualMove: manual,
+        safe: isSafeZone(player.position.x, player.position.z),
+        paused: pausedRef.current,
+      })
+      walking = manual || !!advanced?.moved
+      nav.resolve(player.position)
       player.position.x = THREE.MathUtils.clamp(player.position.x, -96, 96); player.position.z = THREE.MathUtils.clamp(player.position.z, -96, 96)
       player.position.y = walking ? Math.abs(Math.sin(now * 0.012 * (speed / 3.2))) * 0.045 : Math.sin(now * 0.002) * 0.012
-      // A hit shoves you: the impulse decays inside vitals.update.
-      if (vitals.impulse.lengthSq() > 0.0004) player.position.addScaledVector(vitals.impulse, dt)
       animateCharacter(player, now)
       scene.children.forEach(o => {
         if (o.userData.phase === undefined) return
@@ -483,7 +567,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
         if (drop.visible && drop.position.distanceTo(player.position) < 2.3) {
           drop.visible = false
           const gold = creditPickup((drop.userData.gold as number) ?? 1)
-          combat.floatText(`+${gold}`, drop.position.clone().setY(1.4), '#f0b84d')
+          battle?.floatText(`+${gold}`, drop.position.clone().setY(1.4), '#f0b84d')
           handlers.current.onGold(gold)
           scene.remove(drop)
         }
@@ -493,10 +577,11 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       const safe = isSafeZone(player.position.x, player.position.z)
       vitals.update(dt, now, safe)
       wildlife.update(dt, now, player.position, camera, vitals.hp > 0 && !vitals.isInvulnerable(now))
-      combat.update(dt, now, camera)
       animateWildscape(wildscape, now)
-      if (!pausedRef.current) aimed = resolveAim()
-      const spotted = aimed && aimed.state !== 'dead' ? aimed : null
+      // The plate follows the committed target first and the cursor second, so
+      // it stops flickering the moment you actually pick a fight.
+      const engaged = battle?.attackOrderTarget() ?? battle?.selectedTarget() ?? null
+      const spotted = engaged && engaged.state !== 'dead' ? engaged : hover && hover.state !== 'dead' ? hover : null
       if (spotted) {
         huntState.target = {
           species: spotted.species.id,
@@ -512,12 +597,12 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
       // Only re-render the HUD when the plate's identity changes; the numbers
       // inside it are read from this same object on the HUD's own frame.
       const plateKey = spotted ? spotted.species.id : null
-      if (plateKey !== aimedKey) { aimedKey = plateKey; pingHunt() }
+      if (plateKey !== hoverKey) { hoverKey = plateKey; pingHunt() }
       huntState.hp = vitals.hp
+      huntState.maxHp = vitals.maxHp
       huntState.safe = safe
       huntState.invulnerable = vitals.isInvulnerable(now)
       huntState.aggro = wildlife.aggroCount()
-      huntState.cooldownRatio = combat.cooldownRatio(now)
       const toHunt = new THREE.Vector3(huntingArea.x - player.position.x, 0, huntingArea.z - player.position.z)
       huntState.compassDistance = toHunt.length()
       const view = camera.getWorldDirection(new THREE.Vector3())
@@ -532,15 +617,34 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
     }
     raf = requestAnimationFrame(tick)
     const probe = window as unknown as { __wally?: unknown }
-    if (import.meta.env.DEV) probe.__wally = { player, camera, renderer, keys, isFirstPerson: () => firstPerson.current, wildlife, vitals, combat, attack, speciesSpecs, isInTown, isSafeZone, huntState, resolveAim, getAimed: () => aimed }
+    if (import.meta.env.DEV) {
+      probe.__wally = {
+        player, camera, renderer, keys, isFirstPerson: () => firstPerson.current,
+        wildlife, vitals, speciesSpecs, isInTown, isSafeZone, huntState,
+        nav, battle, battleState, progress: () => progressFor(wizard),
+        resolveCursor, getHover: () => hover, getCursorGround: () => cursorGround,
+        // Drives the camera-relative pointer without a real mouse, so the
+        // verification scripts can aim at a world point directly.
+        setPointer: (x: number, y: number) => { pointer.set(x, y); resolveCursor() },
+        aimAt: (target: THREE.Vector3 | { x: number; z: number }) => {
+          const v = target instanceof THREE.Vector3 ? target : new THREE.Vector3(target.x, 0.6, target.z)
+          const projected = v.clone().project(camera)
+          pointer.set(projected.x, projected.y)
+          resolveCursor()
+          return { hover: hover?.species.id ?? null, ground: cursorGround?.toArray() ?? null }
+        },
+      }
+    }
     return () => {
       cancelAnimationFrame(raf); keys.clear(); if (import.meta.env.DEV) delete probe.__wally; unregisterWorld()
       window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKey)
       window.removeEventListener('blur', releaseKeys); document.removeEventListener('visibilitychange', releaseKeys)
-      window.removeEventListener('resize', resize); document.removeEventListener('mousemove', onMouse)
-      document.removeEventListener('mousemove', onAim); renderer.domElement.removeEventListener('mousedown', onAttackClick)
+      window.removeEventListener('resize', resize)
+      document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp)
+      renderer.domElement.removeEventListener('mousedown', onCanvasDown)
       renderer.domElement.removeEventListener('contextmenu', blockMenu)
-      huntState.active = false; wildlife.dispose(); combat.dispose()
+      unregisterCommands()
+      huntState.active = false; wildlife.dispose(); battle?.dispose()
       renderer.dispose(); mount.current?.removeChild(renderer.domElement)
     }
   }, [wizard, style])
@@ -550,7 +654,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, paused, onNear, onGold,
 function App() {
   const [entered, setEntered] = useState(false)
   const [wizard, setWizard] = useState<WizardId>('MOTH')
-  const [playerName, setPlayerName] = useState('Moth')
+  const [playerName, setPlayerName] = useState(wizards.MOTH.name)
   const [style, setStyle] = useState<MothStyle>(defaultMothStyle)
   const [panel, setPanel] = useState<Panel>(null)
   const [npc, setNpc] = useState<string | null>(null)
@@ -559,13 +663,27 @@ function App() {
   const [toast, setToast] = useState('')
   const [gold, setGold] = useState(0)
   const [tab, setTab] = useState<'select' | 'preview' | 'world'>('select')
+  // Lets the wallet panel read the live character and write a loaded save back,
+  // without threading four setters through the popup. Re-registers on change so
+  // `read` never returns a stale snapshot.
+  useEffect(() => registerPlayer({
+    read: () => ({ character: wizard, style, playerName, gold }),
+    apply: saved => {
+      setWizard(saved.character)
+      setStyle(saved.style)
+      setPlayerName(saved.playerName)
+      setGold(saved.gold)
+    },
+  }), [wizard, style, playerName, gold])
   useEffect(() => {
     const onShortcut = (event: KeyboardEvent) => {
       if (!entered) return
       const el = event.target as HTMLElement | null
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
       const key = event.key.toLowerCase()
-      if (key === 'escape') { setPanel(null); return }
+      // The world gets Escape first: it cancels an aim or an order, and only
+      // when it had nothing to cancel does the key reach the panels.
+      if (key === 'escape') { if (!escapeWasConsumed()) setPanel(null); return }
       const panels: Record<string, Panel> = { m: 'map', j: 'journal', k: 'wallet', o: 'settings' }
       if (panels[key]) { event.preventDefault(); setPanel(panels[key]) }
     }
@@ -578,11 +696,10 @@ function App() {
     const index = ids.indexOf(wizard)
     setWizard(ids[(index + step + ids.length) % ids.length])
   }
-  const cycle = <K extends keyof MothStyle>(key: K, options: readonly { id: MothStyle[K]; label: string; note: string }[], step: number) => {
-    const index = options.findIndex(option => option.id === style[key])
-    const next = options[(index + step + options.length) % options.length]
-    setStyle(current => ({ ...current, [key]: next.id }))
-  }
+  // Each archetype names its own four slots, so the rows are driven by the
+  // character rather than hard-coded to HAT / ROBE / FAMILIAR / ACCESSORY.
+  const cycle = (key: ReturnType<typeof styleSlots>[number]['key'], step: number) =>
+    setStyle(current => cycleStyle(wizard, current, key, step))
   const doTask = () => {
     setTask('queued'); setToast('Budget reserved · 2 demo credits')
     window.setTimeout(() => setTask('running'), 900)
@@ -590,13 +707,14 @@ function App() {
   }
   if (!entered && tab === 'select') return <main className="entry">
     <div className="entry-scene"><div className="moon" /><div className="mountain m1" /><div className="mountain m2" /><div className="entry-town"><i /><i /><i /><i /><i /></div><div className="lantern"><span /></div><div className="bridge" /></div>
-    <div className="entry-copy"><div className="eyebrow">A SMALL WORLD FOR USEFUL AGENTS</div><h1>WALLY<br /><em>WORLD</em></h1><p>Your wallet has a world.</p><button className="primary" onClick={() => setEntered(true)}>Enter the world <span>→</span></button><div className="entry-foot"><span>Single-player demo</span><span>Demo mode · no real funds</span></div></div>
+    <div className="entry-copy"><div className="eyebrow">A SMALL WORLD FOR USEFUL AGENTS</div><h1>WALLY<br /><em>WORLD</em></h1><p>Your wallet has a world.</p><button className="primary" onClick={() => setEntered(true)}>Enter the world <span>→</span></button><div className="entry-foot"><span>Single-player demo</span><FundsBadge variant="foot" /></div></div>
   </main>
-  if (entered && tab === 'select') return <main className="select"><header><div className="brand">WALLY <span>WORLD</span></div><div className="status-dot">DEMO MODE · NO REAL FUNDS</div></header><div className="select-layout"><section className="menu-panel"><div className="eyebrow">CREATE YOUR WAYFINDER</div><h2>Name your<br />character.</h2><p className="muted">Start with {wizard}, the selected wayfinder. Shape the details,<br />then carry your look into the town.</p><label className="name-label" htmlFor="wayfinder-name">NAME YOUR CHARACTER:</label><input id="wayfinder-name" className="name-input" value={playerName} onChange={event => setPlayerName(event.target.value.slice(0, 24))} placeholder="Write any name" autoComplete="off" /><div className="arrow-options"><div className="arrow-choice character-choice"><label>CHARACTER</label><button onClick={() => cycleWizard(-1)} aria-label="Previous character">←</button><div><strong>{wizard}</strong><small>{wizards[wizard].role}</small></div><button onClick={() => cycleWizard(1)} aria-label="Next character">→</button></div><div className="arrow-choice"><label>HAT</label><button onClick={() => cycle('hat', mothStyleOptions.hat, -1)} aria-label="Previous hat">←</button><div><strong>{mothStyleOptions.hat.find(option => option.id === style.hat)?.label}</strong><small>{mothStyleOptions.hat.find(option => option.id === style.hat)?.note}</small></div><button onClick={() => cycle('hat', mothStyleOptions.hat, 1)} aria-label="Next hat">→</button></div><div className="arrow-choice"><label>ROBE</label><button onClick={() => cycle('robe', mothStyleOptions.robe, -1)} aria-label="Previous robe">←</button><div><strong>{mothStyleOptions.robe.find(option => option.id === style.robe)?.label}</strong><small>{mothStyleOptions.robe.find(option => option.id === style.robe)?.note}</small></div><button onClick={() => cycle('robe', mothStyleOptions.robe, 1)} aria-label="Next robe">→</button></div><div className="arrow-choice"><label>FAMILIAR</label><button onClick={() => cycle('familiar', mothStyleOptions.familiar, -1)} aria-label="Previous familiar">←</button><div><strong>{mothStyleOptions.familiar.find(option => option.id === style.familiar)?.label}</strong><small>{mothStyleOptions.familiar.find(option => option.id === style.familiar)?.note}</small></div><button onClick={() => cycle('familiar', mothStyleOptions.familiar, 1)} aria-label="Next familiar">→</button></div><div className="arrow-choice"><label>ACCESSORY</label><button onClick={() => cycle('accessory', mothStyleOptions.accessory, -1)} aria-label="Previous accessory">←</button><div><strong>{mothStyleOptions.accessory.find(option => option.id === style.accessory)?.label}</strong><small>{mothStyleOptions.accessory.find(option => option.id === style.accessory)?.note}</small></div><button onClick={() => cycle('accessory', mothStyleOptions.accessory, 1)} aria-label="Next accessory">→</button></div></div><button className="primary" onClick={() => setTab('preview')}>Continue with {playerName || 'Moth'} <span>→</span></button></section><section className="selection-art"><div className="selection-grid" /><CharacterPreview wizard={wizard} style={style} /><div className="art-caption"><span>WAYFINDER 01 / 01</span><strong>{playerName || 'MOTH'}</strong><small>{wizard} · {wizards[wizard].role}</small></div></section></div></main>
-  if (entered && tab === 'preview') return <main className="preview"><div className="preview-left"><button className="back" onClick={() => setTab('select')}>← Back to archetypes</button><div className="eyebrow">WAYFINDER SELECTED</div><h2>{playerName || 'Moth'}</h2><p>MOTH · {wizards.MOTH.desc}</p><div className="preview-facts"><span><b>01</b> Equal permissions</span><span><b>02</b> Cosmetic identity</span><span><b>03</b> Demo-ready</span></div><button className="primary" onClick={() => { setEntered(true); setTab('world') }}>Enter Wally World <span>→</span></button></div><div className="preview-stage"><div className="stage-stars" /><CharacterPreview wizard={wizard} style={style} /><div className="preview-label"><span>ARCHETYPE {Object.keys(wizards).indexOf(wizard) + 1} / 4</span><strong>{wizards[wizard].role}</strong></div></div></main>
+  if (entered && tab === 'select') return <main className="select"><header><div className="brand">WALLY <span>WORLD</span></div><FundsBadge variant="dot" /></header><div className="select-layout"><section className="menu-panel"><div className="eyebrow">CREATE YOUR WAYFINDER</div><h2>Name your<br />character.</h2><p className="muted">Start with {wizards[wizard].name}, the selected wayfinder. Shape the details,<br />then carry your look into the town.</p><label className="name-label" htmlFor="wayfinder-name">NAME YOUR CHARACTER:</label><input id="wayfinder-name" className="name-input" value={playerName} onChange={event => setPlayerName(event.target.value.slice(0, 24))} placeholder="Write any name" autoComplete="off" /><div className="arrow-options"><div className="arrow-choice character-choice"><label>CHARACTER</label><button onClick={() => cycleWizard(-1)} aria-label="Previous character">←</button><div><strong>{wizards[wizard].name}</strong><small>{wizards[wizard].role}</small></div><button onClick={() => cycleWizard(1)} aria-label="Next character">→</button></div>{styleSlots(wizard).map(slot => <div className="arrow-choice" key={slot.key}><label>{slot.label}</label><button onClick={() => cycle(slot.key, -1)} aria-label={`Previous ${slot.key}`}>←</button><div><strong>{styleLabel(wizard, style, slot.key).label}</strong><small>{styleLabel(wizard, style, slot.key).note}</small></div><button onClick={() => cycle(slot.key, 1)} aria-label={`Next ${slot.key}`}>→</button></div>)}</div><button className="primary" onClick={() => setTab('preview')}>Continue with {playerName || wizards[wizard].name} <span>→</span></button></section><section className="selection-art"><div className="selection-grid" /><CharacterPreview wizard={wizard} style={style} /><div className="art-caption"><span>WAYFINDER {Object.keys(wizards).indexOf(wizard) + 1} / 4</span><strong>{playerName || wizards[wizard].name}</strong><small>{wizards[wizard].name} · {wizards[wizard].role}</small></div></section></div></main>
+  if (entered && tab === 'preview') return <main className="preview"><div className="preview-left"><button className="back" onClick={() => setTab('select')}>← Back to archetypes</button><div className="eyebrow">WAYFINDER SELECTED</div><h2>{playerName || wizards[wizard].name}</h2><p>{wizards[wizard].name} · {wizards[wizard].desc}</p><div className="preview-facts"><span><b>01</b> Equal permissions</span><span><b>02</b> Cosmetic identity</span><span><b>03</b> Demo-ready</span></div><button className="primary" onClick={() => { setEntered(true); setTab('world') }}>Enter Wally World <span>→</span></button></div><div className="preview-stage"><div className="stage-stars" /><CharacterPreview wizard={wizard} style={style} /><div className="preview-label"><span>ARCHETYPE {Object.keys(wizards).indexOf(wizard) + 1} / 4</span><strong>{wizards[wizard].role}</strong></div></div></main>
   if (!entered) return null
-  const action = (target: string) => { if (target.startsWith('ANIMAL:')) { setToast('E or left click to attack · loot drops on the ground for anyone') } else if (target.startsWith('LYRA')) setPanel('journal'); else setToast(`${target} is preparing a demo service.`) }
-  return <main className="game"><WorldCanvas wizard={wizard} style={style} paused={panel !== null} onNear={setNpc} onGold={amount => setGold(value => Math.max(0, value + amount))} onAction={action} /><HuntHud wizard={wizard} /><div className="hud"><div className="topbar"><div className="avatar-chip"><span style={{ background: wizards[wizard].accent }} />{playerName || wizard}<small>{wizard} WAYFINDER</small></div><div className="gold-chip">✦ {gold} GOLD <small>DEMO LOOT</small></div><div className="demo-chip">DEMO · NO REAL FUNDS</div><div className="fps-chip">WORLD 01 <span>●</span></div></div><div className="minimap"><div className="map-ring"><i /><b /><em /></div><small>OLD TOWN LOOP</small></div><div className="controls">WASD move · SHIFT run · Right-drag look · E interact · V view · cursor unlocked</div><div className="bottom-nav">{[['map','Map'],['journal','Journal'],['wallet','Wallet'],['settings','Settings']].map(([id, label]) => <button key={id} onClick={() => setPanel(id as Panel)}><span>{id === 'map' ? '⌖' : id === 'journal' ? '▤' : id === 'wallet' ? '◇' : '⚙'}</span>{label}</button>)}</div>{npc && <button className="interact" onClick={() => { if (npc.startsWith('ANIMAL:')) action(npc); else if (npc.startsWith('LYRA')) setPanel('journal'); else setToast(`${npc} is preparing a demo service.`) }}>{npc.startsWith('ANIMAL:') ? 'E' : 'E'} <span>{npc.startsWith('ANIMAL:') ? 'Hunt' : 'Talk to'}</span> {npc.replace('ANIMAL:', '')}</button>}{panel === 'wallet' && <Popup label="Your pouch" onClose={() => setPanel(null)}><WalletPouch gold={gold} onGoldChange={setGold} nearbyNpc={npc} onToast={setToast} /></Popup>}{panel === 'map' && <Popup label="Map of Wally World" size="wide" onClose={() => setPanel(null)}><WorldMap /></Popup>}{(panel === 'journal' || panel === 'settings') && <div className="panel-backdrop" onClick={() => setPanel(null)}><section className="side-panel" onClick={e => e.stopPropagation()}><button className="close" onClick={() => setPanel(null)}>×</button>{panel === 'journal' && <><div className="eyebrow">THE ARCHIVE · LYRA</div><h2>Research,<br />made tangible.</h2><p>“I can map the quiet history of any place in town. Shall I make a sample report?”</p><div className="task-card"><div className="task-head"><span>DEMO SERVICE</span><b>{task === 'idle' ? 'READY' : task.toUpperCase()}</b></div><h3>Town history brief</h3><p>One-page summary of Wally World landmarks, delivered as a simulated artifact.</p><div className="task-meta"><span>2 demo credits</span><span>~ 3 seconds</span><span>Scripted demo</span></div><button className="primary full" disabled={task !== 'idle'} onClick={doTask}>{task === 'idle' ? 'Approve task · 2 credits' : task === 'delivered' ? 'Delivered ✓' : 'Task ' + task + '…'}</button></div>{receipt && <div className="receipt">✓ <div><strong>Receipt saved</strong><small>Simulated · no real funds · Journal</small></div></div>}</>}{panel === 'settings' && <><div className="eyebrow">PREFERENCES</div><h2>Make it<br />yours.</h2><label className="setting">Camera sensitivity <input type="range" defaultValue="40" /></label><label className="setting">Audio <input type="range" defaultValue="60" /></label><label className="toggle"><input type="checkbox" defaultChecked /> Reduced motion</label><p className="muted">The normal cursor stays available for Wallet, Journal, and Settings. Right-drag the world to look around.</p></>}</section></div>}{toast && <div className="toast" onClick={() => setToast('')}>{toast}</div>}</div></main>
+  const action = (target: string) => { if (target.startsWith('ANIMAL:')) { setToast('Right-click the animal to attack it · loot drops on the ground for anyone') } else if (target.startsWith('LYRA')) setPanel('journal'); else setToast(`${target} is preparing a demo service.`) }
+  const talkable = npc && !npc.startsWith('ANIMAL:') ? npc : null
+  return <main className="game"><WorldCanvas wizard={wizard} style={style} paused={panel !== null} onNear={setNpc} onGold={amount => setGold(value => Math.max(0, value + amount))} onAction={action} /><HuntHud wizard={wizard} /><CombatHud /><MainnetWarningBanner /><div className="hud"><div className="topbar"><div className="avatar-chip"><span style={{ background: wizards[wizard].accent }} />{playerName || wizards[wizard].name}<small>{wizards[wizard].name} WAYFINDER</small></div><div className="gold-chip">✦ {gold} GOLD <small>DEMO LOOT</small></div><FundsBadge variant="chip" /><div className="fps-chip">WORLD 01 <span>●</span></div></div><div className="minimap"><div className="map-ring"><i /><b /><em /></div><small>OLD TOWN LOOP</small></div><div className="controls">WASD move · SHIFT run · RIGHT-CLICK move or attack · LEFT-CLICK select or confirm · Q E R abilities · TAP W cast · TAP A then click attack-move · TAP S stop · HOLD WASD to walk · F interact · SPACE recentre · MIDDLE-DRAG look · V view · ESC cancel</div><div className="bottom-nav">{[['map','Map'],['journal','Journal'],['wallet','Wallet'],['settings','Settings']].map(([id, label]) => <button key={id} onClick={() => setPanel(id as Panel)}><span>{id === 'map' ? '⌖' : id === 'journal' ? '▤' : id === 'wallet' ? '◇' : '⚙'}</span>{label}</button>)}</div>{talkable && <button className="interact" onClick={() => { if (talkable.startsWith('LYRA')) setPanel('journal'); else setToast(`${talkable} is preparing a demo service.`) }}>F <span>Talk to</span> {talkable}</button>}{panel === 'wallet' && <Popup variant="pouch" eyebrow="THE HEARTH · PRIVATE" title="Your pouch" onClose={() => setPanel(null)}><WalletPouch gold={gold} onGoldChange={setGold} nearbyNpc={npc} onToast={setToast} /><WalletSolanaPanel /></Popup>}{panel === 'map' && <Popup variant="chart" size="wide" eyebrow="WALLY WORLD · DISTRICT 01" title="Old Town Loop" note={`${townLayout.ground}m × ${townLayout.ground}m · one grid square is 8m · surveyed from the live town layout`} onClose={() => setPanel(null)}><WorldMap /></Popup>}{panel === 'journal' && <Popup variant="book" eyebrow="THE ARCHIVE · LYRA" title="Your journal" onClose={() => setPanel(null)}><JournalPanel task={task} receipt={receipt} onApprove={doTask} /></Popup>}{panel === 'settings' && <Popup variant="plate" eyebrow="PREFERENCES" title="Control plate" onClose={() => setPanel(null)}><SettingsPanel /></Popup>}{toast && <div className="toast" onClick={() => setToast('')}>{toast}</div>}</div></main>
 }
 
 createRoot(document.getElementById('root')!).render(<App />)

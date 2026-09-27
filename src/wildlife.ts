@@ -590,6 +590,32 @@ function buildTemplate(species: SpeciesId) {
 
 export type AnimalState = 'graze' | 'wander' | 'flee' | 'chase' | 'windup' | 'recover' | 'dead'
 
+/**
+ * Crowd control the player's kit can apply. Held as absolute timestamps rather
+ * than remaining durations, so reapplying an effect refreshes it instead of
+ * stacking, and nothing can accumulate without bound.
+ *
+ * The distinction the combat system relies on: a root stops movement only, a
+ * stun stops movement and actions.
+ */
+export type AnimalStatus = {
+  slowUntil: number
+  /** Movement multiplier while slowed; 1 is unslowed. */
+  slowFactor: number
+  rootUntil: number
+  stunUntil: number
+  /** Decaying shove in metres per second, applied after the AI has moved. */
+  knock: THREE.Vector3
+  /** Current knock-up height and when the animal lands again. */
+  lift: number
+  liftUntil: number
+  liftFrom: number
+}
+
+export function emptyStatus(): AnimalStatus {
+  return { slowUntil: 0, slowFactor: 1, rootUntil: 0, stunUntil: 0, knock: new THREE.Vector3(), lift: 0, liftUntil: 0, liftFrom: 0 }
+}
+
 export type Animal = {
   id: number
   species: SpeciesSpec
@@ -615,6 +641,7 @@ export type Animal = {
   barFill: THREE.Mesh | null
   telegraph: THREE.Mesh | null
   strike: number
+  status: AnimalStatus
 }
 
 export type Kill = {
@@ -635,6 +662,17 @@ export type WildlifeSystem = {
   animals: Animal[]
   update: (dt: number, now: number, playerPos: THREE.Vector3, camera: THREE.Camera, playerVulnerable: boolean) => void
   damageIn: (center: THREE.Vector3, radius: number, damage: number, now: number) => { hits: number; killed: number; hit: Animal[] }
+  /**
+   * The single place one animal takes damage. Every ability, projectile and
+   * damage-over-time in src/battle routes through here, so a kill — and the
+   * reward it pays — can only ever happen once.
+   */
+  hurt: (animal: Animal, damage: number, now: number, options?: { knockback?: number; from?: THREE.Vector3; aggro?: boolean }) => { killed: boolean; dealt: number }
+  /** Living animals whose body overlaps a circle on the ground. */
+  animalsIn: (center: THREE.Vector3, radius: number) => Animal[]
+  applyStatus: (animal: Animal, kind: 'slow' | 'root' | 'stun', durationMs: number, now: number, factor?: number) => void
+  knockBack: (animal: Animal, direction: THREE.Vector3, strength: number) => void
+  knockUp: (animal: Animal, height: number, durationMs: number, now: number) => void
   pull: (center: THREE.Vector3, radius: number, strength: number) => void
   nearest: (position: THREE.Vector3, radius: number) => Animal | null
   pick: (raycaster: THREE.Raycaster, maxDistance: number) => Animal | null
@@ -775,6 +813,7 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
       barFill: null,
       telegraph: null,
       strike: 0,
+      status: emptyStatus(),
     }
     hitbox.userData.animalId = animal.id
     animals.push(animal)
@@ -863,6 +902,20 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
     })
   }
 
+  /** How each threat tier answers being hit. Shared by every damage source. */
+  const reactToHit = (animal: Animal, now: number) => {
+    if (animal.species.threat === 'passive') {
+      animal.state = 'flee'
+      animal.stateUntil = now + 2600
+    } else if (animal.species.threat === 'defensive') {
+      // Reindeer stand their ground until badly hurt, then bolt.
+      animal.state = animal.hp < animal.species.maxHp * 0.35 ? 'flee' : 'chase'
+      if (animal.state === 'flee') animal.stateUntil = now + 3200
+    } else {
+      animal.state = 'chase'
+    }
+  }
+
   const respawn = (animal: Animal, now: number) => {
     const point = randomGreenPoint(animal.region, rng) ?? animal.home.clone()
     animal.group.position.copy(point)
@@ -876,6 +929,8 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
     animal.group.visible = true
     animal.group.scale.setScalar(1)
     animal.strike = 0
+    // A respawn is a new animal: nothing it suffered before carries over.
+    animal.status = emptyStatus()
   }
 
   const step = (animal: Animal, dx: number, dz: number) => {
@@ -919,6 +974,62 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
     const moved = step(animal, (dx / distance) * stepSize, (dz / distance) * stepSize)
     animal.heading = Math.atan2(dx, dz)
     return moved ? stepSize : 0
+  }
+
+  /** Knockback and knock-up, drained on their own clock so CC never sticks. */
+  const applyShove = (animal: Animal, dt: number, now: number) => {
+    const status = animal.status
+    if (status.knock.lengthSq() > 1e-5) {
+      step(animal, status.knock.x * dt, status.knock.z * dt)
+      status.knock.multiplyScalar(Math.exp(-dt * 6))
+      if (status.knock.lengthSq() < 1e-5) status.knock.set(0, 0, 0)
+    }
+    if (status.lift !== 0 && now >= status.liftUntil) status.lift = 0
+  }
+
+  /** Height above the ground right now, from the knock-up arc. */
+  const airHeight = (animal: Animal, now: number) => {
+    const { lift, liftFrom, liftUntil } = animal.status
+    if (!lift || now >= liftUntil) return 0
+    const span = Math.max(1, liftUntil - liftFrom)
+    return Math.sin(Math.min(1, Math.max(0, (now - liftFrom) / span)) * Math.PI) * lift
+  }
+
+  /** Turning, gait, strike pose and the health bar: the same tail every frame. */
+  const faceAndSettle = (animal: Animal, dt: number, now: number, camera: THREE.Camera, moving: boolean) => {
+    const spec = animal.species
+    const delta = ((animal.heading - animal.group.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI
+    animal.group.rotation.y += delta * Math.min(1, dt * 7)
+    animal.phase += dt * (moving ? 7 + spec.walkSpeed : 1.3)
+    const swing = moving ? 0.5 : 0.04
+    if (animal.parts.legFront) animal.parts.legFront.rotation.x = Math.sin(animal.phase) * swing
+    if (animal.parts.legBack) animal.parts.legBack.rotation.x = -Math.sin(animal.phase) * swing
+    if (animal.parts.tail) animal.parts.tail.rotation.y = Math.sin(animal.phase * 0.6) * 0.35
+    if (animal.parts.head) {
+      const graze = animal.state === 'graze' ? 0.34 + Math.sin(animal.phase * 0.5) * 0.12 : 0
+      animal.parts.head.rotation.x = graze + animal.strike
+    }
+    const airborne = airHeight(animal, now)
+    animal.group.position.y =
+      (moving ? Math.abs(Math.sin(animal.phase)) * 0.03 : Math.sin(animal.phase * 0.7) * 0.012) +
+      animal.strike * -0.12 +
+      airborne
+    animal.group.rotation.x = animal.strike * 0.5
+
+    if (animal.bar) {
+      const show = now < animal.barUntil && animal.hp > 0
+      animal.bar.visible = show
+      if (show) {
+        animal.bar.quaternion.copy(camera.quaternion)
+        const ratio = Math.max(0, animal.hp / spec.maxHp)
+        const width = Math.max(0.7, spec.height * 0.55)
+        if (animal.barFill) {
+          animal.barFill.scale.x = width * ratio
+          const material = animal.barFill.material as THREE.MeshBasicMaterial
+          material.color.set(ratio > 0.55 ? '#8fbf5a' : ratio > 0.25 ? '#e0a63f' : '#e35e35')
+        }
+      }
+    }
   }
 
   const pickDestination = (animal: Animal) => {
@@ -970,6 +1081,25 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
         const huntable = playerVulnerable && !playerSafe
         const leashed = animal.group.position.distanceTo(animal.home) < 30
 
+        // --- crowd control ------------------------------------------------
+        // A stun stops everything; a root only stops the feet, which is why it
+        // is expressed as a speed of zero rather than as an early return.
+        const status = animal.status
+        const stunned = now < status.stunUntil
+        const rooted = now < status.rootUntil
+        const speedScale = stunned || rooted ? 0 : now < status.slowUntil ? status.slowFactor : 1
+        if (stunned) {
+          if (animal.state === 'windup') {
+            if (animal.telegraph) animal.telegraph.visible = false
+            animal.state = 'chase'
+            animal.strike = 0
+          }
+          // Still bleed off knockback and finish a knock-up while stunned.
+          applyShove(animal, dt, now)
+          faceAndSettle(animal, dt, now, camera, false)
+          continue
+        }
+
         // --- threat behaviour -------------------------------------------------
         if (spec.threat === 'aggressive' && huntable && leashed && distance < spec.noticeRadius && animal.state !== 'windup' && animal.state !== 'recover') {
           animal.state = 'chase'
@@ -993,7 +1123,7 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
             }
             break
           case 'wander': {
-            const advanced = moveToward(animal, animal.destination.x, animal.destination.z, spec.walkSpeed, dt)
+            const advanced = moveToward(animal, animal.destination.x, animal.destination.z, spec.walkSpeed * speedScale, dt)
             moving = advanced > 0
             if (!moving || animal.group.position.distanceTo(animal.destination) < 0.8 || now > animal.stateUntil) {
               animal.state = 'graze'
@@ -1008,7 +1138,7 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
             const ax = away.x - away.z * wobble
             const az = away.z + away.x * wobble
             away.set(ax, 0, az).normalize()
-            const speed = spec.fleeSpeed || spec.walkSpeed
+            const speed = (spec.fleeSpeed || spec.walkSpeed) * speedScale
             moving = moveToward(animal, animal.group.position.x + away.x * 4, animal.group.position.z + away.z * 4, speed, dt) > 0
             if (!moving) {
               animal.heading += 1.2 * dt
@@ -1026,8 +1156,8 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
               ensureTelegraph(animal)
               if (animal.telegraph) animal.telegraph.visible = true
             } else {
-              moving = moveToward(animal, playerPos.x, playerPos.z, spec.chaseSpeed, dt) > 0
-              if (!moving && distance > spec.attackRange) {
+              moving = moveToward(animal, playerPos.x, playerPos.z, spec.chaseSpeed * speedScale, dt) > 0
+              if (!moving && !rooted && distance > spec.attackRange) {
                 // Blocked by town geometry: give up rather than grind at the wall.
                 animal.state = 'graze'
                 animal.stateUntil = now + 1200
@@ -1067,74 +1197,86 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
         }
 
         separate(animal, dt)
-
-        // --- animation --------------------------------------------------------
-        const delta = ((animal.heading - animal.group.rotation.y + Math.PI * 3) % (Math.PI * 2)) - Math.PI
-        animal.group.rotation.y += delta * Math.min(1, dt * 7)
-        animal.phase += dt * (moving ? 7 + spec.walkSpeed : 1.3)
-        const swing = moving ? 0.5 : 0.04
-        if (animal.parts.legFront) animal.parts.legFront.rotation.x = Math.sin(animal.phase) * swing
-        if (animal.parts.legBack) animal.parts.legBack.rotation.x = -Math.sin(animal.phase) * swing
-        if (animal.parts.tail) animal.parts.tail.rotation.y = Math.sin(animal.phase * 0.6) * 0.35
-        if (animal.parts.head) {
-          const graze = animal.state === 'graze' ? 0.34 + Math.sin(animal.phase * 0.5) * 0.12 : 0
-          animal.parts.head.rotation.x = graze + animal.strike
-        }
-        animal.group.position.y = (moving ? Math.abs(Math.sin(animal.phase)) * 0.03 : Math.sin(animal.phase * 0.7) * 0.012) + animal.strike * -0.12
-        animal.group.rotation.x = animal.strike * 0.5
-
-        // --- health bar -------------------------------------------------------
-        if (animal.bar) {
-          const show = now < animal.barUntil && animal.hp > 0
-          animal.bar.visible = show
-          if (show) {
-            animal.bar.quaternion.copy(camera.quaternion)
-            const ratio = Math.max(0, animal.hp / spec.maxHp)
-            const width = Math.max(0.7, spec.height * 0.55)
-            if (animal.barFill) {
-              animal.barFill.scale.x = width * ratio
-              const material = animal.barFill.material as THREE.MeshBasicMaterial
-              material.color.set(ratio > 0.55 ? '#8fbf5a' : ratio > 0.25 ? '#e0a63f' : '#e35e35')
-            }
-          }
-        }
+        applyShove(animal, dt, now)
+        faceAndSettle(animal, dt, now, camera, moving)
       }
     },
 
     damageIn(center, radius, damage, now) {
       const hit: Animal[] = []
       let killed = 0
+      for (const animal of system.animalsIn(center, radius)) {
+        const result = system.hurt(animal, damage, now, { from: center, knockback: 1.4 })
+        hit.push(animal)
+        if (result.killed) killed++
+      }
+      return { hits: hit.length, killed, hit }
+    },
+
+    hurt(animal, damage, now, options) {
+      // Dead animals absorb nothing. This is the guard that makes a kill, and
+      // therefore its XP and loot, land exactly once no matter how many
+      // projectiles, ticks or chains arrive in the same frame.
+      if (animal.state === 'dead') return { killed: false, dealt: 0 }
+      const dealt = Math.max(0, Math.round(damage))
+      if (dealt <= 0) return { killed: false, dealt: 0 }
+      animal.hp -= dealt
+      animal.barUntil = now + 4500
+      ensureBar(animal)
+      flash(animal, now)
+      if (options?.knockback && options.from) {
+        const away = new THREE.Vector3(animal.group.position.x - options.from.x, 0, animal.group.position.z - options.from.z)
+        if (away.lengthSq() > 1e-6) system.knockBack(animal, away.normalize(), options.knockback)
+      }
+      if (animal.hp <= 0) {
+        kill(animal, now)
+        return { killed: true, dealt }
+      }
+      if (options?.aggro !== false) reactToHit(animal, now)
+      return { killed: false, dealt }
+    },
+
+    animalsIn(center, radius) {
+      const out: Animal[] = []
       for (const animal of animals) {
         if (animal.state === 'dead') continue
         const dx = animal.group.position.x - center.x
         const dz = animal.group.position.z - center.z
-        const bodyRadius = animal.species.height * 0.35
-        if (Math.hypot(dx, dz) > radius + bodyRadius) continue
-        animal.hp -= damage
-        animal.barUntil = now + 4500
-        ensureBar(animal)
-        flash(animal, now)
-        const knock = new THREE.Vector3(dx, 0, dz)
-        if (knock.lengthSq() > 1e-6) {
-          knock.normalize().multiplyScalar(0.22)
-          step(animal, knock.x, knock.z)
-        }
-        hit.push(animal)
-        if (animal.hp <= 0) {
-          kill(animal, now)
-          killed++
-        } else if (animal.species.threat === 'passive') {
-          animal.state = 'flee'
-          animal.stateUntil = now + 2600
-        } else if (animal.species.threat === 'defensive') {
-          // Reindeer stand their ground until badly hurt, then bolt.
-          animal.state = animal.hp < animal.species.maxHp * 0.35 ? 'flee' : 'chase'
-          if (animal.state === 'flee') animal.stateUntil = now + 3200
-        } else {
-          animal.state = 'chase'
-        }
+        if (Math.hypot(dx, dz) <= radius + animal.species.height * 0.35) out.push(animal)
       }
-      return { hits: hit.length, killed, hit }
+      return out
+    },
+
+    applyStatus(animal, kind, durationMs, now, factor = 1) {
+      if (animal.state === 'dead') return
+      const status = animal.status
+      // Refresh, never extend: the later of "already running" and "just applied".
+      if (kind === 'slow') {
+        const active = now < status.slowUntil
+        const wanted = Math.max(0.15, Math.min(1, factor))
+        // The strongest slow wins while one is already running; otherwise the
+        // new one simply replaces the stale value.
+        status.slowFactor = active ? Math.min(status.slowFactor, wanted) : wanted
+        status.slowUntil = Math.max(active ? status.slowUntil : 0, now + durationMs)
+      } else if (kind === 'root') {
+        status.rootUntil = Math.max(status.rootUntil, now + durationMs)
+      } else {
+        status.stunUntil = Math.max(status.stunUntil, now + durationMs)
+      }
+    },
+
+    knockBack(animal, direction, strength) {
+      if (animal.state === 'dead') return
+      animal.status.knock.copy(direction).setY(0).normalize().multiplyScalar(strength)
+    },
+
+    knockUp(animal, height, durationMs, now) {
+      if (animal.state === 'dead') return
+      animal.status.lift = height
+      animal.status.liftFrom = now
+      animal.status.liftUntil = now + durationMs
+      // A knock-up is a stun for as long as the animal is off the ground.
+      animal.status.stunUntil = Math.max(animal.status.stunUntil, now + durationMs)
     },
 
     pull(center, radius, strength) {

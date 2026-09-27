@@ -1,8 +1,19 @@
 import * as THREE from 'three'
 import { createHash } from 'node:crypto'
-import { createWizard, defaultMothStyle, mothStyleOptions, type MothStyle, type WizardId } from '../src/characters'
+import {
+  characterRows,
+  createWizard,
+  defaultMothStyle,
+  mothStyleOptions,
+  styleLabel,
+  styleSlots,
+  wizards,
+  type MothStyle,
+  type WizardId,
+} from '../src/characters'
 
 const ids: WizardId[] = ['MOTH', 'BRAMBLE', 'CINDER', 'ORBIT']
+const GRID = 18
 
 /** Fingerprint every rendered cube position and colour so we can prove the model actually changed. */
 function fingerprint(style: MothStyle, id: WizardId) {
@@ -35,7 +46,33 @@ function fingerprint(style: MothStyle, id: WizardId) {
 const failures: string[] = []
 const slots = ['hat', 'robe', 'familiar', 'accessory'] as const
 
-console.log('Proving every selector changes the geometry of every character:\n')
+/* A short row silently shifts every voxel after it, and a headgear variant with
+ * a different row count would resize the whole figure, so check both. */
+console.log('Grid integrity (every row exactly 18 wide, row count constant per character):\n')
+for (const id of ids) {
+  const counts = new Set<number>()
+  for (const option of mothStyleOptions.hat) {
+    const rows = characterRows(id, { ...defaultMothStyle, hat: option.id })
+    counts.add(rows.length)
+    rows.forEach((row, index) => {
+      if (row.length !== GRID) failures.push(`${id}/${option.id} row ${index} is ${row.length} wide, expected ${GRID}`)
+    })
+  }
+  const label = `${id} (${wizards[id].name})`
+  console.log(`  ${label.padEnd(18)} ${[...counts].join(',')} rows   ${counts.size === 1 ? 'OK' : 'FAIL: headgear changes the figure height'}`)
+  if (counts.size !== 1) failures.push(`${id} headgear variants disagree on row count: ${[...counts].join(',')}`)
+}
+
+/* Labels are per archetype. If two characters shared a slot label the UI would
+ * be lying about what the selector does on one of them. */
+console.log('\nWardrobe slot labels per archetype:\n')
+for (const id of ids) {
+  const labels = styleSlots(id).map(slot => `${slot.label}=${styleLabel(id, defaultMothStyle, slot.key).label}`)
+  console.log(`  ${wizards[id].name.padEnd(6)} ${labels.join('   ')}`)
+  if (styleSlots(id).length !== 4) failures.push(`${id} does not expose four wardrobe slots`)
+}
+
+console.log('\nProving every selector changes the geometry of every character:\n')
 for (const id of ids) {
   const row: string[] = []
   for (const slot of slots) {

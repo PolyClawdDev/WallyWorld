@@ -38,7 +38,8 @@ function TargetPlate({ target, range }: { target: HuntTarget; range: number }) {
       if (live && fill.current && hp.current && reach.current) {
         const ratio = Math.max(0, live.hp / live.maxHp)
         fill.current.style.width = `${(ratio * 100).toFixed(1)}%`
-        fill.current.style.background = ratio > 0.55 ? '#8fbf5a' : ratio > 0.25 ? '#e0a63f' : '#e35e35'
+        const band = ratio > 0.55 ? 'good' : ratio > 0.25 ? 'warn' : 'low'
+        if (fill.current.dataset.band !== band) fill.current.dataset.band = band
         hp.current.textContent = `${Math.max(0, Math.ceil(live.hp))} / ${live.maxHp}`
         // You can inspect much further than you can strike, so say which it is.
         const near = live.distance <= range
@@ -187,13 +188,11 @@ export function HuntHud({ wizard }: { wizard: WizardId }) {
     const tick = (now: number) => {
       const ratio = Math.max(0, Math.min(1, huntState.hp / huntState.maxHp))
       if (vitalsFill.current) {
+        // Width only: the band colour is a flat field chosen in CSS, because a
+        // gradient would read as a browser progress bar rather than lantern glass.
         vitalsFill.current.style.width = `${(ratio * 100).toFixed(1)}%`
-        vitalsFill.current.style.background =
-          ratio > 0.55
-            ? 'linear-gradient(90deg,#7bc9ce,#9fd98a)'
-            : ratio > 0.25
-              ? 'linear-gradient(90deg,#e0a63f,#f0b84d)'
-              : 'linear-gradient(90deg,#b3372a,#e35e35)'
+        const band = ratio > 0.55 ? 'good' : ratio > 0.25 ? 'warn' : 'low'
+        if (vitalsFill.current.dataset.band !== band) vitalsFill.current.dataset.band = band
       }
       if (vitalsValue.current) vitalsValue.current.textContent = `${Math.ceil(huntState.hp)} / ${huntState.maxHp}`
       if (vitalsStatus.current) {
@@ -242,43 +241,48 @@ export function HuntHud({ wizard }: { wizard: WizardId }) {
     <div className="hunt-hud">
       <div className="hurt-flash" ref={flash} />
 
-      <div className="ability" style={{ ['--ability' as string]: spec.color }}>
-        <div className="ability-head">
-          <strong>{spec.name}</strong>
-          <span>{wizard}</span>
+      {/* One forged plate: ability above the rule, vitality below. Two separate
+          framed panels used to collide once the frames got chunky. */}
+      <div className="hunt-stack" style={{ ['--ability' as string]: spec.color }}>
+        <span className="stack-rivets" aria-hidden="true"><i /><i /><i /><i /></span>
+        <div className="ability">
+          <div className="ability-head">
+            <strong>{spec.name}</strong>
+            <span>{wizard}</span>
+          </div>
+          <p>{spec.note}</p>
+          <div className="ability-cd">
+            <i ref={cooldown} />
+          </div>
+          <div className="ability-keys">
+            <b>LEFT CLICK</b> or <b>F</b> attack · <b>E</b> hunt nearest · <b>H</b> ledger
+          </div>
         </div>
-        <p>{spec.note}</p>
-        <div className="ability-cd">
-          <i ref={cooldown} />
-        </div>
-        <div className="ability-keys">
-          <b>LEFT CLICK</b> or <b>F</b> attack · <b>E</b> hunt nearest · <b>H</b> ledger
-        </div>
-      </div>
 
-      <div className="vitals">
-        <div className="vitals-head">
-          <span>
-            VITALITY <b ref={vitalsValue}>100 / 100</b>
-          </span>
-          <em ref={vitalsStatus}>TOWN · SAFE</em>
+        <div className="vitals">
+          <div className="vitals-head">
+            <span>
+              VITALITY <b ref={vitalsValue}>100 / 100</b>
+            </span>
+            <em ref={vitalsStatus}>TOWN · SAFE</em>
+          </div>
+          <div className="vitals-track">
+            <div className="vitals-fill" ref={vitalsFill} data-band="good" />
+            <span className="vitals-glass" aria-hidden="true" />
+            {[20, 40, 60, 80].map(mark => (
+              <i key={mark} style={{ left: `${mark}%` }} />
+            ))}
+          </div>
+          <div className="vitals-foot">HEALS IN TOWN · SLOW REGEN AFTER 6S OUT OF COMBAT</div>
         </div>
-        <div className="vitals-track">
-          <div className="vitals-fill" ref={vitalsFill} />
-          {[20, 40, 60, 80].map(mark => (
-            <i key={mark} style={{ left: `${mark}%` }} />
-          ))}
-        </div>
-        <div className="vitals-foot">HEALS IN TOWN · SLOW REGEN AFTER 6S OUT OF COMBAT</div>
       </div>
 
       {target && <TargetPlate target={target} range={spec.range} />}
 
       <div className="hunt-compass">
         <span>{huntingArea.label}</span>
-        <em className="arrow" ref={compassArrow}>
-          ↑
-        </em>
+        {/* the needle is a clipped shape in hunt.css, not a glyph */}
+        <em className="arrow" ref={compassArrow} aria-hidden="true" />
         <b ref={compassDistance}>0 M</b>
         <span>H · LEDGER</span>
       </div>

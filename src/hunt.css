@@ -1,12 +1,15 @@
-/* Hunt HUD. Shares the town HUD's palette: #121923 plates, hairline
-   #ffffff16 borders, DM Mono labels, amber #d5a64b and cyan #7bc9ce. */
+/* Hunt HUD, cut from the same materials as the rest of the UI kit (see
+   worldUi.css): timber and charcoal plates with stepped pixel corners,
+   brass rivets, zero-blur bevels, and gauges that read as physical
+   objects — lantern glass for vitality, a carved stone track for the
+   target. No gradients, no blur, no rounded corners. */
 
 .hunt-hud {
   position: absolute;
   inset: 0;
   z-index: 5;
   pointer-events: none;
-  font-family: 'DM Mono', monospace;
+  font-family: 'DM Mono', ui-monospace, monospace;
 }
 .hunt-hud button {
   pointer-events: auto;
@@ -16,380 +19,391 @@
   position: absolute;
   inset: 0;
   opacity: 0;
-  background: radial-gradient(circle at 50% 55%, transparent 38%, #8f1f1fcc 100%);
-  transition: opacity 0.12s linear;
+  /* hard-stepped vignette rather than a soft radial wash */
+  background: radial-gradient(circle at 50% 55%, transparent 0 42%, #6d1a1a66 42% 62%, #8f1f1fcc 62% 100%);
+  transition: opacity 0.12s steps(3, end);
 }
 
-/* --- vitality + ability, stacked above the existing controls line --- */
-.vitals {
+/* --- the forged plate: ability over vitality, one object ---------- */
+.hunt-stack {
   position: absolute;
   left: 28px;
-  bottom: 108px;
-  width: 246px;
-  background: #121923dd;
-  border: 1px solid #ffffff16;
-  padding: 9px 11px 10px;
+  /* clears the controls strip at bottom: 76px plus this plate's drop step */
+  bottom: 118px;
+  width: 268px;
+  padding: 5px;
+  border: 0;
+  background-color: #3b2c20;
+  background-image: repeating-linear-gradient(90deg, #00000014 0 6px, transparent 6px 13px, #ffffff08 13px 14px);
+  box-shadow:
+    inset 0 3px 0 #ffffff1f,
+    inset 0 -4px 0 #00000091,
+    inset 5px 0 0 var(--ability, #d5a64b),
+    inset 0 0 0 2px #00000040,
+    0 5px 0 #00000073;
+  clip-path: var(--vx-clip-sm);
 }
-.vitals-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  font-size: 9px;
-  letter-spacing: 0.14em;
-  color: #8e9a9b;
-}
-.vitals-head b {
-  color: #e5ddc8;
-  font-size: 11px;
-}
-.vitals-head em,
-.hunt-compass em {
-  font-style: normal;
-}
-.vitals-head .safe {
-  color: #7bc9ce;
-}
-.vitals-head .danger {
-  color: #e35e35;
-}
-.vitals-track {
-  position: relative;
-  height: 12px;
-  margin-top: 7px;
-  background: #0b111a;
-  border: 1px solid #ffffff14;
-  overflow: hidden;
-}
-.vitals-fill {
+.stack-rivets i {
   position: absolute;
-  inset: 1px auto 1px 1px;
-  width: 100%;
-  background: linear-gradient(90deg, #7bc9ce, #9fd98a);
-  transition: background 0.3s linear;
+  width: 5px;
+  height: 5px;
+  background: #d5a64b;
+  box-shadow: inset 0 2px 0 #f3d18a, inset 0 -2px 0 #8a5a1e;
 }
-.vitals-track i {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: #0b111a99;
-}
-.vitals-foot {
-  margin-top: 7px;
-  font-size: 8px;
-  letter-spacing: 0.1em;
-  color: #7f8b8c;
-}
+.stack-rivets i:nth-child(1) { left: 12px; top: 9px; }
+.stack-rivets i:nth-child(2) { right: 9px; top: 9px; }
+.stack-rivets i:nth-child(3) { left: 12px; bottom: 9px; }
+.stack-rivets i:nth-child(4) { right: 9px; bottom: 9px; }
 
+/* ability half */
 .ability {
-  position: absolute;
-  left: 28px;
-  bottom: 176px;
-  width: 246px;
-  background: #121923dd;
-  border: 1px solid #ffffff16;
-  border-left: 2px solid var(--ability, #d5a64b);
-  padding: 9px 11px 10px;
+  position: relative;
+  padding: 10px 13px 11px 15px;
 }
 .ability-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
+  gap: 10px;
 }
 .ability-head strong {
-  font-size: 11px;
-  letter-spacing: 0.08em;
+  font: 800 13px Manrope, system-ui, sans-serif;
+  letter-spacing: 0.06em;
   color: var(--ability, #d5a64b);
+  text-shadow: 0 2px 0 #00000091, 0 -1px 0 #ffffff1a;
 }
 .ability-head span {
+  flex: none;
   font-size: 8px;
-  color: #8e9a9b;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.16em;
+  color: #a1927a;
 }
 .ability p {
-  margin: 6px 0 0;
+  margin: 7px 0 0;
   font-size: 9px;
-  line-height: 1.45;
-  color: #97a3a4;
+  line-height: 1.5;
+  color: #c0ae93;
 }
+/* cooldown: a brass strip filling a chiselled slot */
 .ability-cd {
-  height: 3px;
-  margin-top: 8px;
-  background: #0b111a;
+  height: 6px;
+  margin-top: 9px;
+  background: #1c140d;
+  box-shadow: inset 0 2px 0 #00000091, inset 0 -1px 0 #ffffff14;
 }
 .ability-cd i {
   display: block;
   height: 100%;
   width: 0;
   background: var(--ability, #d5a64b);
+  box-shadow: inset 0 2px 0 #ffffff40;
 }
 .ability-keys {
-  margin-top: 8px;
+  margin-top: 9px;
   font-size: 8px;
+  line-height: 2;
   letter-spacing: 0.1em;
-  color: #7f8b8c;
+  color: #9a8d76;
 }
 .ability-keys b {
-  color: #d5a64b;
+  padding: 2px 4px;
+  color: #2a1c08;
+  background: #d5a64b;
+  box-shadow: inset 0 1px 0 #f3d18a, inset 0 -2px 0 #8a5a1e;
 }
 
-/* --- target plate --- */
+/* vitality half, divided from the ability by a cut rule rather than a border */
+.vitals {
+  position: relative;
+  margin-top: 3px;
+  padding: 11px 13px 12px 15px;
+  background: #161b28;
+  box-shadow: inset 0 3px 0 #00000099, inset 0 5px 0 #ffffff0f, inset 0 -3px 0 #00000059;
+}
+.vitals-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  color: #9a8d76;
+}
+.vitals-head b {
+  font: 700 12px 'DM Mono', ui-monospace, monospace;
+  color: #e9dcc0;
+  text-shadow: 0 1px 0 #000000a6;
+}
+.vitals-head em,
+.hunt-compass em {
+  font-style: normal;
+}
+.vitals-head .safe { color: #7bc9ce; }
+.vitals-head .danger { color: #e35e35; }
+
+/* the gauge: lantern panes behind brass housing, filled with a flat field */
+.vitals-track {
+  position: relative;
+  box-sizing: border-box;
+  height: 18px;
+  padding: 5px;
+  margin-top: 8px;
+  background: #0b0f16;
+  box-shadow:
+    inset 0 4px 0 #00000099,
+    inset 0 -3px 0 #ffffff0f,
+    inset 0 0 0 3px #8a5a1e,
+    inset 0 0 0 5px #5a3a12;
+  overflow: hidden;
+}
+.vitals-fill {
+  height: 100%;
+  width: 100%;
+  background: #7bc9ce;
+  box-shadow: inset 0 2px 0 #ffffff4d, inset 0 -3px 0 #00000040;
+  transition: width 0.1s steps(4, end);
+}
+.vitals-fill[data-band='warn'] { background: #f0b84d; }
+.vitals-fill[data-band='low'] { background: #e35e35; }
+.vitals-glass {
+  position: absolute;
+  inset: 5px;
+  pointer-events: none;
+  background: repeating-linear-gradient(90deg, transparent 0 9px, #0b0f16 9px 11px);
+}
+.vitals-track i {
+  position: absolute;
+  top: 5px;
+  bottom: 5px;
+  width: 2px;
+  background: #8a5a1e;
+}
+.vitals-foot {
+  margin-top: 8px;
+  font-size: 8px;
+  line-height: 1.5;
+  letter-spacing: 0.12em;
+  color: #8b7f6a;
+}
+
+/* --- target plate: a stone slab with a carved track --------------- */
 .target-plate {
   position: absolute;
   top: 78px;
   left: 50%;
   transform: translateX(-50%);
-  width: 320px;
-  background: #121923e8;
-  border: 1px solid #ffffff1c;
-  padding: 9px 12px 10px;
+  width: 330px;
+  padding: 11px 14px 12px;
   text-align: center;
+  border: 0;
+  background-color: #1e2637;
+  background-image: repeating-linear-gradient(45deg, #ffffff08 0 2px, transparent 2px 6px);
+  box-shadow: inset 0 3px 0 #ffffff1a, inset 0 -4px 0 #00000091, inset 0 0 0 2px #00000040, 0 4px 0 #00000073;
+  clip-path: var(--vx-clip-sm);
 }
 .target-plate .row {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
   font-size: 9px;
-  letter-spacing: 0.12em;
+  letter-spacing: 0.14em;
 }
 .target-plate strong {
-  font-size: 12px;
-  letter-spacing: 0.14em;
-  color: #e5ddc8;
+  font: 800 14px Manrope, system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  color: #e9dcc0;
+  text-shadow: 0 2px 0 #00000091;
 }
-.target-plate .threat-passive {
-  color: #7bc9ce;
-}
-.target-plate .threat-defensive {
-  color: #d5a64b;
-}
-.target-plate .threat-aggressive {
-  color: #e35e35;
-}
+.target-plate .threat-passive { color: #7bc9ce; }
+.target-plate .threat-defensive { color: #d5a64b; }
+.target-plate .threat-aggressive { color: #e35e35; }
 .target-track {
-  height: 7px;
-  margin: 8px 0 7px;
-  background: #0b111a;
-  border: 1px solid #ffffff14;
+  height: 11px;
+  margin: 9px 0 8px;
+  background: #0b0f16;
+  box-shadow: inset 0 3px 0 #00000099, inset 0 0 0 2px #46392a;
 }
 .target-track i {
   display: block;
   height: 100%;
   background: #8fbf5a;
+  box-shadow: inset 0 2px 0 #ffffff40, inset 0 -2px 0 #00000040;
 }
+.target-track i[data-band='warn'] { background: #f0b84d; }
+.target-track i[data-band='low'] { background: #e35e35; }
 .target-plate .meta {
   display: flex;
   justify-content: space-between;
   gap: 10px;
   white-space: nowrap;
   font-size: 8px;
-  color: #8e9a9b;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.1em;
+  color: #9a8d76;
 }
-.target-plate .meta b {
-  color: #f0b84d;
-}
-.target-plate .reach.near {
-  color: #8fbf5a;
-}
-.target-plate .reach.far {
-  color: #b2673f;
-}
+.target-plate .meta b { color: #f0b84d; }
+.target-plate .reach.near { color: #9fd98a; }
+.target-plate .reach.far { color: #d08b5a; }
 
-/* --- compass out to the wildwood --- */
+/* --- compass: a brass instrument ---------------------------------- */
 .hunt-compass {
   position: absolute;
   right: 28px;
-  /* Clears the minimap and its caption above it. */
-  top: 228px;
-  width: 112px;
-  background: #121923dd;
-  border: 1px solid #ffffff16;
-  padding: 8px 9px 9px;
+  top: 232px;
+  width: 116px;
+  padding: 9px;
   text-align: center;
-  color: #8e9a9b;
+  border: 0;
+  background-color: #2f2216;
+  background-image: repeating-linear-gradient(0deg, #ffffff0a 0 1px, transparent 1px 4px);
+  box-shadow: inset 0 3px 0 #ffffff1a, inset 0 -4px 0 #00000091, inset 0 0 0 3px #8a5a1e59, 0 4px 0 #00000073;
+  clip-path: var(--vx-clip-sm);
   font-size: 8px;
-  letter-spacing: 0.1em;
+  letter-spacing: 0.12em;
+  color: #b7a385;
 }
 .hunt-compass .arrow {
   display: block;
-  font-size: 22px;
-  line-height: 1;
-  color: #9ca66d;
-  margin: 2px 0 4px;
+  margin: 4px auto 5px;
+  width: 26px;
+  height: 26px;
+  font-size: 0;
+  color: transparent;
+  /* the needle is drawn, not typed, so it cannot fall back to a glyph */
+  background: #9ca66d;
+  clip-path: polygon(50% 0, 100% 100%, 50% 74%, 0 100%);
+  box-shadow: none;
   transform-origin: 50% 50%;
 }
 .hunt-compass b {
   display: block;
-  color: #e5ddc8;
-  font-size: 12px;
-  margin-bottom: 2px;
+  margin-bottom: 3px;
+  font: 700 13px 'DM Mono', ui-monospace, monospace;
+  color: #e9dcc0;
 }
 
-/* --- hunt log --- */
+/* --- hunt ledger: a tally sheet on a timber clipboard ------------- */
 .hunt-log {
   position: absolute;
   right: 28px;
-  top: 326px;
-  width: 296px;
-  max-height: 48vh;
+  top: 356px;
+  bottom: 104px;
+  width: 302px;
   overflow: auto;
-  background: #121923f2;
-  border: 1px solid #d5a64b55;
-  padding: 14px 15px 15px;
+  padding: 15px 16px 16px;
   pointer-events: auto;
+  border: 0;
+  background-color: #241a12;
+  background-image: repeating-linear-gradient(45deg, #00000014 0 3px, transparent 3px 6px);
+  box-shadow: inset 0 3px 0 #ffffff14, inset 0 -4px 0 #00000091, inset 0 0 0 3px #8a5a1e59, 0 5px 0 #00000073;
+  clip-path: var(--vx-clip-sm);
 }
 .hunt-log h3 {
-  margin: 4px 0 2px;
-  font-family: Manrope, sans-serif;
-  font-size: 19px;
+  margin: 5px 0 2px;
+  font: 800 20px Manrope, system-ui, sans-serif;
   letter-spacing: -0.03em;
+  color: #e9dcc0;
+  text-shadow: 0 2px 0 #00000091;
 }
-.hunt-log .eyebrow {
-  font-size: 9px;
-}
+.hunt-log .eyebrow { font-size: 9px; letter-spacing: 0.2em; color: #d5a64b; }
 .hunt-log .demo-line {
-  margin: 8px 0 0;
+  margin: 9px 0 0;
+  padding: 8px 9px;
   font-size: 9px;
-  line-height: 1.5;
-  color: #d5a64b;
+  line-height: 1.55;
+  color: #f7dca6;
+  background: #4a3210;
+  box-shadow: inset 0 2px 0 #ffffff1f, inset 0 -3px 0 #00000073, inset 0 0 0 2px #d5a64b59;
+  clip-path: var(--vx-clip-sm);
 }
 .hunt-log .queue {
   margin-top: 12px;
-  background: #1c2a37;
-  border: 1px solid #ffffff13;
-  padding: 10px;
+  padding: 11px;
+  background: #2f2216;
+  box-shadow: inset 0 2px 0 #ffffff12, inset 0 -3px 0 #00000080;
+  clip-path: var(--vx-clip-sm);
 }
 .hunt-log .queue-head {
   display: flex;
   justify-content: space-between;
-  font-size: 9px;
+  font: 700 9px 'DM Mono', ui-monospace, monospace;
+  letter-spacing: 0.14em;
   color: #d5a64b;
 }
-.hunt-log .queue-head b {
-  color: #e35e35;
-}
-.hunt-log .queue p {
-  margin: 8px 0 0;
-  font-size: 9px;
-  line-height: 1.55;
-  color: #94a0a2;
-}
-.hunt-log table {
-  width: 100%;
-  margin-top: 12px;
-  border-collapse: collapse;
-  font-size: 9px;
-}
+.hunt-log .queue-head b { color: #e35e35; }
+.hunt-log .queue p { margin: 9px 0 0; font-size: 9px; line-height: 1.6; color: #b7a385; }
+.hunt-log table { width: 100%; margin-top: 12px; border-collapse: collapse; font-size: 9px; }
 .hunt-log th {
+  padding: 0 0 6px;
   text-align: left;
-  color: #7f8b8c;
   font-weight: 400;
-  padding: 0 0 5px;
-  border-bottom: 1px solid #ffffff14;
+  letter-spacing: 0.14em;
+  color: #9a8d76;
+  border-bottom: 2px dotted #6b5233;
 }
-.hunt-log td {
-  padding: 4px 0;
-  color: #aab3b1;
-  border-bottom: 1px solid #ffffff0a;
-}
-.hunt-log td.amount {
-  text-align: right;
-  color: #f0b84d;
-}
-.hunt-log td.amount.negative {
-  color: #e35e35;
-}
-.hunt-log .empty {
-  margin-top: 12px;
-  font-size: 9px;
-  color: #7f8b8c;
-}
+.hunt-log td { padding: 5px 0; color: #c0ae93; border-bottom: 1px dotted #4b3a24; }
+.hunt-log td.amount { text-align: right; color: #f0b84d; }
+.hunt-log td.amount.negative { color: #e35e35; }
+.hunt-log .empty { margin-top: 12px; font-size: 9px; color: #9a8d76; }
 .hunt-log .close-log {
   position: absolute;
-  right: 10px;
-  top: 8px;
-  font-size: 18px;
-  color: #849394;
+  right: 11px;
+  top: 9px;
+  width: 24px;
+  height: 22px;
+  font: 700 14px/1 'DM Mono', ui-monospace, monospace;
+  color: #2a1c08;
+  background: #d5a64b;
+  box-shadow: inset 0 2px 0 #f3d18a, inset 0 -3px 0 #8a5a1e, 0 2px 0 #00000073;
+  clip-path: var(--vx-clip-sm);
 }
 
-/* --- species key + death banner --- */
-.hunt-key {
-  display: grid;
-  gap: 4px;
-  margin-top: 12px;
-}
+/* --- species key + death banner ---------------------------------- */
+.hunt-key { display: grid; gap: 5px; margin-top: 12px; }
 .hunt-key div {
   display: grid;
-  grid-template-columns: 10px 1fr auto;
-  gap: 8px;
+  grid-template-columns: 12px 1fr auto;
+  gap: 9px;
   align-items: center;
   font-size: 9px;
-  color: #aab3b1;
+  color: #c0ae93;
 }
 .hunt-key i {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 0;
+  box-shadow: inset 0 2px 0 #ffffff33, inset 0 -2px 0 #00000059;
 }
-.hunt-key b {
-  color: #f0b84d;
-}
+.hunt-key b { color: #f0b84d; }
 
 .death-banner {
   position: absolute;
   left: 50%;
   top: 34%;
   transform: translate(-50%, -50%);
-  width: min(430px, 82vw);
-  background: #180f12f0;
-  border: 1px solid #e35e3577;
-  padding: 20px 22px;
+  width: min(440px, 82vw);
+  padding: 22px 24px;
   text-align: center;
+  border: 0;
+  background-color: #2a1414;
+  background-image: repeating-linear-gradient(45deg, #ffffff08 0 2px, transparent 2px 6px);
+  box-shadow: inset 0 3px 0 #ffffff14, inset 0 -5px 0 #00000091, inset 0 0 0 3px #e35e3573, 0 6px 0 #00000080;
+  clip-path: var(--vx-clip);
 }
-.death-banner .eyebrow {
-  color: #e35e35;
-  font-size: 9px;
-}
+.death-banner .eyebrow { font-size: 9px; letter-spacing: 0.22em; color: #e35e35; }
 .death-banner h3 {
-  margin: 10px 0 6px;
-  font-family: Manrope, sans-serif;
-  font-size: 26px;
+  margin: 11px 0 7px;
+  font: 800 27px Manrope, system-ui, sans-serif;
   letter-spacing: -0.04em;
-  color: #e5ddc8;
+  color: #f2e2c4;
+  text-shadow: 0 2px 0 #00000099;
 }
-.death-banner p {
-  margin: 0;
-  font-size: 10px;
-  line-height: 1.6;
-  color: #c2a19a;
-}
-.death-banner p b {
-  color: #f0b84d;
-}
-.death-banner small {
-  display: block;
-  margin-top: 10px;
-  font-size: 8px;
-  letter-spacing: 0.12em;
-  color: #9a8a86;
-}
+.death-banner p { margin: 0; font-size: 10px; line-height: 1.65; color: #d3b0a6; }
+.death-banner p b { color: #f0b84d; }
+.death-banner small { display: block; margin-top: 11px; font-size: 8px; letter-spacing: 0.14em; color: #a89086; }
 
-@media (max-width: 800px) {
-  .vitals,
-  .ability {
-    left: 15px;
-    width: 200px;
-  }
-  .hunt-compass {
-    right: 15px;
-    top: 196px;
-  }
-  .hunt-log {
-    right: 15px;
-    left: 15px;
-    width: auto;
-    top: auto;
-    bottom: 90px;
-  }
+@media (max-width: 900px) {
+  .hunt-stack { left: 15px; width: 236px; bottom: 142px; }
+  .hunt-compass { right: 15px; top: 222px; }
+  .hunt-log { right: 15px; left: auto; width: 288px; top: 324px; bottom: 96px; }
+  .target-plate { width: min(330px, calc(100vw - 30px)); }
 }

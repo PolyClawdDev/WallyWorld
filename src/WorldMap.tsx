@@ -30,24 +30,25 @@ function polygon(cx: number, cz: number, radius: number, sides = 12) {
 
 const metres = (value: number) => `${value >= 0 ? '' : '−'}${Math.abs(Math.round(value))}m`
 
+/** Legend keys use the same ink and parchment tones as the chart itself. */
 function Swatch({ kind, color }: { kind: string; color: string }) {
   return <svg className="mp-swatch" viewBox="0 0 12 12" shapeRendering="crispEdges" aria-hidden="true">
     {kind === 'building' && <>
-      <rect x="1" y="1" width="10" height="10" fill="#4b4145" />
-      <rect x="2" y="2" width="8" height="8" fill={color} />
+      <rect x="1" y="1" width="10" height="10" fill="#9c7f52" stroke="#4a3826" strokeWidth="0.8" />
+      <rect x="3" y="3" width="6" height="6" fill="#e0cda2" />
       <rect x="5" y="0" width="2" height="2" fill="#d5a64b" />
     </>}
-    {kind === 'service' && <polygon points="6,1 11,6 6,11 1,6" fill={color} stroke="#10141f" strokeWidth="1" />}
-    {kind === 'resident' && <rect x="4" y="4" width="4" height="4" fill={color} />}
-    {kind === 'player' && <polygon points="6,11 1,1 6,4 11,1" fill={color} stroke="#10141f" strokeWidth="0.8" />}
-    {kind === 'water' && <><rect x="0" y="0" width="12" height="12" fill="#1b5660" /><rect x="0" y="4" width="12" height="1" fill="#4ca7ae" /><rect x="0" y="8" width="8" height="1" fill="#4ca7ae" /></>}
-    {kind === 'bridge' && <><rect x="0" y="3" width="12" height="6" fill="#765b4a" /><rect x="3" y="3" width="1" height="6" fill="#a07752" /><rect x="7" y="3" width="1" height="6" fill="#a07752" /></>}
-    {kind === 'street' && <><rect x="0" y="0" width="12" height="12" fill="#3a4645" /><rect x="4" y="0" width="4" height="12" fill={color} /></>}
-    {kind === 'tree' && <><rect x="5" y="7" width="2" height="4" fill="#4d3d35" /><rect x="2" y="1" width="8" height="6" fill={color} /></>}
-    {kind === 'plaza' && <polygon points={polygon(6, 6, 5)} fill={color} stroke="#7f8a83" strokeWidth="0.6" />}
+    {kind === 'service' && <polygon points="6,1 11,6 6,11 1,6" fill={color} stroke="#3a2b1c" strokeWidth="1" />}
+    {kind === 'resident' && <rect x="3" y="3" width="6" height="6" fill="#9a9a86" stroke="#3a2b1c" strokeWidth="0.8" />}
+    {kind === 'player' && <polygon points="6,11 1,1 6,4 11,1" fill={color} stroke="#3a2b1c" strokeWidth="0.8" />}
+    {kind === 'water' && <><rect x="0" y="0" width="12" height="12" fill="#a8c9c6" stroke="#4d7f80" strokeWidth="0.8" /><rect x="0" y="4" width="12" height="0.8" fill="#6f9c9c" /><rect x="0" y="8" width="8" height="0.8" fill="#6f9c9c" /></>}
+    {kind === 'bridge' && <><rect x="0" y="3" width="12" height="6" fill="#b08e5c" stroke="#5b4433" strokeWidth="0.6" /><rect x="3" y="3" width="1" height="6" fill="#7a5c39" /><rect x="7" y="3" width="1" height="6" fill="#7a5c39" /></>}
+    {kind === 'street' && <><rect x="0" y="0" width="12" height="12" fill="#e0cda2" /><rect x="4" y="0" width="4" height="12" fill="#d3bb8d" stroke="#a98c5e" strokeWidth="0.5" /></>}
+    {kind === 'tree' && <rect x="2" y="2" width="8" height="8" fill="#7d8a5e" stroke="#4a3826" strokeWidth="0.8" />}
+    {kind === 'plaza' && <polygon points={polygon(6, 6, 5)} fill="#cdb689" stroke="#8a6c43" strokeWidth="0.8" />}
     {kind === 'region' && <polygon points={polygon(6, 6, 5, 14)} fill={`${color}33`} stroke={color} strokeWidth="1" strokeDasharray="2 2" />}
-    {kind === 'trail' && <><rect x="0" y="5" width="12" height="2" fill="#5b4834" /><rect x="1" y="5" width="3" height="2" fill={color} /><rect x="7" y="5" width="3" height="2" fill={color} /></>}
-    {kind === 'animal' && <rect x="3" y="3" width="6" height="6" fill={color} stroke="#10141f" strokeWidth="1" />}
+    {kind === 'trail' && <><rect x="0" y="5" width="12" height="2.4" fill="#7a5c33" /><rect x="1" y="5.7" width="3" height="1" fill="#e0cda2" /><rect x="7" y="5.7" width="3" height="1" fill="#e0cda2" /></>}
+    {kind === 'animal' && <rect x="3" y="3" width="6" height="6" fill={color} stroke="#3a2b1c" strokeWidth="1" />}
   </svg>
 }
 
@@ -95,69 +96,72 @@ export function WorldMap() {
   const { canal, plaza, fountain, marketStalls, noticeBoard } = townLayout
 
   return <>
-    <header className="mp-head">
-      <div>
-        <div className="eyebrow">WALLY WORLD · DISTRICT 01</div>
-        <h2>Old Town Loop.</h2>
-      </div>
-      <span className="mp-scale">{townLayout.ground}m × {townLayout.ground}m · one grid square is 8m · drawn live from the town layout</span>
-    </header>
     <div className="mp">
     <div className="mp-stage">
       <svg ref={svg} viewBox={fitBox} shapeRendering="crispEdges" role="img" aria-label="Map of Wally World, drawn from the live town layout">
         <defs>
+          {/* surveyor's grid ruled straight onto the parchment */}
           <pattern id="mp-grid" width="8" height="8" patternUnits="userSpaceOnUse">
-            <rect width="8" height="8" fill="#26332f" />
-            <rect width="8" height="1" fill="#2d3b36" />
-            <rect width="1" height="8" fill="#2d3b36" />
+            <rect width="8" height="8" fill="#e0cda2" />
+            <rect width="8" height="0.5" fill="#b89f73" />
+            <rect width="0.5" height="8" fill="#b89f73" />
           </pattern>
+          {/* open country: stipple, the way an inked chart shades rough ground */}
           <pattern id="mp-wild" width="6" height="6" patternUnits="userSpaceOnUse">
-            <rect width="6" height="6" fill="#2b3a33" />
-            <rect x="0" y="0" width="2" height="2" fill="#32463c" />
-            <rect x="3" y="3" width="2" height="2" fill="#32463c" />
+            <rect width="6" height="6" fill="#d9c69b" />
+            <rect x="1" y="1" width="1" height="1" fill="#a98c5e" />
+            <rect x="4" y="3" width="1" height="1" fill="#a98c5e" />
+          </pattern>
+          {/* buildings are hatched blocks, not filled shapes */}
+          <pattern id="mp-hatch" width="3" height="3" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <rect width="3" height="3" fill="#c9ab74" />
+            <rect width="1" height="3" fill="#9c7f52" />
+          </pattern>
+          <pattern id="mp-water" width="4" height="4" patternUnits="userSpaceOnUse">
+            <rect width="4" height="4" fill="#a8c9c6" />
+            <rect y="1" width="4" height="0.6" fill="#6f9c9c" />
           </pattern>
         </defs>
         <rect x={FIT.x} y={FIT.z} width={FIT.size} height={FIT.size} fill="url(#mp-wild)" />
         <rect x={-townLayout.ground / 2} y={-townLayout.ground / 2} width={townLayout.ground} height={townLayout.ground} fill="url(#mp-grid)" />
-        <rect x={-townLayout.bounds} y={-townLayout.bounds} width={townLayout.bounds * 2} height={townLayout.bounds * 2} fill="none" stroke="#d5a64b33" strokeWidth="1" strokeDasharray="6 4" />
+        <rect x={-townLayout.bounds} y={-townLayout.bounds} width={townLayout.bounds * 2} height={townLayout.bounds * 2} fill="none" stroke="#8a6c4366" strokeWidth="1" strokeDasharray="6 4" />
 
         {/* hunting grounds and the lit trail, published by the wildlife module */}
-        {huntingRegions.map(region => <polygon key={region.name} points={polygon(region.x, region.z, region.radius, 14)} fill={`${region.accent}1f`} stroke={region.accent} strokeWidth="0.9" strokeDasharray="5 3" />)}
-        <polyline points={trailWaypoints.map(([x, z]) => `${x},${z}`).join(' ')} fill="none" stroke="#5b4834" strokeWidth="3" strokeLinejoin="round" />
-        <polyline points={trailWaypoints.map(([x, z]) => `${x},${z}`).join(' ')} fill="none" stroke="#8a6c4a" strokeWidth="1.2" strokeLinejoin="round" strokeDasharray="4 3" />
+        {huntingRegions.map(region => <polygon key={region.name} points={polygon(region.x, region.z, region.radius, 14)} fill={`${region.accent}26`} stroke={region.accent} strokeWidth="1.1" strokeDasharray="5 3" />)}
+        <polyline points={trailWaypoints.map(([x, z]) => `${x},${z}`).join(' ')} fill="none" stroke="#7a5c33" strokeWidth="2.6" strokeLinejoin="round" />
+        <polyline points={trailWaypoints.map(([x, z]) => `${x},${z}`).join(' ')} fill="none" stroke="#e0cda2" strokeWidth="1" strokeLinejoin="round" strokeDasharray="3 3" />
 
         {/* streets, plaza, canal, bridges: the same numbers the world is built from */}
-        {townLayout.streets.map((street, index) => <rect key={index} x={street.x - street.width / 2} y={street.z - street.depth / 2} width={street.width} height={street.depth} fill={street.color} />)}
-        <polygon points={polygon(plaza.x, plaza.z, plaza.radius)} fill={plaza.color} stroke="#828d85" strokeWidth="0.8" />
-        <rect x={canal.x - canal.bankWidth / 2} y={canal.z - canal.bankLength / 2} width={canal.bankWidth} height={canal.bankLength} fill={canal.bank} />
-        <rect x={canal.x - canal.waterWidth / 2} y={canal.z - canal.waterLength / 2} width={canal.waterWidth} height={canal.waterLength} fill={canal.water} />
-        {Array.from({ length: 30 }, (_, i) => <rect key={i} x={canal.x - canal.waterWidth / 2 + (i % 2 ? 0.8 : 2.6)} y={canal.z - canal.waterLength / 2 + 3 + i * 4} width="3.4" height="1" fill="#4ca7ae" opacity="0.5" />)}
+        {townLayout.streets.map((street, index) => <rect key={index} x={street.x - street.width / 2} y={street.z - street.depth / 2} width={street.width} height={street.depth} fill="#d3bb8d" stroke="#a98c5e" strokeWidth="0.6" />)}
+        <polygon points={polygon(plaza.x, plaza.z, plaza.radius)} fill="#cdb689" stroke="#8a6c43" strokeWidth="0.9" />
+        <rect x={canal.x - canal.bankWidth / 2} y={canal.z - canal.bankLength / 2} width={canal.bankWidth} height={canal.bankLength} fill="#c3bb8f" stroke="#8a6c43" strokeWidth="0.6" />
+        <rect x={canal.x - canal.waterWidth / 2} y={canal.z - canal.waterLength / 2} width={canal.waterWidth} height={canal.waterLength} fill="url(#mp-water)" stroke="#4d7f80" strokeWidth="0.7" />
         {townLayout.bridges.map(bridgeZ => <g key={bridgeZ}>
-          <rect x={canal.x - 7.5} y={bridgeZ - 2.75} width="15" height="5.5" fill="#765b4a" stroke="#4b4037" strokeWidth="0.6" />
-          {Array.from({ length: 7 }, (_, i) => <rect key={i} x={canal.x - 6.3 + i * 2} y={bridgeZ - 2.75} width="0.7" height="5.5" fill="#a07752" />)}
+          <rect x={canal.x - 7.5} y={bridgeZ - 2.75} width="15" height="5.5" fill="#b08e5c" stroke="#5b4433" strokeWidth="0.8" />
+          {Array.from({ length: 7 }, (_, i) => <rect key={i} x={canal.x - 6.3 + i * 2} y={bridgeZ - 2.75} width="0.7" height="5.5" fill="#7a5c39" />)}
         </g>)}
-        <polygon points={polygon(fountain.x, fountain.z, fountain.radius)} fill="#68777b" stroke="#8a9799" strokeWidth="0.5" />
-        <polygon points={polygon(fountain.x, fountain.z, 3.5)} fill="#4ca7ae" />
-        {Array.from({ length: marketStalls.count }, (_, i) => <rect key={i} x={marketStalls.x + i * marketStalls.step - 0.9} y={marketStalls.z - 0.35} width="1.8" height="0.7" fill="#896746" />)}
-        <rect x={noticeBoard.x - 2.25} y={noticeBoard.z - 0.4} width="4.5" height="0.8" fill="#765b42" />
+        <polygon points={polygon(fountain.x, fountain.z, fountain.radius)} fill="#c0b48d" stroke="#5b4433" strokeWidth="0.7" />
+        <polygon points={polygon(fountain.x, fountain.z, 3.2)} fill="#a8c9c6" stroke="#4d7f80" strokeWidth="0.5" />
+        {Array.from({ length: marketStalls.count }, (_, i) => <rect key={i} x={marketStalls.x + i * marketStalls.step - 0.9} y={marketStalls.z - 0.35} width="1.8" height="0.7" fill="#8a6c43" />)}
+        <rect x={noticeBoard.x - 2.25} y={noticeBoard.z - 0.4} width="4.5" height="0.8" fill="#8a6c43" />
 
-        {/* woodland ring */}
-        {trees.map((tree, index) => <rect key={index} x={tree.x - 1.4} y={tree.z - 1.4} width="2.8" height="2.8" fill={tree.alt ? '#385847' : '#49624d'} />)}
+        {/* woodland ring: inked tufts */}
+        {trees.map((tree, index) => <rect key={index} x={tree.x - 1.3} y={tree.z - 1.3} width="2.6" height="2.6" fill={tree.alt ? '#6d7d4e' : '#7d8a5e'} stroke="#4a3826" strokeWidth="0.4" />)}
 
-        {/* the wildlife safe zone, so the map says where animals leave you alone */}
-        <polygon points={polygon(SAFE_ZONE.x, SAFE_ZONE.z, SAFE_ZONE.r, 24)} fill="none" stroke="#7bc9ce4d" strokeWidth="0.9" strokeDasharray="4 4" />
-        <text className="mp-label" x={SAFE_ZONE.x} y={SAFE_ZONE.z + SAFE_ZONE.r - 3} fill="#7bc9ce" textAnchor="middle">SAFE ZONE</text>
+        {/* the wildlife safe zone, so the chart says where animals leave you alone */}
+        <polygon points={polygon(SAFE_ZONE.x, SAFE_ZONE.z, SAFE_ZONE.r, 24)} fill="none" stroke="#4d7f8099" strokeWidth="1" strokeDasharray="4 4" />
+        <text className="mp-label" x={SAFE_ZONE.x} y={SAFE_ZONE.z + SAFE_ZONE.r - 3} fill="#37696b" textAnchor="middle">SAFE ZONE</text>
 
         {/* buildings, straight from the BuildingSpec list */}
         {buildingSpecs.map(spec => {
           const left = spec.x - spec.width / 2
           const top = spec.z - spec.depth / 2
           return <g key={spec.name}>
-            <rect x={left} y={top} width={spec.width} height={spec.depth} fill={spec.roof} stroke="#10141f" strokeWidth="0.8" />
-            <rect x={left + 1.4} y={top + 1.4} width={spec.width - 2.8} height={spec.depth - 2.8} fill={spec.wall} />
+            <rect x={left} y={top} width={spec.width} height={spec.depth} fill="url(#mp-hatch)" stroke="#4a3826" strokeWidth="0.9" />
+            <rect x={left + 1.6} y={top + 1.6} width={spec.width - 3.2} height={spec.depth - 3.2} fill="#e0cda2" stroke="none" />
             {/* the entrance sits on the -z face, exactly as createBuilding places it */}
-            <rect x={spec.x - 1.2} y={top - 0.8} width="2.4" height="1.9" fill={spec.accent ?? '#d5a64b'} />
-            <text className="mp-label" x={spec.x} y={spec.z + spec.depth / 2 + 4.2} fill="#e5ddc8" textAnchor="middle">{spec.sign}</text>
+            <rect x={spec.x - 1.2} y={top - 0.9} width="2.4" height="2" fill={spec.accent ?? '#d5a64b'} stroke="#4a3826" strokeWidth="0.4" />
+            <text className="mp-label" x={spec.x} y={spec.z + spec.depth / 2 + 4.2} fill="#3a2b1c" textAnchor="middle">{spec.sign}</text>
           </g>
         })}
 
@@ -172,27 +176,41 @@ export function WorldMap() {
           width="2.2"
           height="2.2"
           fill={speciesSpecs[animal.species].mapColor}
-          stroke="#10141f"
+          stroke="#3a2b1c"
           strokeWidth="0.5"
         />)}
 
         {/* residents */}
-        {ambientNpcs.map((npc, index) => <rect key={index} x={npc.x - 1.3} y={npc.z - 1.3} width="2.6" height="2.6" fill="#849394" stroke="#10141f" strokeWidth="0.6" />)}
+        {ambientNpcs.map((npc, index) => <rect key={index} x={npc.x - 1.3} y={npc.z - 1.3} width="2.6" height="2.6" fill="#9a9a86" stroke="#3a2b1c" strokeWidth="0.6" />)}
 
         {/* named service NPCs */}
         {serviceNpcs.map(npc => <g key={npc.name}>
-          <polygon points={polygon(npc.x, npc.z, 2.9, 4)} fill={npc.color} stroke="#10141f" strokeWidth="0.9" />
-          <rect x={npc.x - 0.6} y={npc.z - 0.6} width="1.2" height="1.2" fill="#10141f" />
-          <text className="mp-npc" x={npc.x + 4} y={npc.z + 1.1} fill={npc.color}>{npc.name.split('·')[0].trim()}</text>
+          <polygon points={polygon(npc.x, npc.z, 2.9, 4)} fill={npc.color} stroke="#3a2b1c" strokeWidth="0.9" />
+          <rect x={npc.x - 0.6} y={npc.z - 0.6} width="1.2" height="1.2" fill="#3a2b1c" />
+          <text className="mp-npc" x={npc.x + 4} y={npc.z + 1.1} fill="#3a2b1c">{npc.name.split('·')[0].trim()}</text>
         </g>)}
 
         {/* district tags, keyed to the ground their own buildings occupy */}
-        {grouped.map(group => <text key={group.district.id} className="mp-district" x={group.x} y={group.z} fill={group.district.accent}>{group.district.name}</text>)}
+        {grouped.map(group => <text key={group.district.id} className="mp-district" x={group.x} y={group.z} fill="#6b5640">{group.district.name}</text>)}
+
+        {/* compass rose and scale bar, drawn with the same ink as the chart */}
+        <g className="mp-rose" transform="translate(80 -82)">
+          <polygon points={polygon(0, 0, 11, 16)} fill="#e0cda2" stroke="#8a6c43" strokeWidth="0.7" />
+          <polygon points="0,-11 2.4,-2.4 11,0 2.4,2.4 0,11 -2.4,2.4 -11,0 -2.4,-2.4" fill="#e7d7b0" stroke="#4a3826" strokeWidth="0.6" />
+          <polygon points="0,-11 2.4,-2.4 0,0 -2.4,-2.4" fill="#8a5a1e" stroke="#4a3826" strokeWidth="0.5" />
+          <polygon points="0,11 2.4,2.4 0,0 -2.4,2.4" fill="#4a3826" />
+          <text x="0" y="-12.6" fill="#4a3826" textAnchor="middle">N</text>
+        </g>
+        <g transform="translate(-96 94)">
+          {[0, 1, 2, 3, 4].map(i => <rect key={i} x={i * 10} y="0" width="10" height="2.4" fill={i % 2 ? '#e7d7b0' : '#4a3826'} stroke="#4a3826" strokeWidth="0.4" />)}
+          <text className="mp-label" x="0" y="-2" fill="#4a3826" textAnchor="start">0</text>
+          <text className="mp-label" x="50" y="-2" fill="#4a3826" textAnchor="end">50M</text>
+        </g>
 
         {/* live player marker: position and facing are read from the running scene */}
         <g ref={marker} className="mp-player" transform={`translate(${pose?.x ?? 0} ${pose?.z ?? 8}) rotate(${(-(pose?.facing ?? 0) * 180) / Math.PI})`}>
-          <polygon points={polygon(0, 0, 6.4, 12)} fill="#d5a64b18" stroke="#d5a64b66" strokeWidth="0.6" />
-          <polygon points="0,5.2 -3.6,-4.4 0,-1.6 3.6,-4.4" fill="#d5a64b" stroke="#10141f" strokeWidth="0.8" />
+          <polygon points={polygon(0, 0, 6.4, 12)} fill="#8a5a1e26" stroke="#8a5a1e99" strokeWidth="0.7" />
+          <polygon points="0,5.2 -3.6,-4.4 0,-1.6 3.6,-4.4" fill="#d5a64b" stroke="#3a2b1c" strokeWidth="0.9" />
         </g>
       </svg>
       {!pose && <div className="mp-offline">The world is not running, so no live position is available.</div>}
@@ -245,7 +263,7 @@ export function WorldMap() {
       </div>}
 
       {grouped.map(group => <div key={group.district.id} className="mp-places">
-        <div className="task-head"><span style={{ color: group.district.accent }}>{group.district.name}</span><b>{group.members.length}</b></div>
+        <div className="task-head"><span>{group.district.name}</span><b>{group.members.length}</b></div>
         <ul>
           {group.members.map(spec => <li key={spec.name}><i style={{ background: spec.accent ?? '#d5a64b' }} />{spec.name}<em>{metres(spec.x)} {metres(spec.z)}</em></li>)}
         </ul>

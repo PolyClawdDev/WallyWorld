@@ -43,7 +43,7 @@ const settle = () => page.waitForFunction(() => {
 }, { polling: 250, timeout: 10000 })
 
 await page.evaluateOnNewDocument(() => localStorage.clear())
-await page.goto('http://127.0.0.1:5173/', { waitUntil: 'networkidle0' })
+await page.goto((process.env.BASE ?? 'http://127.0.0.1:5173') + '/', { waitUntil: 'networkidle0' })
 await clickText('Enter the world')
 await clickText('Continue with')
 await clickText('Enter Wally World')
