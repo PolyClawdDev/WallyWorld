@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { CHARACTERS, DEFAULT_PROFILE, sanitisePlayerName, type ProfileStyle } from '../../shared/profile'
-import { STARTING_GAME_GOLD, type PublicLoadout, type WizardId } from '../../shared/pvp'
+import { type PublicLoadout, type WizardId } from '../../shared/pvp'
+import { resolveUserForPrincipal } from '../identity/users'
+import { ensureGoldAccounts, grantStartingGold } from '../money/gold'
 import { db } from './schema'
 
 export type AccountRow = {
@@ -22,15 +24,14 @@ const insertAccount = db.prepare(`
   values (@player_id, @account_id, @display_name, @character, @style_json, @level, @ranks_json, 0, @now, @now)
 `)
 
-const insertGold = db.prepare(`
-  insert into game_gold (player_id, available, reserved, wins, losses, draws, updated_at_ms)
-  values (@player_id, @available, 0, 0, 0, 0, @now)
-`)
-
-const insertLedger = db.prepare(`
-  insert or ignore into game_gold_ledger (id, player_id, kind, amount, available_after, reserved_after, ref_type, ref_id, note, created_at_ms)
-  values (@id, @player_id, @kind, @amount, @available_after, @reserved_after, @ref_type, @ref_id, @note, @now)
-`)
+/**
+ * Adopts a row that was keyed on the raw session principal before the
+ * `users` table existed, so an existing development database keeps its
+ * character and its player id instead of silently gaining a second one.
+ */
+const adoptLegacyAccount = db.prepare(
+  'update pvp_accounts set account_id = @user_id, updated_at_ms = @now where account_id = @principal_id',
+)
 
 const updateLoadout = db.prepare(`
   update pvp_accounts
@@ -49,15 +50,32 @@ export function newId(prefix: 'p' | 'c' | 'd' | 'e' | 'j' | 's'): string {
   return `${prefix}_${randomBytes(16).toString('hex')}`
 }
 
-/** Public player id is a random token, not a hash of the wallet. */
+/**
+ * The player record for whoever this session belongs to.
+ *
+ * `accountId` is the session principal — a wallet address, a hashed guest key, or
+ * a dev label. It is resolved to a canonical `user_id` first, and the player row
+ * is keyed on that. This is why linking a wallet to a guest account does not
+ * create a second player: both principals resolve to the same user, so both find
+ * the same row.
+ *
+ * The public `player_id` is a random token, not a hash of the wallet.
+ */
 export function ensureAccount(accountId: string, now = Date.now()): AccountRow {
-  const existing = selectByAccount.get(accountId)
-  if (existing) return existing
-  const playerId = newId('p')
+  const { userId } = resolveUserForPrincipal(accountId, now)
+  const existing = selectByAccount.get(userId)
+  if (existing) {
+    ensureGoldAccounts(userId, now)
+    return existing
+  }
+
   const open = db.transaction(() => {
+    if (adoptLegacyAccount.run({ principal_id: accountId, user_id: userId, now }).changes === 1) {
+      return selectByAccount.get(userId)!
+    }
     insertAccount.run({
-      player_id: playerId,
-      account_id: accountId,
+      player_id: newId('p'),
+      account_id: userId,
       display_name: DEFAULT_PROFILE.playerName,
       character: DEFAULT_PROFILE.character,
       style_json: JSON.stringify(DEFAULT_PROFILE.style),
@@ -65,30 +83,36 @@ export function ensureAccount(accountId: string, now = Date.now()): AccountRow {
       ranks_json: JSON.stringify({ Q: 0, W: 0, E: 0, R: 0 }),
       now,
     })
-    insertGold.run({ player_id: playerId, available: STARTING_GAME_GOLD, now })
-    insertLedger.run({
-      id: newId('s'),
-      player_id: playerId,
-      kind: 'stipend',
-      amount: STARTING_GAME_GOLD,
-      available_after: STARTING_GAME_GOLD,
-      reserved_after: 0,
-      ref_type: 'account',
-      ref_id: playerId,
-      note: 'Demo starting game gold. Not SOL.',
-      now,
-    })
-    return selectByAccount.get(accountId)!
+    return selectByAccount.get(userId)!
   })
-  return open()
+  const row = open()
+  // Outside the core-database transaction on purpose: the grant is a write to the
+  // *financial* database, and the two cannot share a transaction. It is
+  // idempotent on the user id, so a crash between the two leaves a player with an
+  // account and no grant, and the next call completes it.
+  ensureGoldAccounts(userId, now)
+  grantStartingGold(userId, now)
+  return row
 }
 
 export function accountByPlayer(playerId: string): AccountRow | undefined {
   return selectByPlayer.get(playerId)
 }
 
+/** Looks up by session principal, resolving through the identity layer. */
 export function accountByWallet(accountId: string): AccountRow | undefined {
-  return selectByAccount.get(accountId)
+  const { userId } = resolveUserForPrincipal(accountId)
+  return selectByAccount.get(userId)
+}
+
+/** The canonical account a public player id belongs to. Used by the gold adapter. */
+export function userIdForPlayer(playerId: string): string | null {
+  return selectByPlayer.get(playerId)?.account_id ?? null
+}
+
+/** The public player id for a canonical account, if the player record exists. */
+export function playerIdForUser(userId: string): string | null {
+  return selectByAccount.get(userId)?.player_id ?? null
 }
 
 export function parseLoadout(input: unknown): PublicLoadout | null {

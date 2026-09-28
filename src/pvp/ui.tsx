@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { wizards } from '../characters'
 import { DEMO_GOLD_NOTICE } from '../shared/pvp'
-import { fetchPvpJournal, send } from './net'
+import { fetchPvpJournal, reclaimPvp, send } from './net'
 import { isDuelLocked, pingPvp, pvpState, subscribePvp } from './store'
 import './pvp.css'
 
@@ -21,7 +21,10 @@ export function PvpOverlay() {
   const s = usePvp()
   return (
     <div className="pvp-layer" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
-      {!s.connected && <div className="pvp-chip">{s.reconnecting ? 'Reconnecting to the shared town…' : 'Joining the shared town…'}</div>}
+      {s.superseded && <SupersededCard />}
+      {!s.connected && !s.superseded && (
+        <div className="pvp-chip">{s.reconnecting ? 'Reconnecting to the shared town…' : 'Joining the shared town…'}</div>
+      )}
       {s.signedIn && s.connected && (
         <div className="pvp-chip pvp-gold-chip">
           ✦ {s.gold.available} GAME GOLD<small>{s.gold.reserved ? ` · ${s.gold.reserved} in escrow` : ''} · DEMO</small>
@@ -33,6 +36,30 @@ export function PvpOverlay() {
       {s.invite && <InviteCard />}
       {s.duel && <DuelHud />}
       {s.result && <ResultCard />}
+    </div>
+  )
+}
+
+/**
+ * One character, one tab.
+ *
+ * Shown to the tab that lost the claim. It is a prompt rather than an
+ * automatic recovery on purpose: reconnecting from here takes the
+ * character back, so doing it silently would put the two tabs straight
+ * into a loop of evicting each other.
+ */
+function SupersededCard() {
+  return (
+    <div className="pvp-card pvp-superseded">
+      <h3>Playing somewhere else</h3>
+      <p>
+        This character was opened in another tab or on another device. Only one can control a wizard at a time, so this
+        one has stopped.
+      </p>
+      <div className="pvp-actions">
+        <button type="button" onClick={() => reclaimPvp()}>Play here instead</button>
+      </div>
+      <p className="pvp-demo">Taking it back here will stop the other tab.</p>
     </div>
   )
 }

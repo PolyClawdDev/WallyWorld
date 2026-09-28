@@ -18,3 +18,7 @@ dist-dev
 
 # Screenshots written by the verification scripts on every run.
 screenshots/
+
+# Scratch space for reading vendor sources and unpacked packages while
+# verifying an integration. Holds tens of megabytes and nothing we author.
+.probe/

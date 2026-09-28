@@ -23,6 +23,17 @@ const CREDENTIAL_VARS = [
   'SOLANA_RPC_URL_TESTNET',
 ]
 
+/**
+ * Database URLs are searched for too, but differently.
+ *
+ * The secret in `postgres://user:password@host/db` is the password and
+ * the URL as a whole. The host is not, and treating it as one would be
+ * worse than useless: a local `localhost` or a Render `dpg-…` hostname
+ * would match ordinary strings in the bundle and report a leak that is
+ * not one. So only the whole URL and the password are looked for.
+ */
+const DATABASE_VARS = ['DATABASE_URL', 'WALLY_DATABASE_URL']
+
 /** Hosts that are public infrastructure, so finding one is not a leak. */
 const PUBLIC_HOSTS = /(^|\.)solana\.com$/
 
@@ -70,6 +81,18 @@ function needles(): Needle[] {
     if (url.password) add(`${name} password`, url.password)
   }
 
+  for (const name of DATABASE_VARS) {
+    const raw = process.env[name]
+    if (!raw) continue
+    add(`${name} (full URL)`, raw)
+    try {
+      const url = new URL(raw)
+      if (url.password) add(`${name} password`, decodeURIComponent(url.password))
+    } catch {
+      /* an unparseable value is still searched for whole, above */
+    }
+  }
+
   // Provider names, in case an endpoint is configured that this run cannot see.
   add('provider name "quiknode"', 'quiknode')
   add('provider name "quicknode"', 'quicknode')
@@ -97,7 +120,7 @@ const targets = needles()
 console.log('Voxels · bundle credential audit')
 console.log(`  searching   ${DIRS.join(', ')}`)
 console.log(`  needles     ${targets.length}`)
-const configured = CREDENTIAL_VARS.filter(name => process.env[name])
+const configured = [...CREDENTIAL_VARS, ...DATABASE_VARS].filter(name => process.env[name])
 console.log(`  from env    ${configured.length ? configured.join(', ') : 'none set — provider-name checks only'}`)
 if (!configured.length) {
   console.log('\n  NOTE: no endpoint variables are set in this shell, so the audit could')

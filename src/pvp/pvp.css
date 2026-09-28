@@ -56,6 +56,16 @@
 .pvp-wide { width: min(380px, calc(100vw - 36px)); }
 .pvp-invite { top: 88px; left: 18px; right: auto; }
 
+/* Centred rather than tucked in the corner: this one stops play, so it has
+   to be the thing the player looks at rather than a notification. */
+.pvp-superseded {
+  top: 50%;
+  left: 50%;
+  right: auto;
+  transform: translate(-50%, -50%);
+  border-color: #c4a15a;
+}
+
 .pvp-x {
   position: absolute;
   top: 8px;

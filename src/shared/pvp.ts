@@ -48,12 +48,39 @@ export const PREPARE_TIMEOUT_MS = 45_000
 export const POSE_HZ = 12
 export const COMBAT_TICK_MS = 50
 export const INTERACT_RANGE = 18
+/**
+ * The one-time starting grant, in gold base units.
+ *
+ * This used to be a PvP-only stipend in a PvP-only table. It is now a credit on
+ * the single ledger with `gift` provenance — spendable while hunting, trading and
+ * duelling alike, and never redeemable. The server-side value is
+ * `STARTING_GRANT_GOLD` in `src/server/money/gold.ts`; this copy is for the client
+ * to display and must match it.
+ */
 export const STARTING_GAME_GOLD = 250
 export const CHALLENGE_RATE_MS = 8_000
 export const CHALLENGE_RATE_BURST = 3
 export const MAX_STAKE = 1_000_000_000
 export const DEMO_GOLD_NOTICE = 'Demo — no real funds' as const
 export const GOLD_KIND = 'game-gold' as const
+
+/* ------------------------------------------------------------------ *
+ * Connection health.
+ *
+ * A public deployment sits behind a load balancer that will drop an
+ * idle-looking connection, and behind home routers that quietly forget
+ * NAT entries. Both sides ping so neither has to guess.
+ * ------------------------------------------------------------------ */
+
+/** How often each side proves it is still there. */
+export const HEARTBEAT_INTERVAL_MS = 20_000
+
+/** No traffic for this long and the connection is treated as dead. */
+export const STALE_CONNECTION_MS = 60_000
+
+/** Reconnect backoff: doubles from the base, capped, with jitter applied by the client. */
+export const RECONNECT_BASE_MS = 500
+export const RECONNECT_MAX_MS = 30_000
 
 export type PublicLoadout = {
   character: WizardId
@@ -191,6 +218,13 @@ export type GoldView = {
   total: number
   available: number
   reserved: number
+  /**
+   * The part of this balance that could ever be redeemed, if a redemption
+   * existed. Only gold credited against a server-issued hunt kill token counts;
+   * duel winnings, gifts and imported demo balances never do. There is no payout
+   * path, so today this is a label on the ledger rather than a promise.
+   */
+  redeemable: number
   wins: number
   losses: number
   draws: number
@@ -230,6 +264,20 @@ export type S2C =
   | { t: 'journal'; entries: JournalEntry[] }
   | { t: 'error'; code: string; detail: string }
   | { t: 'pong'; at: number }
+  /**
+   * This character is now being played somewhere else.
+   *
+   * Sent to the losing connection just before it is closed. A client that
+   * receives this must stop reconnecting: the close that follows is not a
+   * network fault, and retrying would kick the other tab straight back
+   * out, which is a loop neither tab escapes.
+   */
+  | { t: 'superseded'; detail: string }
+  /**
+   * The instance is shutting down. Reconnecting is correct, after a wait
+   * long enough for the replacement to be listening.
+   */
+  | { t: 'serverClosing'; reconnectAfterMs: number; detail: string }
 
 export type CombatEvent =
   | { kind: 'hit'; source: PlayerId; target: PlayerId; amount: number; label: string }

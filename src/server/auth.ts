@@ -153,6 +153,27 @@ export function walletFromAuthHeader(header: string | undefined, now = Date.now(
   return resolveSession(hashToken(token), now)
 }
 
+/**
+ * The stored hash of the caller's session token.
+ *
+ * Needed so a wallet-link challenge can be bound to the exact session that asked
+ * for it: the signature then proves control of the wallet *and* possession of the
+ * session that is claiming the account, which is what stops a signature captured
+ * elsewhere from being replayed to claim somebody else's guest progress.
+ *
+ * Returns the hash whether or not the session is live; the caller checks
+ * liveness, because a link challenge issued to a session that has since expired
+ * must fail loudly rather than be silently reissued.
+ */
+export function sessionHashFromAuthHeader(header: string | undefined): string | null {
+  if (!header) return null
+  const match = /^Bearer (.+)$/.exec(header.trim())
+  if (!match) return null
+  const token = match[1].trim()
+  if (!token || token.length > 512) return null
+  return hashToken(token)
+}
+
 export function revokeFromAuthHeader(header: string | undefined): void {
   if (!header) return
   const match = /^Bearer (.+)$/.exec(header.trim())

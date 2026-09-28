@@ -19,6 +19,7 @@ import { createVitals } from './combat'
 import { huntState, pingHunt, resetHuntState } from './huntStore'
 import { HuntHud } from './huntHud'
 import { creditPickup, debitDeath, recordKill } from './rewards'
+import { attachHuntSession, claimKillOnServer, reportDeathOnServer } from './serverGold'
 import { JournalPanel, SettingsPanel } from './panels'
 import { FundsBadge, MainnetWarningBanner } from './solana/FundsBadge'
 import { WalletSolanaPanel } from './solana/WalletPanel'
@@ -625,6 +626,10 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       // Death forfeits a slice of carried gold onto the ground, where anyone
       // can pick it up again — the same rule as every other drop in town.
       const lost = debitDeath(killer)
+      // The server applies its own forfeit to its own balance, computed from what
+      // it thinks the player was carrying. The figure above is only what the world
+      // scatters on the ground.
+      void reportDeathOnServer()
       if (lost > 0) {
         const count = Math.min(6, lost)
         const coins = Array.from({ length: count }, (_, index) =>
@@ -646,6 +651,9 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         // wildlife.kill() is reachable only once per animal, so gold, the
         // ledger entry and the XP award below all happen exactly once.
         recordKill(kill.label, kill.goldBaseUnits)
+        // Spend the server's token for this species. The amount credited is the
+        // server's, not `kill.goldBaseUnits`, and it lands at most once.
+        void claimKillOnServer(kill.species)
         dropGold(kill.position, kill.coins, 0.55 + kill.coins.length * 0.12)
         battle?.awardXp(killXp(kill.species, progressFor(wizard).level))
         huntState.kills += 1
@@ -659,6 +667,10 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       },
     })
     battle = createBattle({ scene, camera, player, wizard, wildlife, nav, vitals })
+    // Ask the server for a hunt roster now, so the first kill has a token to spend
+    // instead of waiting on a round trip. It is deliberately not awaited: if there
+    // is no server the world still loads and the balance is simply local.
+    void attachHuntSession(compassHuntRegion(progressFor(wizard).level).id, Math.max(1, progressFor(wizard).level))
     const unregisterCommands = registerBattleCommands({
       upgrade: slot => battle?.upgrade(slot) ?? false,
       setQuickCast: on => battle?.setQuickCast(on),
@@ -907,13 +919,22 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       const safe = isSafeZone(player.position.x, player.position.z)
       if (!isDuelLocked()) vitals.update(dt, now, safe)
       wildlife.update(dt, now, player.position, camera, !isDuelLocked() && vitals.hp > 0 && !vitals.isInvulnerable(now))
-      updatePvpWorld(scene, dt, now, {
+      const correction = updatePvpWorld(scene, dt, now, {
         x: player.position.x,
         z: player.position.z,
         facing: player.rotation.y,
         anim: walking ? (held('shift') ? 'run' : 'walk') : 'idle',
         sprinting: held('shift'),
       })
+      // The server decides where this wizard really is. It only says so when
+      // the two have drifted far enough that the local view is wrong for
+      // everyone else, so honouring it here is a rare snap, not a fight with
+      // the prediction that makes movement feel immediate.
+      if (correction) {
+        player.position.x = correction.x
+        player.position.z = correction.z
+        battle?.cancel()
+      }
       if (pvpState.playerId) applyDuelPose(player, pvpState.playerId)
       animateWildscape(wildscape, now)
       // The plate follows the committed target first and the cursor second, so
@@ -972,6 +993,27 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         remotes: () => listRemotes(),
         apiBase: API_BASE_URL,
         pvp: () => ({ playerId: pvpState.playerId, others: pvpState.others, connected: pvpState.connected, self: pvpState.self }),
+        // The duel flow is normally reached by clicking a remote player in the
+        // scene. Headless software WebGL can barely hit a moving target, so the
+        // verification scripts speak the same protocol through the same socket
+        // the buttons use — the store and the overlay still react exactly as a
+        // real click would make them. Stripped from production builds.
+        pvpSend: (msg: unknown) => send(msg as Parameters<typeof send>[0]),
+        pvpClearError: () => { pvpState.error = null },
+        pvpUi: () => ({
+          connected: pvpState.connected,
+          reconnecting: pvpState.reconnecting,
+          superseded: pvpState.superseded,
+          playerId: pvpState.playerId,
+          gold: pvpState.gold,
+          inspect: pvpState.inspect,
+          invite: pvpState.invite,
+          outgoing: pvpState.outgoing,
+          duel: pvpState.duel,
+          result: pvpState.result,
+          error: pvpState.error,
+          others: pvpState.others.length,
+        }),
         aimAt: (target: THREE.Vector3 | { x: number; z: number }) => {
           const v = target instanceof THREE.Vector3 ? target : new THREE.Vector3(target.x, 0.6, target.z)
           const projected = v.clone().project(camera)

@@ -1,0 +1,264 @@
+# ------------------------------------------------------------------
+# Voxels — Render Blueprint.
+#
+# NOT DEPLOYED. Nothing in this repository has ever run on Render: there
+# is no Render account, no API key and no provisioned resource. This file
+# is a complete, reviewable description of what to create, so that
+# deploying is one `render.yaml` sync plus the secrets listed at the
+# bottom of this comment — and so the cost is visible before anyone
+# agrees to it rather than after.
+#
+# RENDER IS A CHOICE, NOT A REQUIREMENT
+# The application needs four things: a long-lived Node process that can
+# hold WebSocket connections, a managed Postgres, a worker process, and
+# somewhere to serve static files. Fly.io, Railway, Hetzner with Docker
+# Compose, or a plain VPS all provide those. Everything Render-specific
+# here lives in this file and in a handful of environment variables; the
+# application code reads `PORT`, `DATABASE_URL` and `X-Forwarded-*`,
+# which is the same contract every one of those platforms offers.
+#
+# WHAT COSTS MONEY (verified against render.com/pricing, current as of
+# this file's commit — re-check before committing spend):
+#
+#   voxels-api (web service)
+#     `free` exists but is wrong here: Render spins a Free web service
+#     down after 15 minutes without traffic, and that explicitly includes
+#     WebSocket messages from existing connections. A spun-down world is
+#     a world where everyone's duel ended. Free also cannot scale, has no
+#     disk, and may be restarted at any time.
+#     -> 0.5c-512mb, $7/month. PAID, and not optional for a persistent world.
+#
+#   voxels-worker (background worker)
+#     Background workers have NO free plan at all. The cheapest is
+#     0.5c-512mb.
+#     -> $7/month. PAID, unavoidable if the worker is a separate service.
+#
+#   voxels-db (Render Postgres)
+#     `free` exists and would work for a trial, but a Free database
+#     EXPIRES 30 DAYS AFTER CREATION, is capped at 1 GB, has no backups
+#     and no connection pooling, and only one may exist per workspace.
+#     For anything real: 0.1c-256mb at $6/month, or 0.5c-1g at $19/month.
+#     -> $0 for a 30-day trial, $6+/month for a database that survives.
+#
+#   voxels-web (static site)
+#     -> FREE. Counts against the workspace's bandwidth and build minutes.
+#
+#   Workspace plan
+#     -> Hobby is $0/month and covers all of the above. It includes 5 GB
+#        of bandwidth and 500 build minutes per month; past those, $0.15
+#        per GB and $5 per 1,000 minutes. Outbound WebSocket messages
+#        count towards bandwidth. Pro is $25/month and is not needed here.
+#
+#   MINIMUM CREDIBLE MONTHLY COST: $14/month (api + worker) with a Free
+#   database that dies after 30 days, or $20/month with the $6 database.
+#   $33/month for the 1 GB database tier. Plus bandwidth over 5 GB.
+#
+# SECRETS
+# Every secret below is `sync: false`, which means Render prompts for it
+# in the dashboard and never stores it in this file. Nothing secret is
+# committed here and nothing secret may ever be added: `VITE_*` values
+# are compiled into the public JavaScript bundle, which is what
+# `npm run audit:bundle` exists to prove.
+#
+# BUILD AND RUN
+# `--include=dev` is not decoration. Render sets NODE_ENV=production for
+# Node services, and npm then skips devDependencies — which is where
+# TypeScript and Vite live, so a plain `npm ci` produces a build that
+# cannot build. `npm run build:server` is a typecheck (`tsc -b`, noEmit),
+# so a type error fails the deploy and the previous version keeps serving
+# rather than the error reaching a player. The server runs through `tsx`,
+# which is a runtime dependency for that reason.
+#
+# After syncing this Blueprint, set by hand in the dashboard:
+#   voxels-api    SOLANA_RPC_URL_DEVNET  (or _MAINNET_BETA)
+#   voxels-worker SOLANA_RPC_URL_DEVNET  (or _MAINNET_BETA)
+# and update WALLY_PUBLIC_ORIGIN / VITE_API_BASE_URL once Render has
+# assigned the real hostnames.
+# ------------------------------------------------------------------
+
+services:
+  # ---------------------------------------------------------------- api
+  # Always-running Node process. Serves the HTTP API and holds every
+  # WebSocket connection for the one authoritative world.
+  #
+  # DO NOT SET `numInstances` ABOVE 1 OR ADD `scaling`. The world lives in
+  # this process's memory. Render's load balancer assigns each incoming
+  # WebSocket connection to a random instance, so a second instance would
+  # not be more capacity — it would be a second, separate town wearing the
+  # same URL, and two players could open the game and not see each other.
+  # There is no room ownership or routing in this codebase. Capacity is
+  # raised by moving to a larger compute plan, not by adding instances.
+  - type: web
+    name: voxels-api
+    runtime: node
+    plan: 0.5c-512mb # PAID $7/mo. `free` spins down after 15 idle minutes.
+    region: oregon
+    numInstances: 1
+    buildCommand: npm ci --include=dev && npm run build:server
+    startCommand: npm run start:server
+    # Liveness, not readiness. Render restarts an instance whose health
+    # check fails, and restarting into a database outage helps nobody:
+    # /api/live answers from the process alone, while /api/ready reports
+    # the database and is what a human or an uptime monitor should watch.
+    healthCheckPath: /api/live
+    # Long enough to tell every connected player the world is restarting,
+    # void open duels, return both stakes, and close the pool. Render's
+    # default is 30s; the app's own drain budget is WALLY_SHUTDOWN_GRACE_MS.
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Render assigns the port. The app reads it; nothing is hardcoded.
+      - key: PORT
+        value: 10000
+      # Exactly one proxy hop sits in front of this process (Render's
+      # router). The app counts X-Forwarded-For from the right, so this
+      # number is what stops a client from spoofing its own rate-limit
+      # bucket by sending its own X-Forwarded-For header.
+      - key: WALLY_TRUST_PROXY_HOPS
+        value: 1
+      # The origin players type. Must be https: a ws:// upgrade to Render
+      # is answered with a 301 that most WebSocket clients cannot follow.
+      # Replace with the real hostname after the first sync, or with a
+      # custom domain.
+      - key: WALLY_PUBLIC_ORIGIN
+        value: https://voxels-web.onrender.com
+      # The static site is a different origin from the API, so it has to
+      # be named. In production the app does NOT auto-trust private/LAN
+      # origins, so this list is the whole policy.
+      - key: WALLY_ALLOWED_ORIGINS
+        value: https://voxels-web.onrender.com
+      # BLOCKED: this process refuses to boot with this value today, on
+      # purpose. src/server/store/ is still synchronous SQLite, so Postgres
+      # would be reported healthy while accounts, gold and receipts went to a
+      # file that no deploy survives. See the guard in src/server/config.ts.
+      # Either convert store/ to the async driver in src/server/sql/, or switch
+      # this to `sqlite` and attach a persistent disk — noting that a disk
+      # cannot be shared between voxels-api and voxels-worker, and both need
+      # the finance database.
+      - key: WALLY_DB_DRIVER
+        value: postgres
+      - key: WALLY_DB_SSL
+        value: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: voxels-db
+          property: connectionString
+      # One world, one process. Published on /api/health so the number is
+      # a promise rather than a hope; raise it with the compute plan.
+      - key: WALLY_ROOM_CAPACITY
+        value: 64
+      - key: WALLY_SHUTDOWN_GRACE_MS
+        value: 25000
+      - key: SOLANA_CLUSTER
+        value: devnet
+      # CREDENTIAL. The QuickNode/Helius access token is in the URL path.
+      # Prompted for in the dashboard, never written here, never sent to
+      # the browser, never logged — see src/server/redact.ts.
+      - key: SOLANA_RPC_URL_DEVNET
+        sync: false
+      - key: SOLANA_RPC_URL_MAINNET_BETA
+        sync: false
+      # Public key only. Payments stay off while it is empty.
+      - key: NPC_PAYEE_ADDRESS
+        sync: false
+
+  # ------------------------------------------------------------- worker
+  # Jobs that can afford to be slow: payment reconciliation against the
+  # chain, session sweeps, and whatever the job queue grows into.
+  #
+  # Separate from the game service on purpose. The world runs a 50ms tick
+  # and a single blocking RPC call in the same process would stutter every
+  # duel in progress. A Render `worker` also cannot receive inbound
+  # traffic at all, so nothing here is reachable from the internet.
+  - type: worker
+    name: voxels-worker
+    runtime: node
+    plan: 0.5c-512mb # PAID $7/mo. Background workers have no free plan.
+    region: oregon # Same region as the database: private networking, no egress cost.
+    buildCommand: npm ci --include=dev && npm run build:server
+    startCommand: npm run start:worker
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # BLOCKED: this process refuses to boot with this value today, on
+      # purpose. src/server/store/ is still synchronous SQLite, so Postgres
+      # would be reported healthy while accounts, gold and receipts went to a
+      # file that no deploy survives. See the guard in src/server/config.ts.
+      # Either convert store/ to the async driver in src/server/sql/, or switch
+      # this to `sqlite` and attach a persistent disk — noting that a disk
+      # cannot be shared between voxels-api and voxels-worker, and both need
+      # the finance database.
+      - key: WALLY_DB_DRIVER
+        value: postgres
+      - key: WALLY_DB_SSL
+        value: true
+      - key: DATABASE_URL
+        fromDatabase:
+          name: voxels-db
+          property: connectionString
+      # A worker holds far fewer connections than the web service. Keeping
+      # it small matters on the smaller Postgres plans, which cap at 100
+      # connections in total across everything that connects.
+      - key: WALLY_DB_POOL_MAX
+        value: 4
+      - key: SOLANA_CLUSTER
+        value: devnet
+      - key: SOLANA_RPC_URL_DEVNET
+        sync: false
+      - key: SOLANA_RPC_URL_MAINNET_BETA
+        sync: false
+
+  # ---------------------------------------------------------------- web
+  # The built client. FREE — static sites have no compute plan.
+  #
+  # Served from Render's CDN rather than from the Node process, so the
+  # game service spends its memory on WebSocket connections instead of
+  # on shipping the same JavaScript bundle over and over.
+  - type: web
+    name: voxels-web
+    runtime: static
+    buildCommand: npm ci --include=dev && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      # PUBLIC. Everything prefixed VITE_ is compiled into the bundle and
+      # is readable by anyone who loads the page. A provider URL, a
+      # database URL or any other credential must never appear here;
+      # `npm run audit:bundle` fails the build if one does.
+      - key: VITE_API_BASE_URL
+        value: https://voxels-api.onrender.com
+      - key: VITE_SOLANA_CLUSTER
+        value: devnet
+    routes:
+      # A single-page app: every path that is not a file is the app.
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    headers:
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: no-referrer
+      - path: /*
+        name: X-Frame-Options
+        value: SAMEORIGIN
+
+# ---------------------------------------------------------------- data
+databases:
+  # Managed Postgres. The reason this exists: a container filesystem is
+  # ephemeral, so the SQLite file that is correct on a laptop is silently
+  # deleted on every redeploy in production. Accounts, duel history and
+  # the gold ledger have to outlive the instance that wrote them.
+  #
+  # `free` is available and expires 30 days after creation, with no
+  # backups. `0.1c-256mb` is $6/month and does not expire.
+  - name: voxels-db
+    databaseName: voxels
+    plan: 0.1c-256mb # PAID $6/mo. Use `free` only for a 30-day trial.
+    region: oregon
+    # Empty list: no connection from outside Render's private network.
+    # The web service and the worker reach it over private networking,
+    # and nothing else has any business doing so.
+    ipAllowList: []

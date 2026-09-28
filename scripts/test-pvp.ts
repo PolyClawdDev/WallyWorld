@@ -10,11 +10,19 @@ import { resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
 const dbFile = resolve('data/pvp-test.db')
+const financeFile = resolve('data/pvp-test-finance.db')
 mkdirSync(resolve('data'), { recursive: true })
-try { rmSync(dbFile) } catch { /* fresh */ }
-try { rmSync(`${dbFile}-wal`) } catch { /* none */ }
-try { rmSync(`${dbFile}-shm`) } catch { /* none */ }
+// Both databases, and both of SQLite's sidecar files for each. Gold now lives in
+// the finance database, so leaving that one behind would carry balances from the
+// previous run into this one and the stake assertions would fail for a reason
+// that has nothing to do with the code under test.
+for (const base of [dbFile, financeFile]) {
+  for (const suffix of ['', '-wal', '-shm']) {
+    try { rmSync(`${base}${suffix}`) } catch { /* nothing to remove */ }
+  }
+}
 process.env.WALLY_DB_PATH = dbFile
+process.env.WALLY_FINANCE_DB_PATH = financeFile
 process.env.WALLY_DEV_SESSIONS = '1'
 
 let passed = 0

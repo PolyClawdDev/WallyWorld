@@ -1,17 +1,29 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+/**
+ * Where the dev/preview server forwards `/api` and `/ws`.
+ *
+ * Read from the environment rather than hardcoded so a second world can
+ * be brought up alongside an existing one — which is what verification
+ * needs, and what a hardcoded port makes impossible. Production does not
+ * use any of this: the built bundle is static files, and the API lives
+ * wherever `VITE_API_BASE_URL` says.
+ */
+const API_TARGET = process.env.WALLY_API_TARGET || 'http://127.0.0.1:8787'
+const UI_PORT = Number(process.env.WALLY_UI_PORT || 5173)
+
 const apiProxy = {
-  '/api': { target: 'http://127.0.0.1:8787', changeOrigin: true },
-  '/ws': { target: 'http://127.0.0.1:8787', ws: true },
+  '/api': { target: API_TARGET, changeOrigin: true },
+  '/ws': { target: API_TARGET, ws: true },
 } as const
 
 export default defineConfig({
   plugins: [react()],
   // Bind every interface and proxy /api + /ws so a browser that opened
   // http://192.168.x.x:5173 talks to THIS world's API, not its own localhost.
-  server: { host: true, port: 5173, strictPort: true, proxy: { ...apiProxy } },
-  preview: { host: true, port: 5173, strictPort: true, proxy: { ...apiProxy } },
+  server: { host: true, port: UI_PORT, strictPort: true, proxy: { ...apiProxy } },
+  preview: { host: true, port: UI_PORT, strictPort: true, proxy: { ...apiProxy } },
   // @solana/web3.js imports `buffer` by name. In a production build Rollup
   // resolves that to the npm package, but the dev server externalises it and
   // the app dies on load, so pin it to the userland implementation in both.

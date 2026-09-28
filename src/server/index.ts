@@ -26,25 +26,54 @@ import { validateProfile, DEFAULT_PROFILE } from '../shared/profile'
 import { looksLikeAddress } from '../shared/siws'
 import { networkInterfaces } from 'node:os'
 import {
+  ALLOWED_ORIGINS,
+  assertConfigValid,
   BIND_HOST,
   CHAIN_ID,
   CLUSTER,
+  DATABASE_URL,
+  DB_DRIVER,
+  IS_PRODUCTION,
   isAllowedBrowserOrigin,
   isAllowedPageHost,
+  NODE_ENV,
   NPC_PAYEE_ADDRESS,
   PAYMENTS_ENABLED,
   PAYOUTS_ENABLED,
   PORT,
+  PUBLIC_ORIGIN,
+  ROOM_CAPACITY,
   RPC_IS_PUBLIC,
   RPC_SOURCE_VAR,
   SERVICE_PRICE_LAMPORTS,
   SESSION_TTL_MS,
+  SHUTDOWN_GRACE_MS,
+  TRUST_PRIVATE_ORIGINS,
+  TRUST_PROXY_HOPS,
   UI_PORT,
 } from './config'
-import { createSession, issueChallenge, isAllowedDomain, revokeFromAuthHeader, verifySignIn, walletFromAuthHeader } from './auth'
+import {
+  apiRateLimited,
+  authRateLimited,
+  clientAddress,
+  overBudget,
+  retryAfterSeconds,
+  RPC_BUDGET,
+  sweepBuckets,
+} from './net'
+import { readiness } from './readiness'
+import { installSignalHandlers, onDrain } from './shutdown'
+import { createSession, issueChallenge, revokeFromAuthHeader, verifySignIn, walletFromAuthHeader } from './auth'
 import { issueGuestSession } from './pvp/guest'
 import { ensureAccount } from './pvp/ids'
 import { goldView } from './pvp/ledger'
+import { originContext } from './origin'
+import { handleOperatorHttp } from './operator/http'
+import { handleAccountHttp } from './routes/account'
+import { schemaVersions } from './store'
+import { handlerKinds } from './jobs/handlers'
+import { recoverExpiredLeases } from './jobs/queue'
+import { TREASURY_SIGNER } from './treasury/config'
 import {
   advanceDemoTask,
   createDemoTask,
@@ -52,6 +81,7 @@ import {
   readDemoTask,
   readProfile,
   readReceipt,
+  receiptBelongsTo,
   recordReceipt,
   setReceiptStatus,
   sweepExpired,
@@ -61,8 +91,9 @@ import {
 } from './db'
 import { verifyClusterIdentity, verifyTransfer } from './chain'
 import { allowedMethodNames, proxyRpc } from './rpcProxy'
-import { redact, safeError, safeLog } from './redact'
-import { attachPvpUpgrade, handlePvpHttp } from './pvp'
+import { redact, safeError, safeLog, secretFingerprint } from './redact'
+import { attachPvpUpgrade, handlePvpHttp, upgradePolicy } from './pvp'
+import { drainLive } from './pvp/hub'
 
 const MAX_BODY_BYTES = 32 * 1024
 /** Read-and-discard ceiling above the cap, so an oversized request still gets a 413. */
@@ -169,40 +200,6 @@ const failBody = (res: ServerResponse, result: { status: number; reason: string 
   fail(res, result.status, result.status === 413 ? 'payload_too_large' : result.status === 415 ? 'unsupported_media_type' : 'bad_request', result.reason)
 
 /**
- * Fixed-window request cap per client address. Crude but real: it keeps nonce
- * issuance and signature verification from being used as a free oracle or a
- * cheap way to fill the database.
- */
-const RATE_LIMIT = { windowMs: 60_000, max: 120 }
-
-/**
- * The RPC proxy gets its own, separate budget.
- *
- * It needs a higher ceiling than the rest of the API, because a single panel
- * render legitimately issues several reads and the balance refreshes on demand —
- * but it is also the only route that costs the operator money per call, so it
- * must not share a bucket with cheap local endpoints.
- */
-const RPC_RATE_LIMIT = { windowMs: 60_000, max: 240 }
-
-const buckets = new Map<string, { count: number; resetAt: number }>()
-
-function overBudget(key: string, limit: { windowMs: number; max: number }): boolean {
-  const now = Date.now()
-  const entry = buckets.get(key)
-  if (!entry || entry.resetAt <= now) {
-    buckets.set(key, { count: 1, resetAt: now + limit.windowMs })
-    return false
-  }
-  entry.count += 1
-  return entry.count > limit.max
-}
-
-const clientKey = (req: IncomingMessage) => req.socket.remoteAddress ?? 'unknown'
-
-const rateLimited = (req: IncomingMessage) => overBudget(`api:${clientKey(req)}`, RATE_LIMIT)
-
-/**
  * Per session when the caller has one, per address otherwise.
  *
  * Balances are shown before sign-in, so the proxy cannot require a session; an
@@ -211,12 +208,13 @@ const rateLimited = (req: IncomingMessage) => overBudget(`api:${clientKey(req)}`
  */
 function rpcRateLimited(req: IncomingMessage): boolean {
   const wallet = walletFromAuthHeader(req.headers.authorization)
-  return overBudget(wallet ? `rpc:session:${wallet}` : `rpc:ip:${clientKey(req)}`, RPC_RATE_LIMIT)
+  return overBudget(wallet ? `rpc:session:${wallet}` : `rpc:ip:${clientAddress(req)}`, RPC_BUDGET)
 }
 
-/** Expired buckets would otherwise accumulate for every address ever seen. */
-function sweepBuckets(now = Date.now()) {
-  for (const [key, entry] of buckets) if (entry.resetAt <= now) buckets.delete(key)
+/** Sends a 429 that tells the caller how long to wait, rather than just "no". */
+function tooManyRequests(req: IncomingMessage, res: ServerResponse, key: string, detail: string) {
+  res.setHeader('Retry-After', String(retryAfterSeconds(key)))
+  fail(res, 429, 'rate_limited', detail)
 }
 
 /* ------------------------------------------------------------------ auth */
@@ -228,23 +226,6 @@ function requireWallet(req: IncomingMessage, res: ServerResponse): string | null
     return null
   }
   return wallet
-}
-
-/**
- * The domain and URI that end up inside the signed message come from the
- * request's own Origin header, checked against the allowlist. They are never
- * taken from the request body, so a caller cannot ask to be issued a challenge
- * bound to somebody else's site.
- */
-function originContext(req: IncomingMessage): { domain: string; uri: string } | null {
-  const origin = req.headers.origin?.replace(/\/+$/, '')
-  if (!origin || !isAllowedBrowserOrigin(origin)) return null
-  try {
-    const url = new URL(origin)
-    return isAllowedDomain(url.host) || isAllowedPageHost(url.host) ? { domain: url.host, uri: origin } : null
-  } catch {
-    return null
-  }
 }
 
 /* -------------------------------------------------------------- payments */
@@ -307,8 +288,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // access logs and browser history.
     if (method !== 'POST') return fail(res, 405, 'method_not_allowed', 'The RPC proxy accepts POST only.')
     if (rpcRateLimited(req)) {
-      res.setHeader('Retry-After', '60')
-      return fail(res, 429, 'rate_limited', 'Too many RPC requests. Slow down.')
+      return tooManyRequests(req, res, `rpc:ip:${clientAddress(req)}`, 'Too many RPC requests. Slow down.')
     }
     const parsed = await readJson(req, { allowArray: true })
     if (!parsed.ok) return failBody(res, parsed)
@@ -316,11 +296,49 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return send(res, outcome.status, outcome.body as Json)
   }
 
+  /* ---- liveness -------------------------------------------------------- */
+  /**
+   * Is this process alive? No I/O, no dependencies, no database.
+   *
+   * A platform restarts an instance whose liveness check fails, so this
+   * must not fail for anything a restart would not fix. A database outage
+   * is exactly such a thing: restarting into the same outage helps nobody,
+   * and it is `/api/ready` that is supposed to notice.
+   */
+  if (method === 'GET' && (path === '/api/live' || path === '/healthz')) {
+    return send(res, 200, { ok: true, status: 'live', uptimeSeconds: Math.round(process.uptime()) })
+  }
+
+  /* ---- readiness ------------------------------------------------------- */
+  /**
+   * Can this process actually serve a player?
+   *
+   * Answers 503 when the database is unreachable or while the instance is
+   * draining for shutdown, so a load balancer stops routing here instead of
+   * delivering players into a world that cannot save anything.
+   */
+  if (method === 'GET' && (path === '/api/ready' || path === '/readyz')) {
+    const state = await readiness()
+    return send(res, state.ready ? 200 : 503, {
+      ok: state.ready,
+      status: state.ready ? 'ready' : 'not-ready',
+      checks: state.checks,
+      checkedAtMs: state.checkedAtMs,
+    })
+  }
+
   /* ---- health ---------------------------------------------------------- */
   if (method === 'GET' && path === '/api/health') {
     const chain = await verifyClusterIdentity()
+    const state = await readiness()
     return send(res, 200, {
       ok: true,
+      ready: state.ready,
+      environment: NODE_ENV,
+      publicOrigin: PUBLIC_ORIGIN,
+      allowedOrigins: ALLOWED_ORIGINS,
+      trustProxyHops: TRUST_PROXY_HOPS,
+      world: { instances: 1, ...upgradePolicy(), note: 'One authoritative world process. There is no room routing; a second instance would be a second town.' },
       cluster: CLUSTER,
       chainId: CHAIN_ID,
       rpcReachable: chain.ok,
@@ -335,8 +353,28 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       rpcEndpointIsPublic: RPC_IS_PUBLIC,
       rpcProxy: '/api/rpc',
       rpcAllowedMethods: allowedMethodNames(),
-      persistence: 'sqlite',
+      /**
+       * The driver name, never the connection string. `DATABASE_URL`
+       * carries a password in its userinfo, so the fingerprint is what an
+       * operator gets: enough to tell one configured database from
+       * another, not enough to connect to either.
+       */
+      persistence: DB_DRIVER,
+      databaseFingerprint: DB_DRIVER === 'postgres' ? secretFingerprint(DATABASE_URL) : 'local-file',
       pvp: { presence: '/ws/pvp', gold: 'game-gold', demo: true },
+      /**
+       * Two databases with no foreign key between them: game and identity in one,
+       * money in the other. The numbers are the highest applied migration in each.
+       */
+      schema: schemaVersions(),
+      gold: {
+        authority: 'server',
+        model: 'append-only double-entry ledger, integer base units stored as TEXT',
+        conservation: '/api/ledger/conservation',
+        redeemableProvenances: ['hunt_verified'],
+      },
+      jobs: { queue: 'sqlite lease', worker: 'npm run worker', handlers: handlerKinds() },
+      withdrawals: { endpoint: '/api/withdrawals/quote', signer: TREASURY_SIGNER },
       auth: 'sign-in-with-solana',
       paymentsEnabled: PAYMENTS_ENABLED,
       /** Always false. Not switchable by configuration; see the README. */
@@ -346,6 +384,18 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   }
 
   /* ---- sign-in --------------------------------------------------------- */
+  /**
+   * Every route that mints an identity shares one tight budget.
+   *
+   * Nonce issuance writes a row, verification runs ed25519, and guest
+   * minting does both. Left on the general API budget they are the cheapest
+   * way to make this server do expensive work on someone else's schedule.
+   */
+  const MINTS_IDENTITY = ['/api/auth/nonce', '/api/auth/verify', '/api/pvp/guest', '/api/dev/session']
+  if (method === 'POST' && MINTS_IDENTITY.includes(path) && authRateLimited(req)) {
+    return tooManyRequests(req, res, `auth:${clientAddress(req)}`, 'Too many sign-in attempts. Wait a minute.')
+  }
+
   if (method === 'POST' && path === '/api/auth/nonce') {
     const context = originContext(req)
     if (!context) return fail(res, 403, 'origin_not_allowed', 'This origin may not request a sign-in challenge.')
@@ -448,7 +498,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (existing) {
       // Idempotent, and scoped: a signature already claimed by another wallet is
       // not readable or re-claimable here.
-      if (existing.wallet !== wallet) return fail(res, 409, 'signature_already_recorded')
+      if (!receiptBelongsTo(existing, wallet)) return fail(res, 409, 'signature_already_recorded')
       return send(res, 200, { receipt: receiptView(await reconcile(existing, wallet)), idempotent: true })
     }
 
@@ -473,7 +523,7 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const signature = (parsed.body as { signature?: unknown }).signature
     if (typeof signature !== 'string') return fail(res, 400, 'bad_request', 'signature is required.')
     const row = readReceipt(signature)
-    if (!row || row.wallet !== wallet) return fail(res, 404, 'not_found')
+    if (!row || !receiptBelongsTo(row, wallet)) return fail(res, 404, 'not_found')
     return send(res, 200, { receipt: receiptView(await reconcile(row, wallet)) })
   }
 
@@ -541,6 +591,35 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
 
   if (handlePvpHttp(req, res, path, method, send, fail)) return
 
+  /**
+   * Owner-only integration readiness console.
+   *
+   * The identity comes from the session header, never the body, and the handler
+   * itself 404s when `WALLY_OPERATOR_ACCOUNTS` is unset, so mounting it here
+   * exposes nothing on a deployment that has not opted in.
+   */
+  if (
+    await handleOperatorHttp({
+      path,
+      method,
+      account: walletFromAuthHeader(req.headers.authorization),
+      send: (status, body) => send(res, status, body),
+      fail: (status, error, detail) => fail(res, status, error, detail),
+    })
+  ) {
+    return
+  }
+
+  /**
+   * Account, gold ledger, hunting, jobs and withdrawals.
+   *
+   * Mounted last and given its own module so the financial surface has one entry
+   * point. Every route inside resolves identity from the session through
+   * `walletFromAuthHeader`, exactly as `requireWallet` does here, and never from
+   * the body.
+   */
+  if (await handleAccountHttp({ req, res, path, method, send, fail, readBody: () => readJson(req) })) return
+
   return fail(res, 404, 'not_found')
 }
 
@@ -556,8 +635,8 @@ const server = createServer((req, res) => {
     res.end()
     return
   }
-  if (rateLimited(req)) {
-    res.setHeader('Retry-After', '60')
+  if (apiRateLimited(req)) {
+    res.setHeader('Retry-After', String(retryAfterSeconds(`api:${clientAddress(req)}`)))
     fail(res, 429, 'rate_limited')
     return
   }
@@ -574,7 +653,29 @@ const server = createServer((req, res) => {
 sweepExpired()
 setInterval(() => sweepExpired(), 10 * 60 * 1000).unref()
 setInterval(() => sweepBuckets(), 5 * 60 * 1000).unref()
+/**
+ * Lease recovery runs here as well as in the worker.
+ *
+ * A job whose worker died is stranded until something notices. The worker does
+ * notice, but only if a worker is running — and `npm run worker` is a separate
+ * process that an operator can forget to start. Recovering leases from the API too
+ * means a safe read goes back on the queue and a financial job reaches
+ * `needs_reconcile` regardless.
+ */
+setInterval(() => recoverExpiredLeases(), 60 * 1000).unref()
 attachPvpUpgrade(server)
+
+/**
+ * What to do with the thirty seconds between SIGTERM and SIGKILL.
+ *
+ * Players first: they are told the world is restarting and given a moment
+ * for that frame to reach them, open duels are voided with both stakes
+ * returned, and positions are recorded so a reconnect resumes where the
+ * player stood. Sessions are swept afterwards. The database closes last,
+ * because everything above writes to it.
+ */
+onDrain({ name: 'players', run: () => drainLive(5_000) })
+onDrain({ name: 'sessions', run: () => { sweepExpired() } })
 
 function lanIpv4(): string[] {
   const found: string[] = []
@@ -587,20 +688,44 @@ function lanIpv4(): string[] {
   return found
 }
 
+/**
+ * Nothing starts listening until the configuration is known to be sound.
+ *
+ * A server that boots with a broken origin list passes the platform's
+ * health check and is unusable to every player, which is the worst of both
+ * outcomes: the deploy looks green and the game is down. Failing here means
+ * the deploy goes red and the previous version keeps serving.
+ */
+assertConfigValid()
+
 server.listen(PORT, BIND_HOST, () => {
-  // Every line goes through `safeLog`. The endpoint URL is never printed — only
-  // the name of the variable it came from, which is not a credential.
-  const lan = lanIpv4()
-  safeLog(`Voxels API on ${BIND_HOST}:${PORT} — one shared world`)
-  safeLog(`  local game     http://127.0.0.1:${UI_PORT}`)
-  if (lan.length) {
-    for (const ip of lan) safeLog(`  same Wi-Fi     http://${ip}:${UI_PORT}`)
+  // Every line goes through `safeLog`. No credential is printed — only the
+  // name of the variable one came from, or a fingerprint of its value.
+  safeLog(`Voxels API on ${BIND_HOST}:${PORT} — one shared world · ${NODE_ENV}`)
+  if (IS_PRODUCTION) {
+    safeLog(`  public         ${PUBLIC_ORIGIN ?? '(no WALLY_PUBLIC_ORIGIN — clients use the page origin)'}`)
+    safeLog(`  origins        ${ALLOWED_ORIGINS.join(', ') || 'none'} · private LAN origins are NOT auto-trusted in production`)
+    safeLog(`  proxy          trusting ${TRUST_PROXY_HOPS} forwarded hop(s) for client address and scheme`)
   } else {
-    safeLog('  same Wi-Fi     (no LAN IPv4 — only this machine can open the game)')
+    const lan = lanIpv4()
+    safeLog(`  local game     http://127.0.0.1:${UI_PORT}`)
+    if (lan.length) {
+      for (const ip of lan) safeLog(`  same Wi-Fi     http://${ip}:${UI_PORT}`)
+    } else {
+      safeLog('  same Wi-Fi     (no LAN IPv4 — only this machine can open the game)')
+    }
+    safeLog('  public         none. This process is not on the public internet. A friend on another network cannot join without a tunnel or a deployed host.')
+    safeLog(`  origins        ${ALLOWED_ORIGINS.join(', ')}${TRUST_PRIVATE_ORIGINS ? ' + any loopback/LAN origin (development only)' : ''}`)
   }
-  safeLog('  public         none. This process is not on the public internet. A friend on another network cannot join without a tunnel or a deployed host.')
+  safeLog(`  world          1 instance · capacity ${ROOM_CAPACITY} players · no room routing exists, do not scale out`)
   safeLog(`  cluster        ${CLUSTER}${CLUSTER === 'mainnet-beta' ? '  *** MAINNET · REAL FUNDS ***' : ''}`)
-  safeLog(`  persistence    sqlite`)
+  safeLog(`  persistence    ${DB_DRIVER}${DB_DRIVER === 'postgres' ? ` · ${secretFingerprint(DATABASE_URL)}` : ' (file — ephemeral on a container filesystem)'}`)
+  if (IS_PRODUCTION && DB_DRIVER === 'sqlite') {
+    safeLog('  !! Production on SQLite. A container filesystem is wiped on every redeploy, so every account and duel will be lost.')
+    safeLog('  !! Provision a managed Postgres and set DATABASE_URL.')
+  }
+  safeLog(`  health         GET /api/live (liveness) · GET /api/ready (readiness, checks the database)`)
+  safeLog(`  shutdown       ${SHUTDOWN_GRACE_MS}ms drain on SIGTERM`)
   safeLog(`  rpc endpoint   from ${RPC_SOURCE_VAR}${RPC_IS_PUBLIC ? ' (public endpoint)' : ' (keyed — treated as a credential, never logged or served)'}`)
   safeLog(`  rpc proxy      POST /api/rpc · ${allowedMethodNames().length} methods allowlisted`)
   safeLog(`  payments       ${PAYMENTS_ENABLED ? `enabled → ${NPC_PAYEE_ADDRESS}` : 'disabled (NPC_PAYEE_ADDRESS unset)'}`)
@@ -614,3 +739,5 @@ server.listen(PORT, BIND_HOST, () => {
     }
   })
 })
+
+installSignalHandlers(server)

@@ -95,7 +95,12 @@ function HuntLog({ onClose }: { onClose: () => void }) {
       </button>
       <div className="eyebrow">HUNT LEDGER · DISTRICT 01</div>
       <h3>Gold from the green.</h3>
-      <p className="demo-line">{DEMO_NOTICE} Gold is a local demo counter.</p>
+      <p className="demo-line">
+        {DEMO_NOTICE}{' '}
+        {snapshot.authority === 'server'
+          ? `Balance ${formatGold(snapshot.balanceBaseUnits)} gold, held by the server. ${formatGold(snapshot.redeemableBaseUnits ?? 0)} of it came from verified kills; the rest — gifts, duel winnings, imported demo gold — could never be redeemed even if a redemption existed. None of it is redeemable today.`
+          : 'Not signed in, so this is a local counter only. Nothing here is recorded on the server and none of it is redeemable.'}
+      </p>
 
       <div className="hunt-key">
         {Object.values(speciesSpecs).map(species => (

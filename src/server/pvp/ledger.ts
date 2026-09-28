@@ -1,11 +1,42 @@
 /* ------------------------------------------------------------------ *
- * Server-owned game gold. Integer base units. Separate from profile.gold
- * (client-asserted hunt loot), receipts (SOL), and NPC demo credits.
+ * PvP's view of the one gold ledger.
+ *
+ * This module used to *be* the gold ledger: a `game_gold` row per player
+ * with an `available` integer, sitting in the same database file as
+ * `profiles`. It is now an adapter. Balances live in the financial
+ * database as append-only double-entry records, hunting and PvP credit
+ * the same account, and the separate PvP stipend is gone — replaced by a
+ * one-time starting grant on that same ledger, with `gift` provenance so
+ * it can never be redeemed.
+ *
+ * The exported shape is unchanged so the duel hub, the challenge code and
+ * the existing test suite did not have to be rewritten alongside the
+ * storage. What changed underneath:
+ *
+ *   - a balance is the materialised total of an append-only entry list,
+ *     not a mutable integer;
+ *   - reserving both stakes is one four-leg transfer rather than two
+ *     UPDATEs with a compensating rollback;
+ *   - settlement is idempotent on the transfer's idempotency key rather
+ *     than on a uniqueness index over a ledger note;
+ *   - win/loss/draw counts moved to `pvp_records` in the game database,
+ *     because a scoreboard is game data and has no business in a
+ *     financial table.
  * ------------------------------------------------------------------ */
 
 import { DEMO_GOLD_NOTICE, GOLD_KIND, MAX_STAKE, type GoldView } from '../../shared/pvp'
+import { toSafeNumber } from '../money/amount'
+import {
+  creditGold as creditLedgerGold,
+  ensureGoldAccounts,
+  goldSnapshot,
+  playerGoldTotals,
+  reservePairGold,
+  settleDuelGold,
+} from '../money/gold'
+import type { Provenance } from '../money/provenance'
+import { userIdForPlayer } from './ids'
 import { db } from './schema'
-import { newId } from './ids'
 
 export type GoldRow = {
   player_id: string
@@ -16,63 +47,35 @@ export type GoldRow = {
   draws: number
 }
 
-export type LedgerKind =
-  | 'stipend'
-  | 'reserve'
-  | 'release'
-  | 'payout'
-  | 'adjust'
+export type LedgerKind = 'stipend' | 'reserve' | 'release' | 'payout' | 'adjust'
 
-const selectGold = db.prepare<[string], GoldRow>('select * from game_gold where player_id = ?')
-const insertGold = db.prepare(`
-  insert or ignore into game_gold (player_id, available, reserved, wins, losses, draws, updated_at_ms)
-  values (?, 0, 0, 0, 0, 0, ?)
-`)
+/**
+ * The old `kind` vocabulary mapped onto real provenance.
+ *
+ * `adjust` is what tests and development tools used, so it becomes
+ * `test_credit` — visible, and never redeemable.
+ */
+const PROVENANCE_FOR_KIND: Record<LedgerKind, Provenance> = {
+  stipend: 'gift',
+  adjust: 'test_credit',
+  payout: 'pvp_winnings',
+  reserve: 'escrow',
+  release: 'escrow',
+}
 
-const addAvailable = db.prepare(`
-  update game_gold
-     set available = available + @delta,
-         updated_at_ms = @now
-   where player_id = @player_id
-     and available + @delta >= 0
-`)
+/* -------------------------------------------------------------- records */
 
-const addReserved = db.prepare(`
-  update game_gold
-     set reserved = reserved + @delta,
-         updated_at_ms = @now
-   where player_id = @player_id
-     and reserved + @delta >= 0
-`)
+const insertRecord = db
+  .prepare(`insert into pvp_records (player_id, wins, losses, draws, updated_at_ms)
+            values (@player_id, 0, 0, 0, @now)
+            on conflict (player_id) do nothing`)
 
-const moveAvailableToReserved = db.prepare(`
-  update game_gold
-     set available = available - @stake,
-         reserved = reserved + @stake,
-         updated_at_ms = @now
-   where player_id = @player_id
-     and available >= @stake
-`)
-
-const moveReservedToAvailable = db.prepare(`
-  update game_gold
-     set reserved = reserved - @stake,
-         available = available + @stake,
-         updated_at_ms = @now
-   where player_id = @player_id
-     and reserved >= @stake
-`)
-
-const consumeReserved = db.prepare(`
-  update game_gold
-     set reserved = reserved - @stake,
-         updated_at_ms = @now
-   where player_id = @player_id
-     and reserved >= @stake
-`)
+const selectRecord = db.prepare<[string], { wins: number; losses: number; draws: number }>(
+  'select wins, losses, draws from pvp_records where player_id = ?',
+)
 
 const bumpRecord = db.prepare(`
-  update game_gold
+  update pvp_records
      set wins = wins + @w,
          losses = losses + @l,
          draws = draws + @d,
@@ -80,48 +83,45 @@ const bumpRecord = db.prepare(`
    where player_id = @player_id
 `)
 
-const insertLedger = db.prepare(`
-  insert into game_gold_ledger (id, player_id, kind, amount, available_after, reserved_after, ref_type, ref_id, note, created_at_ms)
-  values (@id, @player_id, @kind, @amount, @available_after, @reserved_after, @ref_type, @ref_id, @note, @now)
-`)
-
-const ledgerExists = db.prepare<[string, string, string], { id: string }>(
-  'select id from game_gold_ledger where player_id = ? and kind = ? and ref_id = ?',
-)
-
-function mustGold(playerId: string): GoldRow {
-  insertGold.run(playerId, Date.now())
-  const row = selectGold.get(playerId)
-  if (!row) throw new Error('game gold row missing')
-  return row
+function recordOf(playerId: string, now = Date.now()) {
+  insertRecord.run({ player_id: playerId, now })
+  return selectRecord.get(playerId) ?? { wins: 0, losses: 0, draws: 0 }
 }
 
-function writeLedger(playerId: string, kind: LedgerKind, amount: number, refType: string, refId: string, note: string, now: number) {
-  const after = mustGold(playerId)
-  insertLedger.run({
-    id: newId('s'),
-    player_id: playerId,
-    kind,
-    amount,
-    available_after: after.available,
-    reserved_after: after.reserved,
-    ref_type: refType,
-    ref_id: refId,
-    note,
-    now,
-  })
-}
+/* ---------------------------------------------------------------- reads */
 
+/**
+ * Balance plus scoreboard for one player.
+ *
+ * The amounts are converted from bigint at this boundary because the PvP wire
+ * protocol carries JS numbers. `toSafeNumber` throws rather than rounds, so the
+ * conversion cannot quietly lose a unit.
+ */
 export function readGold(playerId: string): GoldRow {
-  return mustGold(playerId)
+  const userId = userIdForPlayer(playerId)
+  if (!userId) return { player_id: playerId, available: 0, reserved: 0, wins: 0, losses: 0, draws: 0 }
+  ensureGoldAccounts(userId)
+  const snapshot = goldSnapshot(userId)
+  const record = recordOf(playerId)
+  return {
+    player_id: playerId,
+    available: toSafeNumber(snapshot.available),
+    reserved: toSafeNumber(snapshot.reserved),
+    wins: record.wins,
+    losses: record.losses,
+    draws: record.draws,
+  }
 }
 
 export function goldView(playerId: string): GoldView {
-  const row = mustGold(playerId)
+  const row = readGold(playerId)
+  const userId = userIdForPlayer(playerId)
+  const redeemable = userId ? toSafeNumber(goldSnapshot(userId).redeemable) : 0
   return {
     total: row.available + row.reserved,
     available: row.available,
     reserved: row.reserved,
+    redeemable,
     wins: row.wins,
     losses: row.losses,
     draws: row.draws,
@@ -131,61 +131,72 @@ export function goldView(playerId: string): GoldView {
   }
 }
 
-export function creditGold(playerId: string, amount: number, kind: LedgerKind, refType: string, refId: string, note: string, now = Date.now()) {
-  if (!Number.isInteger(amount) || amount <= 0 || amount > MAX_STAKE) throw new Error('invalid credit')
-  if (ledgerExists.get(playerId, kind, refId)) return mustGold(playerId)
-  const txn = db.transaction(() => {
-    const moved = addAvailable.run({ player_id: playerId, delta: amount, now })
-    if (moved.changes !== 1) throw new Error('credit failed')
-    writeLedger(playerId, kind, amount, refType, refId, note, now)
-    return mustGold(playerId)
-  })
-  return txn()
-}
-
-export type ReserveResult =
-  | { ok: true; a: GoldRow; b: GoldRow }
-  | { ok: false; reason: string }
+/* --------------------------------------------------------------- writes */
 
 /**
- * Atomically reserve the same stake from both players. Any failure
- * leaves neither reserved. Idempotent on (player, kind=reserve, duelId).
+ * Credits a player, idempotently on `(kind, refId)` as before.
+ *
+ * Kept signature-compatible with the previous module so the duel hub and the
+ * existing tests did not change; the provenance is derived rather than accepted,
+ * so no caller can mark its own credit redeemable.
  */
+export function creditGold(
+  playerId: string,
+  amount: number,
+  kind: LedgerKind,
+  refType: string,
+  refId: string,
+  note: string,
+  now = Date.now(),
+): GoldRow {
+  if (!Number.isInteger(amount) || amount <= 0 || amount > MAX_STAKE) throw new Error('invalid credit')
+  const userId = userIdForPlayer(playerId)
+  // Deliberately a refusal rather than an account creation. A player id is not a
+  // principal, so there is nothing here to prove who it belongs to, and creating
+  // an account on a credit path would mean a mistyped id ends up holding gold.
+  // The player has to have connected at least once.
+  if (!userId) throw new Error(`no account for player ${playerId}; they have to sign in once before gold can be credited`)
+  creditLedgerGold({
+    userId,
+    amount: BigInt(amount),
+    provenance: PROVENANCE_FOR_KIND[kind],
+    idemScope: `pvp-credit:${kind}`,
+    idemKey: `${userId}:${refId}`,
+    refType,
+    refId,
+    note,
+    now,
+  })
+  return readGold(playerId)
+}
+
+export type ReserveResult = { ok: true; a: GoldRow; b: GoldRow } | { ok: false; reason: string }
+
+/** Atomically reserve the same stake from both players. Idempotent on the duel id. */
 export function reserveBoth(aId: string, bId: string, stake: number, duelId: string, now = Date.now()): ReserveResult {
   if (!Number.isInteger(stake) || stake <= 0 || stake > MAX_STAKE) return { ok: false, reason: 'stake must be a positive integer' }
   if (aId === bId) return { ok: false, reason: 'cannot reserve against yourself' }
+  const aUserId = userIdForPlayer(aId)
+  const bUserId = userIdForPlayer(bId)
+  if (!aUserId || !bUserId) return { ok: false, reason: 'one of these players has no account' }
 
-  const txn = db.transaction((): ReserveResult => {
-    const alreadyA = ledgerExists.get(aId, 'reserve', duelId)
-    const alreadyB = ledgerExists.get(bId, 'reserve', duelId)
-    if (alreadyA && alreadyB) return { ok: true, a: mustGold(aId), b: mustGold(bId) }
-    if (alreadyA || alreadyB) return { ok: false, reason: 'partial reserve already exists' }
-
-    const a = mustGold(aId)
-    const b = mustGold(bId)
-    if (a.available < stake) return { ok: false, reason: 'challenger cannot cover the stake' }
-    if (b.available < stake) return { ok: false, reason: 'opponent cannot cover the stake' }
-
-    const first = moveAvailableToReserved.run({ player_id: aId, stake, now })
-    if (first.changes !== 1) return { ok: false, reason: 'challenger cannot cover the stake' }
-    const second = moveAvailableToReserved.run({ player_id: bId, stake, now })
-    if (second.changes !== 1) {
-      moveReservedToAvailable.run({ player_id: aId, stake, now })
-      return { ok: false, reason: 'opponent cannot cover the stake' }
-    }
-    writeLedger(aId, 'reserve', -stake, 'duel', duelId, 'Stake reserved in escrow', now)
-    writeLedger(bId, 'reserve', -stake, 'duel', duelId, 'Stake reserved in escrow', now)
-    return { ok: true, a: mustGold(aId), b: mustGold(bId) }
-  })
-  return txn()
+  const outcome = reservePairGold({ aUserId, bUserId, stake: BigInt(stake), duelId, now })
+  if (!outcome.ok) {
+    // `reservePairGold` names accounts by user id; translate back to the
+    // challenger/opponent wording the UI already shows.
+    const reason = outcome.reason.includes(aUserId)
+      ? 'challenger cannot cover the stake'
+      : outcome.reason.includes(bUserId)
+        ? 'opponent cannot cover the stake'
+        : outcome.reason
+    return { ok: false, reason }
+  }
+  return { ok: true, a: readGold(aId), b: readGold(bId) }
 }
 
 export type SettleKind = 'payout' | 'refund' | 'void'
 
-/**
- * One settlement per duel. Winner receives the pot (2 * stake).
- * Draw / void / refund returns each reserved stake exactly once.
- */
+/** One settlement per duel, whichever way it ended. */
 export function settleEscrow(input: {
   duelId: string
   aId: string
@@ -195,40 +206,27 @@ export function settleEscrow(input: {
   winnerId?: string | null
   now?: number
 }): { ok: true; idempotent: boolean } | { ok: false; reason: string } {
-  const now = input.now ?? Date.now()
   const { duelId, aId, bId, stake, kind, winnerId } = input
   if (!Number.isInteger(stake) || stake <= 0) return { ok: false, reason: 'invalid stake' }
+  const aUserId = userIdForPlayer(aId)
+  const bUserId = userIdForPlayer(bId)
+  if (!aUserId || !bUserId) return { ok: false, reason: 'one of these players has no account' }
+  const winnerUserId = winnerId ? userIdForPlayer(winnerId) : null
+  if (kind === 'payout' && !winnerUserId) return { ok: false, reason: 'payout needs a fighter id' }
 
-  const txn = db.transaction(() => {
-    const settled = ledgerExists.get(aId, kind === 'payout' ? 'payout' : 'release', duelId)
-      || ledgerExists.get(bId, kind === 'payout' ? 'payout' : 'release', duelId)
-    if (settled) return { ok: true as const, idempotent: true }
-
-    if (kind === 'payout') {
-      if (!winnerId || (winnerId !== aId && winnerId !== bId)) return { ok: false as const, reason: 'payout needs a fighter id' }
-      const loserId = winnerId === aId ? bId : aId
-      const takeA = consumeReserved.run({ player_id: aId, stake, now })
-      const takeB = consumeReserved.run({ player_id: bId, stake, now })
-      if (takeA.changes !== 1 || takeB.changes !== 1) return { ok: false as const, reason: 'reserved stake missing' }
-      const pot = stake * 2
-      const paid = addAvailable.run({ player_id: winnerId, delta: pot, now })
-      if (paid.changes !== 1) return { ok: false as const, reason: 'payout credit failed' }
-      writeLedger(winnerId, 'payout', pot, 'duel', duelId, 'Pot paid to winner', now)
-      writeLedger(loserId, 'release', 0, 'duel', duelId, 'Stake consumed by loss', now)
-      return { ok: true as const, idempotent: false }
-    }
-
-    const backA = moveReservedToAvailable.run({ player_id: aId, stake, now })
-    const backB = moveReservedToAvailable.run({ player_id: bId, stake, now })
-    if (backA.changes !== 1 || backB.changes !== 1) return { ok: false as const, reason: 'reserved stake missing' }
-    writeLedger(aId, 'release', stake, 'duel', duelId, kind === 'void' ? 'Voided — stake returned' : 'Stake refunded', now)
-    writeLedger(bId, 'release', stake, 'duel', duelId, kind === 'void' ? 'Voided — stake returned' : 'Stake refunded', now)
-    return { ok: true as const, idempotent: false }
+  return settleDuelGold({
+    duelId,
+    aUserId,
+    bUserId,
+    stake: BigInt(stake),
+    kind,
+    winnerUserId,
+    now: input.now,
   })
-  return txn()
 }
 
 export function recordOutcome(winnerId: string | null, loserId: string | null, draw: boolean, now = Date.now()) {
+  for (const id of [winnerId, loserId]) if (id) insertRecord.run({ player_id: id, now })
   if (draw) {
     if (winnerId) bumpRecord.run({ player_id: winnerId, w: 0, l: 0, d: 1, now })
     if (loserId) bumpRecord.run({ player_id: loserId, w: 0, l: 0, d: 1, now })
@@ -238,10 +236,13 @@ export function recordOutcome(winnerId: string | null, loserId: string | null, d
   if (loserId) bumpRecord.run({ player_id: loserId, w: 0, l: 1, d: 0, now })
 }
 
+/**
+ * Total gold held by players, available plus reserved.
+ *
+ * Kept for the escrow-conservation assertions that already existed. The stronger
+ * statement — that the whole ledger sums to zero and every account's balance
+ * matches its own entry history — is `money/gold.ts`'s `conservationReport`.
+ */
 export function conservationSum(): { available: number; reserved: number; total: number } {
-  const row = db.prepare('select coalesce(sum(available),0) as available, coalesce(sum(reserved),0) as reserved from game_gold').get() as {
-    available: number
-    reserved: number
-  }
-  return { available: row.available, reserved: row.reserved, total: row.available + row.reserved }
+  return playerGoldTotals()
 }

@@ -1,12 +1,21 @@
 /* ------------------------------------------------------------------ *
- * Demo reward ledger.
+ * The hunt ledger the HUD reads.
  *
  * TRUTHFUL INTEGRATION BOUNDARY
- * This module is a local, simulated accrual ledger. It is not connected
- * to Solana or to any other network. There is no RPC endpoint, no token
- * mint, no wallet adapter, no signing and no payout path anywhere in
- * this repository. `PAYOUT_STATUS` is the only thing the UI may claim
- * about conversion, and it says the conversion does not happen.
+ * Two balances can appear here and they are not the same thing.
+ *
+ *   The server balance, when `serverGold.ts` has a session, is the real
+ *   one: one account, credited only against single-use tokens the server
+ *   issued, recorded with provenance, and the only balance any future
+ *   redemption could ever read. `authority` is then 'server'.
+ *
+ *   The local counter is what runs when there is no session — offline, or
+ *   before the first request comes back. It is an optimistic display. It
+ *   is never redeemable and nothing reads it but the HUD.
+ *
+ * Neither is money. There is no payout path in this repository: no token
+ * mint, no treasury key, no signing. `PAYOUT_STATUS` is the only thing
+ * the UI may claim about conversion, and it says it does not happen.
  *
  * Amounts are integer base units end to end. 1 gold = 1 base unit and
  * nothing here ever produces a fraction; formatting happens at render.
@@ -58,8 +67,34 @@ export function subscribeRewards(listener: () => void) {
   return () => listeners.delete(listener)
 }
 
+/* --------------------------------------------------- the server's figures */
+
+type ServerGold = { total: number; redeemable: number; atMs: number }
+
+let serverGold: ServerGold | null = null
+let serverUnavailableReason: string | null = null
+
+/**
+ * Adopts the server's balance. Called by `serverGold.ts` after every credit.
+ *
+ * The local counter is realigned rather than left to drift, so the HUD shows one
+ * number and it is the authoritative one. A claim that was refused — a spent
+ * token, a rate limit — therefore visibly does not pay, which is correct.
+ */
+export function applyServerGold(figures: { total: number; redeemable: number }) {
+  serverGold = { total: figures.total, redeemable: figures.redeemable, atMs: Date.now() }
+  serverUnavailableReason = null
+  balanceBaseUnits = figures.total
+  emit()
+}
+
+export function markServerUnavailable(reason: string) {
+  serverUnavailableReason = reason
+  emit()
+}
+
 export function goldBalance() {
-  return balanceBaseUnits
+  return serverGold?.total ?? balanceBaseUnits
 }
 
 /**
@@ -104,6 +139,14 @@ export type RewardsSnapshot = {
   /** Always the unavailable status: no adapter exists in this build. */
   payoutStatus: string
   payoutImplemented: false
+  /** Which balance the number above came from. */
+  authority: 'server' | 'local'
+  /**
+   * Gold this account could present for redemption if a redemption existed.
+   * Server-computed, and null whenever there is no server to ask.
+   */
+  redeemableBaseUnits: number | null
+  serverUnavailableReason: string | null
 }
 
 export function rewardsSnapshot(): RewardsSnapshot {
@@ -114,12 +157,15 @@ export function rewardsSnapshot(): RewardsSnapshot {
     accruedThisWindow = 0
   }
   return {
-    balanceBaseUnits,
+    balanceBaseUnits: serverGold?.total ?? balanceBaseUnits,
     accruedThisWindowBaseUnits: accruedThisWindow,
     windowEndsAt: windowStartedAt + PAYOUT_WINDOW_MS,
     entries,
     payoutStatus: PAYOUT_STATUS,
     payoutImplemented: false,
+    authority: serverGold ? 'server' : 'local',
+    redeemableBaseUnits: serverGold?.redeemable ?? null,
+    serverUnavailableReason,
   }
 }
 

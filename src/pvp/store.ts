@@ -30,6 +30,14 @@ export type PvpUi = {
   muted: Set<PlayerId>
   error: string | null
   reconnecting: boolean
+  /**
+   * This character is being played in another tab or on another device.
+   *
+   * Distinct from `reconnecting`, and the UI must not treat them alike:
+   * reconnecting resolves itself, whereas this waits for the player to
+   * decide which tab wins.
+   */
+  superseded: boolean
   surrenderAsk: boolean
 }
 
@@ -37,6 +45,7 @@ const emptyGold = (): GoldView => ({
   total: 0,
   available: 0,
   reserved: 0,
+  redeemable: 0,
   wins: 0,
   losses: 0,
   draws: 0,
@@ -64,6 +73,7 @@ export const pvpState: PvpUi = {
   muted: new Set(),
   error: null,
   reconnecting: false,
+  superseded: false,
   surrenderAsk: false,
 }
 

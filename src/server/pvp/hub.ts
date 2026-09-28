@@ -9,7 +9,9 @@ import {
   COMBAT_TICK_MS,
   DEMO_GOLD_NOTICE,
   GOLD_KIND,
+  HEARTBEAT_INTERVAL_MS,
   PREPARE_TIMEOUT_MS,
+  STALE_CONNECTION_MS,
   type C2S,
   type CombatEvent,
   type DuelOutcomeKind,
@@ -21,7 +23,10 @@ import {
   type S2C,
 } from '../../shared/pvp'
 import { isInTown, ringById, ringStarts } from '../../shared/zones'
+import { ROOM_CAPACITY } from '../config'
 import { walletFromAuthHeader } from '../auth'
+import { CharacterClaims } from './claims'
+import { rememberPosition, resolveMove, resumePosition, sweepPositions } from './presence'
 import {
   accountByPlayer,
   accountByWallet,
@@ -54,21 +59,44 @@ import { DuelSim, type DuelEnd } from './combat'
 import { goldView, recordOutcome, reserveBoth, settleEscrow } from './ledger'
 import { newId } from './ids'
 import { db } from './schema'
-import type { WsConn } from './socket'
+import { CLOSE, type WsConn } from './socket'
 
 type Live = {
   playerId: PlayerId
   accountId: string
   conn: WsConn
+  /**
+   * Which claim on this character this connection holds. Every mutation
+   * checks it, so a connection that has already been superseded cannot
+   * still move the wizard the new tab is now driving.
+   */
+  epoch: number
   x: number
   z: number
   facing: number
   anim: PublicPresence['anim']
   state: PresenceState
   muted: Set<PlayerId>
+  /** When the last accepted pose landed, for the movement speed budget. */
+  lastMoveAtMs: number
+  /**
+   * True until the first pose of a connection that could not resume a
+   * remembered position. That one pose is trusted absolutely; everything
+   * after it is measured against the speed budget.
+   */
+  awaitingSeed: boolean
 }
 
 const lives = new Map<PlayerId, Live>()
+
+/**
+ * One process, one world, one claim per character.
+ *
+ * There is no room ownership and no routing here, so this map is the whole
+ * town. Scaling to a second instance would not add capacity, it would create
+ * a second town behind the same URL — see `ROOM_CAPACITY`.
+ */
+const claims = new CharacterClaims<Live>()
 const byAccount = new Map<string, PlayerId>()
 const duels = new Map<string, DuelSim>()
 const duelByPlayer = new Map<PlayerId, string>()
@@ -155,47 +183,104 @@ export function recoverOpenDuels(now = Date.now()) {
 
 recoverOpenDuels()
 
+/** Where a player with no remembered position appears. Just inside the town gate. */
+const SPAWN = { x: 8, z: 8 }
+
+/** Players currently connected, against the declared capacity of this one world. */
+export function occupancy() {
+  return { players: lives.size, capacity: ROOM_CAPACITY }
+}
+
 export function attachLive(tokenHeader: string | undefined, conn: WsConn): Live | null {
   const accountId = walletFromAuthHeader(tokenHeader)
   if (!accountId) {
     conn.send(JSON.stringify({ t: 'error', code: 'unauthenticated', detail: 'Sign in first.' } satisfies S2C))
-    conn.close()
+    conn.close(CLOSE.policy, 'unauthenticated')
     return null
   }
   const account = ensureAccount(accountId)
-  const existing = lives.get(account.player_id)
-  if (existing) {
-    existing.conn.close()
-    lives.delete(account.player_id)
+  const now = Date.now()
+
+  // Capacity is counted in characters, not sockets: a player taking over their
+  // own character from a second tab is not a new occupant, so they are let in
+  // even at a full house.
+  const reconnecting = lives.has(account.player_id)
+  if (!reconnecting && lives.size >= ROOM_CAPACITY) {
+    conn.send(JSON.stringify({
+      t: 'error',
+      code: 'at_capacity',
+      detail: `This world is full (${lives.size}/${ROOM_CAPACITY}). Try again in a moment.`,
+    } satisfies S2C))
+    conn.close(CLOSE.policy, 'at capacity')
+    return null
   }
+
+  // A recent position survives a dropped socket, so reconnecting puts you back
+  // where you were standing rather than at the gate — and, more to the point,
+  // stops "disconnect, reconnect, arrive anywhere" from being a free teleport.
+  const resumed = resumePosition(account.player_id, SPAWN, now)
+
   const live: Live = {
     playerId: account.player_id,
     accountId,
     conn,
-    x: 8,
-    z: 8,
+    epoch: 0,
+    x: resumed.at.x,
+    z: resumed.at.z,
     facing: 0,
     anim: 'idle',
     state: duelByPlayer.has(account.player_id) ? 'dueling' : 'exploring',
     muted: new Set(),
+    lastMoveAtMs: now,
+    awaitingSeed: !resumed.resumed,
   }
+
+  // Taking the claim is what makes this the one connection that drives the
+  // character. Whoever held it is told why they are being closed, so their
+  // client knows not to reconnect and start a tug of war.
+  const { epoch, displaced } = claims.take(account.player_id, live, now)
+  live.epoch = epoch
+  if (displaced) {
+    try {
+      displaced.conn.send(JSON.stringify({
+        t: 'superseded',
+        detail: 'This character was opened in another tab or on another device. Only one can play at a time.',
+      } satisfies S2C))
+    } catch {
+      /* the old socket may already be gone; closing it is all that is left */
+    }
+    displaced.conn.close(CLOSE.policy, 'superseded')
+  }
+
   lives.set(account.player_id, live)
   byAccount.set(accountId, account.player_id)
+
   conn.onMessage = text => {
+    // A message from a connection that has lost its claim is discarded. This
+    // is the second half of one-tab-per-character: closing the old socket is
+    // asynchronous, and anything it sends in the meantime must not land.
+    if (!claims.holds(live.playerId, live.epoch)) return
     try {
       handle(live, JSON.parse(text) as C2S)
     } catch {
       send(live, { t: 'error', code: 'bad_message', detail: 'Message was not valid JSON.' })
     }
   }
+
   conn.onClose = () => {
+    // Guarded by epoch: a displaced connection's close fires *after* the new
+    // tab has claimed the character, and an unguarded cleanup here would
+    // evict the tab the player is actually looking at.
+    if (!claims.release(live.playerId, live.epoch)) return
     if (lives.get(account.player_id) === live) {
+      rememberPosition(live.playerId, live, Date.now())
       lives.delete(account.player_id)
       const duelId = duelByPlayer.get(account.player_id)
       if (duelId) duels.get(duelId)?.setConnected(account.player_id, false, Date.now())
     }
     broadcastPresence()
   }
+
   welcome(live)
   broadcastPresence()
   return live
@@ -293,17 +378,32 @@ function handle(live: Live, msg: C2S) {
       return
     }
     case 'pose': {
+      // Inside a ring the simulation owns the position outright; a pose from
+      // the client there is not late, it is an attempt to bypass combat.
       if (live.state === 'dueling' || live.state === 'preparing') return
       const now = Date.now()
       const last = lastPoseAt.get(live.playerId) ?? 0
       if (now - last < 40) return
       lastPoseAt.set(live.playerId, now)
-      if (typeof msg.x !== 'number' || typeof msg.z !== 'number') return
-      if (!Number.isFinite(msg.x) || !Number.isFinite(msg.z)) return
-      live.x = Math.max(-96, Math.min(96, msg.x))
-      live.z = Math.max(-96, Math.min(96, msg.z))
-      live.facing = Number.isFinite(msg.facing) ? msg.facing : live.facing
-      live.anim = msg.anim
+
+      const verdict = resolveMove(live, msg, now - live.lastMoveAtMs, live.awaitingSeed)
+      if (verdict.rejected) return
+      live.awaitingSeed = false
+      live.lastMoveAtMs = now
+      live.x = verdict.x
+      live.z = verdict.z
+      live.facing = verdict.facing
+      live.anim = verdict.anim
+      rememberPosition(live.playerId, live, now)
+
+      // A clamped player is told immediately rather than at the next
+      // broadcast tick, so an honest client whose connection stuttered
+      // reconciles in one frame instead of sliding for a fifth of a second.
+      if (verdict.clamped) {
+        const account = accountByPlayer(live.playerId)
+        if (account) send(live, { t: 'you', self: presenceOf(live, account), gold: goldView(live.playerId) })
+      }
+
       if (now - lastPresenceBroadcast > 80) {
         lastPresenceBroadcast = now
         broadcastPresence()
@@ -485,11 +585,13 @@ function onAccept(live: Live, challengeId: string) {
     fromLive.state = 'preparing'
     fromLive.x = starts[0].x
     fromLive.z = starts[0].z
+    fromLive.lastMoveAtMs = now
   }
   if (toLive) {
     toLive.state = 'preparing'
     toLive.x = starts[1].x
     toLive.z = starts[1].z
+    toLive.lastMoveAtMs = now
   }
   sendTo(from.player_id, { t: 'inviteGone', challengeId: pending.challenge_id, reason: 'accepted' })
   sendTo(to.player_id, { t: 'inviteGone', challengeId: pending.challenge_id, reason: 'accepted' })
@@ -507,15 +609,23 @@ function onLeave(live: Live, duelId: string) {
   const liveB = lives.get(sim.snapshot(live.playerId).b.playerId)
   const ring = ringById(sim.ring.id)
   const exits = ring ? ringStarts(ring) : [{ x: 40, z: 40 }, { x: -40, z: -40 }]
+  // Both fighters are placed by the server, so the budget clock restarts with
+  // them: the walk out of the ring is measured from the exit, not from
+  // wherever each of them was standing when the challenge was accepted.
+  const now = Date.now()
   if (liveA) {
     liveA.state = 'exploring'
     liveA.x = exits[0].x
     liveA.z = exits[0].z
+    liveA.lastMoveAtMs = now
+    rememberPosition(liveA.playerId, liveA, now)
   }
   if (liveB) {
     liveB.state = 'exploring'
     liveB.x = exits[1].x
     liveB.z = exits[1].z
+    liveB.lastMoveAtMs = now
+    rememberPosition(liveB.playerId, liveB, now)
   }
   freeRing(sim.ring.id)
   duels.delete(duelId)
@@ -671,10 +781,16 @@ function emitCombat(sim: DuelSim, events: CombatEvent[]) {
     const live = lives.get(id)
     const fighter = id === snap.a.playerId ? snap.a : snap.b
     if (live) {
+      // The simulation is authoritative inside the ring, so the overworld
+      // record follows it rather than the other way round — and the speed
+      // budget is re-based here so stepping out of a duel is not read as a
+      // teleport from wherever the player stood before it started.
       live.x = fighter.x
       live.z = fighter.z
       live.facing = fighter.facing
       live.anim = fighter.anim
+      live.lastMoveAtMs = Date.now()
+      rememberPosition(live.playerId, live)
     }
   }
 }
@@ -711,17 +827,22 @@ export function acceptForTest(challengeId: string, actor: PlayerId) {
 export function seedLiveForTest(playerId: PlayerId, pose: { x: number; z: number }, conn: WsConn) {
   const account = accountByPlayer(playerId)
   if (!account) throw new Error('missing account')
+  const now = Date.now()
   const live: Live = {
     playerId,
     accountId: account.account_id,
     conn,
+    epoch: 0,
     x: pose.x,
     z: pose.z,
     facing: 0,
     anim: 'idle',
     state: 'exploring',
     muted: new Set(),
+    lastMoveAtMs: now,
+    awaitingSeed: false,
   }
+  live.epoch = claims.take(playerId, live, now).epoch
   lives.set(playerId, live)
   return live
 }
@@ -731,6 +852,76 @@ export function clearLivesForTest() {
   byAccount.clear()
   duels.clear()
   duelByPlayer.clear()
+  claims.clear()
+}
+
+/* ------------------------------------------------------------------ *
+ * Connection health.
+ *
+ * Two different failures look identical from here and need separate
+ * handling. A client that closed cleanly fires `onClose` and is gone. A
+ * client whose network vanished — laptop lid, tunnel dropped, NAT entry
+ * expired — leaves a socket that is open as far as this process knows and
+ * will stay that way indefinitely, holding a claim on a character its
+ * owner can no longer reach.
+ *
+ * The ping is what tells them apart. Anything arriving on the socket
+ * counts as proof of life; silence past `STALE_CONNECTION_MS` means the
+ * far end is not there and the claim is released so the player can get
+ * back in from a new tab.
+ * ------------------------------------------------------------------ */
+
+setInterval(() => {
+  const now = Date.now()
+  for (const live of [...lives.values()]) {
+    if (now - live.conn.lastSeenAt > STALE_CONNECTION_MS) {
+      live.conn.close(1001, 'stale connection')
+      continue
+    }
+    live.conn.ping()
+  }
+  sweepPositions(now)
+}, HEARTBEAT_INTERVAL_MS).unref()
+
+/**
+ * Says goodbye before the instance goes away.
+ *
+ * Told explicitly that the server is closing, a client waits and then
+ * reconnects to whatever replaced it. Left to discover the socket drop on
+ * its own it reconnects immediately, at the exact moment the replacement
+ * is not yet listening, and burns its backoff on refused connections.
+ *
+ * Open duels are voided and both stakes returned. Finishing them is not
+ * an option inside a shutdown window, and a duel that simply vanishes
+ * with the escrow still held is the one outcome nobody would forgive.
+ */
+export async function drainLive(reconnectAfterMs = 5_000): Promise<void> {
+  const now = Date.now()
+  for (const sim of [...duels.values()]) {
+    closeDuel(sim, {
+      kind: 'void',
+      winnerId: null,
+      loserId: null,
+      reason: 'The server restarted mid-duel. Both stakes were returned.',
+    }, now)
+  }
+  for (const live of [...lives.values()]) {
+    rememberPosition(live.playerId, live, now)
+    try {
+      live.conn.send(JSON.stringify({
+        t: 'serverClosing',
+        reconnectAfterMs,
+        detail: 'This world is restarting. You will be reconnected.',
+      } satisfies S2C))
+    } catch {
+      /* the socket is already gone */
+    }
+  }
+  // A beat for those frames to reach the wire before the sockets are torn
+  // down; a close that races the message ahead of it teaches the client
+  // nothing.
+  await new Promise(resolve => setTimeout(resolve, 150))
+  for (const live of [...lives.values()]) live.conn.close(1001, 'server restarting')
 }
 
 export { duels as _duelsForTest, lives as _livesForTest }

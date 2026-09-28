@@ -19,6 +19,29 @@ const remotes = new Map<string, Remote>()
 let rings: THREE.Group | null = null
 let lastPose = 0
 
+/**
+ * How far the local wizard may drift from the server's opinion before it
+ * is snapped back.
+ *
+ * Small corrections are left alone. The server clamps movement to a speed
+ * budget, and under normal latency that produces a metre or two of
+ * disagreement that resolves itself within a frame or two — yanking the
+ * player for that would feel far worse than the drift. A gap this large is
+ * not latency: either the client teleported, or it is so far out of sync
+ * that what the player sees no longer matches what anyone else does.
+ */
+const DESYNC_SNAP_DISTANCE = 12
+
+/**
+ * Smoothing rate for remote players, per second.
+ *
+ * Applied as `1 - e^(-rate * dt)` rather than `rate * dt`, so the result
+ * does not depend on frame rate. The naive form converges faster at 120fps
+ * than at 30fps, which makes other players visibly smoother on a better
+ * machine — and, at a low enough frame rate, overshoots past the target.
+ */
+const REMOTE_SMOOTHING = 9
+
 function syncRemote(scene: THREE.Scene, presence: PublicPresence) {
   let remote = remotes.get(presence.playerId)
   if (remote && remote.character !== presence.loadout.character) {
@@ -113,13 +136,23 @@ export function listRemotes() {
   }))
 }
 
+export type LocalCorrection = { x: number; z: number }
+
+/**
+ * Advances remote players, sends this player's pose, and reports any
+ * correction the server has issued for the local wizard.
+ *
+ * The caller applies the correction, because only it owns the player
+ * object. Returning it rather than reaching for that object keeps this
+ * module free of any writable handle on the local player.
+ */
 export function updatePvpWorld(scene: THREE.Scene, dt: number, now: number, local: {
   x: number
   z: number
   facing: number
   anim: 'idle' | 'walk' | 'run' | 'attack' | 'cast' | 'hit' | 'down'
   sprinting: boolean
-}) {
+}): LocalCorrection | null {
   markDuelRings(scene)
   const seen = new Set<string>()
   for (const other of pvpState.others) {
@@ -128,15 +161,30 @@ export function updatePvpWorld(scene: THREE.Scene, dt: number, now: number, loca
     syncRemote(scene, other)
   }
   dropMissing(scene, seen)
+  const blend = 1 - Math.exp(-REMOTE_SMOOTHING * dt)
   for (const remote of remotes.values()) {
-    remote.group.position.lerp(remote.target, Math.min(1, dt * 8))
-    remote.group.rotation.y += (remote.facing - remote.group.rotation.y) * Math.min(1, dt * 8)
+    remote.group.position.lerp(remote.target, blend)
+    // Rotate the short way round, or a wizard turning past π spins all the
+    // way back through every angle it did not take.
+    const delta = Math.atan2(
+      Math.sin(remote.facing - remote.group.rotation.y),
+      Math.cos(remote.facing - remote.group.rotation.y),
+    )
+    remote.group.rotation.y += delta * blend
     animateCharacter(remote.group, now)
   }
   if (now - lastPose > 80 && !pvpState.duel) {
     lastPose = now
     send({ t: 'pose', x: local.x, z: local.z, facing: local.facing, anim: local.anim, sprinting: local.sprinting })
   }
+
+  // The server's copy of this player is the one everybody else sees. When the
+  // two have diverged this far, the local view is the wrong one by definition.
+  const self = pvpState.self
+  if (!pvpState.duel && self && Math.hypot(self.x - local.x, self.z - local.z) > DESYNC_SNAP_DISTANCE) {
+    return { x: self.x, z: self.z }
+  }
+  return null
 }
 
 export function applyDuelPose(player: THREE.Object3D, you: string) {
