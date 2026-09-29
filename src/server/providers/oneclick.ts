@@ -7,31 +7,36 @@
  * without executing the swap". No deposit address is ever used, no funds move,
  * and `prepareDeposit` below refuses rather than moving any.
  *
- * ---- The trap this file exists to defuse ----------------------------------
+ * ---- The question this file answers ---------------------------------------
  *
- * 1Click's quote endpoint **accepts shielded-only unified addresses** and
- * returns priced quotes for them, while its own chain-support page says Zcash
- * is "⚠️ Partially supported - Transparent addresses only" and its OpenAPI
- * schema never mentions shielded pools, Sapling, Orchard, or unified addresses
- * at all. So the API's behaviour invites a conclusion its documentation
- * contradicts, and the only way to find out which is true is to send real ZEC
- * and inspect what got delivered.
+ * Does this route deliver ZEC into a shielded pool, or only to a transparent
+ * receiver? The provider's own chain-support page says "⚠️ Partially supported
+ * - Transparent addresses only", its OpenAPI schema never mentions a shielded
+ * pool, and its quote endpoint nonetheless prices shielded-only addresses. For
+ * a long time that looked unresolvable without sending real ZEC.
  *
- * A naive implementation would take the priced quote as confirmation, hand the
- * user a deposit address, and discover the incompatibility after the funds were
- * already inside it. This adapter is built so that cannot happen:
+ * It was resolvable, because 1Click is not the thing that pays. The Zcash leg
+ * is executed by NEAR's Omni Bridge connector, which has a public address, a
+ * public contract, and a public transaction history. Two read-only
+ * observations settle it, and both are recorded in `ZEC_DELIVERY_EVIDENCE`:
+ * the quote validator requires a transparent **or an Orchard** receiver and
+ * rejects Sapling-only addresses in both encodings; and the connector's wallet
+ * is spending transparent UTXOs into Orchard actions with negative
+ * valueBalance, in production, most of the time.
  *
- *   - `classifyZecDelivery` reports quote acceptance and documented support as
- *     two separate fields and never derives one from the other. Its verdict for
- *     a shielded receiver is `unsubstantiated`, not `supported`.
- *   - `deliveredReceiver` is `'unknown'` for a shielded-capable address, because
- *     no sourced statement says which pool the funds land in. It is never
- *     `'shielded'`, and it is not `'transparent'` either: claiming transparent
- *     delivery would be the same unsourced guess in the other direction.
- *   - `planZecPayout` refuses outright when the owner required shielded
- *     delivery. It does not return a transparent plan instead. Silently
- *     downgrading is the specific failure §6 names, and a caller that wanted a
- *     fallback has to ask for one explicitly and re-authorize it.
+ * So the answer is Orchard — but only for an address that leaves no
+ * alternative. The structure of this file follows from that one qualification:
+ *
+ *   - `classifyZecDelivery` returns `deliveredReceiver: 'shielded'` only when
+ *     the address exposes an Orchard receiver and **no** transparent receiver.
+ *     With both present the sender chooses, the choice is not observable, and
+ *     the verdict is `receiver-ambiguous` with `'unknown'` delivery.
+ *   - Documented support and observed behaviour stay separate fields. The
+ *     documentation is wrong here, and a verdict that overrides a provider's
+ *     own words has to keep quoting them.
+ *   - `planZecPayout` still refuses rather than downgrading, and there is still
+ *     no transparent plan in its return value for a caller to reach by mistake.
+ *   - Nothing here has ever funded a deposit. Every call is `dry`.
  * ------------------------------------------------------------------ */
 
 import {
@@ -66,16 +71,131 @@ export const ONECLICK_SDK = {
 export const ZEC_NATIVE_ASSET_ID = 'nep141:zec.omft.near'
 
 /**
- * Verbatim from the provider's own chain-support page.
+ * Verbatim from the provider's own chain-support page, re-read 2026-09-29.
  *
- * Held as a constant because it is the only sourced statement about what 1Click
- * actually delivers to a Zcash address, and every verdict in this file is
- * traceable back to it.
+ * Still says this, and it is still wrong: the observations in
+ * `ZEC_DELIVERY_EVIDENCE` below show the route paying into the Orchard pool in
+ * production. It is kept because a verdict that contradicts a provider's own
+ * documentation has to quote the documentation it is contradicting.
  */
 export const ZEC_DOCUMENTED_SUPPORT =
   '⚠️ Partially supported - Transparent addresses only'
 
 export const ZEC_DOCUMENTED_SUPPORT_URL = 'https://docs.near-intents.org/resources/chain-support'
+
+/**
+ * The name of the thing that actually executes the Zcash leg.
+ *
+ * Worth stating separately from 1Click, because 1Click is a quoting and
+ * routing front end: the payout is built and broadcast by NEAR's Omni Bridge
+ * Zcash connector, and the answer to "what pool does this land in" lives with
+ * the connector rather than with the API that priced the swap.
+ */
+export const ZEC_EXECUTOR = {
+  intentsContract: 'intents.near',
+  bridgeContract: 'omni.bridge.near',
+  connectorContract: 'zcash-connector.bridge.near',
+  bridgeToken: 'zec.omft.near',
+  /** The connector's transparent UTXO pool, from its own `get_config`. */
+  changeAddress: 't1KfwsnwJeNRVjQGBDZhwKskpQbih2qx5Ua',
+} as const
+
+/* ------------------------------------------------------------------ *
+ * What was actually observed
+ *
+ * Read-only, reproducible by `npm run verify:zec-delivery`. The distinction
+ * that matters throughout: `documented` rows are claims a provider makes,
+ * `observed` rows are things that were measured. Only the observed rows move a
+ * verdict, and the documented rows are retained precisely because they
+ * disagree.
+ * ------------------------------------------------------------------ */
+
+export interface DeliveryEvidenceItem {
+  readonly kind: 'documented' | 'observed'
+  readonly url: string
+  /** Verbatim where the source is text; a measurement where it is not. */
+  readonly quote: string
+  readonly bearing: string
+}
+
+export const ZEC_DELIVERY_EVIDENCE: readonly DeliveryEvidenceItem[] = [
+  {
+    kind: 'documented',
+    url: ZEC_DOCUMENTED_SUPPORT_URL,
+    quote: ZEC_DOCUMENTED_SUPPORT,
+    bearing:
+      'The provider says transparent only. Contradicted by every observed row below, so it is treated as stale rather than authoritative.',
+  },
+  {
+    kind: 'documented',
+    url: 'https://github.com/Near-One/bridge-sdk-js/blob/main/docs/guides/bitcoin.mdx',
+    quote: 'Zcash only supports transparent addresses (`t1...`). Shielded addresses are not supported.',
+    bearing: 'The bridge maintainer’s own guide agrees with 1Click’s page, and is also contradicted by the chain.',
+  },
+  {
+    kind: 'documented',
+    url: 'https://github.com/Near-One/bridge-sdk-js/blob/main/packages/core/src/types.ts',
+    quote:
+      'Optional memo to attach on the destination chain. Currently supported for Zcash shielded recipients, where memos are limited to 512 bytes.',
+    bearing:
+      'The same repository, in code rather than prose, states that Zcash shielded recipients exist. This is the documentation catching up, and it points the same way the chain does.',
+  },
+  {
+    kind: 'documented',
+    url: 'https://github.com/Near-One/omni-bridge/blob/main/near/omni-tests/src/zcash_stale_transfer_poc.rs',
+    quote:
+      'Real-world Zcash UAs with all three receivers (transparent + Sapling + Orchard) are typically 280-320 chars',
+    bearing:
+      'A maintainer-written test that treats unified addresses as the ordinary case for this bridge. The same file notes the contract "doesn’t validate Zcash address format".',
+  },
+  {
+    kind: 'observed',
+    url: 'https://1click.chaindefuser.com/v0/quote',
+    quote:
+      'SOL→ZEC dry quotes, three rounds each: t1 transparent HTTP 201; unified Orchard-only 201; unified Sapling+Orchard 201; unified p2pkh+Orchard 201; unified Sapling-only HTTP 400 "recipient is not valid"; legacy zs1 Sapling HTTP 400.',
+    bearing:
+      'The validator parses receivers and requires a transparent or an Orchard one. An Orchard-only address has no transparent receiver to fall back to, and is accepted anyway; Sapling alone is refused. That is a ZIP-316 sender whose supported set is {p2pkh, p2sh, orchard}.',
+  },
+  {
+    kind: 'observed',
+    url: 'https://api.nearblocks.io/v1/account/zec.omft.near/txns',
+    quote:
+      'Production withdrawals carry `{"Withdraw":{"target_btc_address":"u1…"}}`. Four distinct destinations sampled, all parsed by the ZIP-316 parser as shielded-only (three [sapling,orchard], one [orchard]); none exposes a transparent receiver; all four receipts succeeded.',
+    bearing:
+      'The route is being used for shielded-only recipients in production, and those withdrawals are not failing.',
+  },
+  {
+    kind: 'observed',
+    url: 'https://api.blockchair.com/zcash/raw/transaction/2294dbbf8fe1de9c1e341fc0b034cdcf0a8f76f80e24bd100cb9cee52388a373',
+    quote:
+      'v6 transaction from the connector’s wallet: 2 transparent inputs (47,790,000 zat), 1 transparent output back to its own change address (45,674,715 zat), and one Orchard action with valueBalance −2,100,285 zat. The residual is exactly 15,000 zat, the ZIP-317 fee for three logical actions.',
+    bearing:
+      'The decisive observation. A negative Orchard valueBalance is value leaving the transparent pool and entering the Orchard pool, and the fee arithmetic closes to the zatoshi. This is a shielding payout, not a transparent one.',
+  },
+  {
+    kind: 'observed',
+    url: 'https://api.blockchair.com/zcash/dashboards/address/t1KfwsnwJeNRVjQGBDZhwKskpQbih2qx5Ua',
+    quote:
+      'Eight of the ten most recent transactions from the connector’s wallet carry exactly one Orchard action with a negative valueBalance (−0.021 to −100.2 ZEC). The other two are transparent-only payouts with no shielded component.',
+    bearing:
+      'Orchard delivery is the routine behaviour of this wallet, not an isolated event, and transparent delivery still happens for transparent recipients.',
+  },
+] as const
+
+/**
+ * The one thing none of this can show, stated so it is not quietly assumed.
+ *
+ * An Orchard output is encrypted to its recipient. Nobody outside the payment
+ * can read which address a given action paid, so no amount of chain-watching
+ * will ever tie one of our swaps to one of those actions. The evidence above is
+ * therefore the strongest form this question admits: shielded-only addresses go
+ * in, Orchard value comes out, and the arithmetic has no room for a transparent
+ * payout hiding in it.
+ */
+export const ZEC_DELIVERY_UNVERIFIABLE_BY_DESIGN =
+  'Orchard outputs are encrypted to the recipient, so an external observer cannot confirm that a specific ' +
+  'payout reached a specific address. Per-payment proof of delivery is only available to the holder of the ' +
+  'viewing key — that is, the player — and this server never sees it.'
 
 /**
  * Optional partner JWT. Unauthenticated requests work and carry an extra 0.2%
@@ -249,12 +369,26 @@ export async function dryQuote(input: DryQuoteInput): Promise<AdapterResult<{ qu
  * ------------------------------------------------------------------ */
 
 export type ShieldedVerdict =
-  /** Documented as supported by the provider. Nothing reaches this today. */
-  | 'documented-supported'
-  /** The API priced it, the documentation contradicts it. Not evidence. */
+  /**
+   * An Orchard receiver and no transparent receiver. The provider prices it,
+   * and the executor is observed paying Orchard. There is no transparent
+   * receiver in the address for a payout to land on instead, so the pool is
+   * determined by the address rather than by a choice we cannot see.
+   */
+  | 'orchard-substantiated'
+  /**
+   * Orchard *and* transparent receivers both present. ZIP-316 says a sender
+   * picks its most preferred supported receiver, which would be Orchard — but
+   * "would be" is not an observation, and picking wrong here means paying a
+   * private promise into a public address.
+   */
+  | 'receiver-ambiguous'
+  /** Sapling with no Orchard and no transparent receiver: the provider refuses it. */
+  | 'sapling-unsupported'
+  /** No shielded receiver at all. Transparent delivery is the only possibility. */
+  | 'transparent-only'
+  /** The provider would not price it, so nothing was established either way. */
   | 'unsubstantiated'
-  /** Documented as unsupported and the API agreed. */
-  | 'documented-unsupported'
 
 export interface ZecDeliveryAssessment {
   readonly recipient: string
@@ -262,28 +396,38 @@ export interface ZecDeliveryAssessment {
   readonly parsedReceivers: readonly string[]
   readonly addressIsShieldedCapable: boolean
   readonly addressHasTransparentReceiver: boolean
+  readonly addressHasOrchardReceiver: boolean
   /** Did the live quote endpoint price this address? */
   readonly quoteAccepted: boolean
   readonly quoteHttpStatus: number | null
-  /** Verbatim provider documentation. */
+  /** Verbatim provider documentation, which the observations contradict. */
   readonly documentedSupport: string
   readonly documentedSupportUrl: string
   readonly verdict: ShieldedVerdict
   /**
-   * What the route would actually deliver to. Never `'shielded'`, because no
-   * sourced statement supports that and a priced quote is not one.
+   * The pool this address forces the payout into.
+   *
+   * `'shielded'` is reachable only when Orchard is the sole option the address
+   * offers. It is never inferred from a priced quote, and never from the
+   * presence of a shielded receiver alongside a transparent one.
    */
   readonly deliveredReceiver: ObservedReceiver
   readonly explanation: string
 }
 
+const hasAny = (receivers: readonly string[], ...want: string[]) =>
+  receivers.some(receiver => want.includes(receiver))
+
 /**
  * Combines a parsed address with a live quote result into a verdict.
  *
- * The important line is the one that does *not* exist: there is no branch in
- * which `quoteAccepted === true` produces `deliveredReceiver: 'shielded'`. The
- * two inputs are reported side by side, and the disagreement between them is
- * the finding.
+ * The rule the whole function turns on is that **`'shielded'` requires the
+ * address to leave no alternative.** An Orchard-only unified address can only
+ * be paid one way, so observing that the executor pays Orchard settles it. An
+ * address carrying both Orchard and a transparent receiver cannot be settled
+ * the same way: the sender chooses, the choice is not visible from outside, and
+ * guessing the charitable answer is exactly the failure this file exists to
+ * prevent. That case returns `'unknown'` and the caller refuses.
  */
 export function classifyZecDelivery(input: {
   recipient: string
@@ -291,43 +435,71 @@ export function classifyZecDelivery(input: {
   quoteAccepted: boolean
   quoteHttpStatus: number | null
 }): ZecDeliveryAssessment {
-  const shieldedCapable = input.parsedReceivers.some(
-    receiver => receiver === 'sapling' || receiver === 'orchard',
-  )
-  const hasTransparent = input.parsedReceivers.some(
-    receiver => receiver === 'p2pkh' || receiver === 'p2sh',
-  )
+  const hasOrchard = hasAny(input.parsedReceivers, 'orchard')
+  const hasSapling = hasAny(input.parsedReceivers, 'sapling')
+  const hasTransparent = hasAny(input.parsedReceivers, 'p2pkh', 'p2sh')
+  const shieldedCapable = hasOrchard || hasSapling
 
-  const verdict: ShieldedVerdict = shieldedCapable
-    ? input.quoteAccepted
-      ? 'unsubstantiated'
-      : 'documented-unsupported'
-    : 'documented-unsupported'
+  let verdict: ShieldedVerdict
+  let deliveredReceiver: ObservedReceiver
+  let explanation: string
 
-  const explanation = shieldedCapable
-    ? input.quoteAccepted
-      ? 'The quote endpoint priced a shielded-capable unified address, but the provider documents Zcash ' +
-        'as transparent addresses only and its OpenAPI schema never mentions shielded pools. Quote-time ' +
-        'acceptance validates an address string; it is not a promise about which pool the payout lands ' +
-        'in. Treating it as one would put funds in a deposit address before the truth was known.'
-      : 'The quote endpoint rejected this shielded-capable address, which agrees with the documentation.'
-    : 'This address exposes no shielded receiver, so transparent delivery is the only possibility.'
+  if (!input.quoteAccepted) {
+    // Nothing was established. In particular a refusal is not proof of
+    // transparent delivery, so this does not fall through to `'transparent'`.
+    verdict = hasSapling && !hasOrchard && !hasTransparent ? 'sapling-unsupported' : 'unsubstantiated'
+    deliveredReceiver = 'unknown'
+    explanation =
+      verdict === 'sapling-unsupported'
+        ? 'The provider refused this address. A Sapling receiver with no Orchard and no transparent receiver ' +
+          'is rejected outright with HTTP 400 "recipient is not valid" — the executor builds Orchard outputs, ' +
+          'not Sapling ones. Ask for an address that exposes an Orchard receiver.'
+        : 'The provider would not price this address, so nothing was established about where it would pay. ' +
+          'That is not evidence of transparent delivery either.'
+  } else if (hasOrchard && !hasTransparent) {
+    verdict = 'orchard-substantiated'
+    deliveredReceiver = 'shielded'
+    explanation =
+      'This address exposes an Orchard receiver and no transparent receiver, so there is nowhere public for ' +
+      'a payout to land. The provider prices it, and the Zcash connector that executes the payout is ' +
+      'observed on chain spending transparent UTXOs into Orchard actions with a negative valueBalance. ' +
+      'What cannot be shown for any individual payment is which address an Orchard action paid, because ' +
+      'the output is encrypted to its recipient.'
+  } else if (hasOrchard && hasTransparent) {
+    verdict = 'receiver-ambiguous'
+    deliveredReceiver = 'unknown'
+    explanation =
+      'This address exposes an Orchard receiver *and* a transparent one. ZIP-316 says a sender should pick ' +
+      'the most preferred receiver it supports, which would be Orchard, but that is a reading of the spec ' +
+      'rather than something observed of this executor, and being wrong means paying publicly under a ' +
+      'private promise. Supply an address with no transparent receiver and the question disappears.'
+  } else if (hasSapling) {
+    // Accepted despite Sapling means a transparent receiver carried it.
+    verdict = hasTransparent ? 'receiver-ambiguous' : 'sapling-unsupported'
+    deliveredReceiver = 'unknown'
+    explanation = hasTransparent
+      ? 'This address exposes Sapling and a transparent receiver but no Orchard receiver. The executor is ' +
+        'only observed building Orchard outputs, so the shielded receiver here is one it does not use, and ' +
+        'the transparent receiver is the likely destination. Not offered as a private payout.'
+      : 'Sapling with no Orchard receiver. The executor builds Orchard outputs only.'
+  } else {
+    verdict = 'transparent-only'
+    deliveredReceiver = 'transparent'
+    explanation = 'This address exposes no shielded receiver, so transparent delivery is the only possibility.'
+  }
 
   return {
     recipient: input.recipient,
     parsedReceivers: [...input.parsedReceivers],
     addressIsShieldedCapable: shieldedCapable,
     addressHasTransparentReceiver: hasTransparent,
+    addressHasOrchardReceiver: hasOrchard,
     quoteAccepted: input.quoteAccepted,
     quoteHttpStatus: input.quoteHttpStatus,
     documentedSupport: ZEC_DOCUMENTED_SUPPORT,
     documentedSupportUrl: ZEC_DOCUMENTED_SUPPORT_URL,
     verdict,
-    // Documented support is transparent-only, and documentation is the only
-    // sourced statement available. A shielded-capable address whose delivery
-    // pool is unproven is `unknown`, which the policy engine denies when the
-    // owner required shielded — it does not fall through to transparent.
-    deliveredReceiver: shieldedCapable ? 'unknown' : 'transparent',
+    deliveredReceiver,
     explanation,
   }
 }
@@ -356,12 +528,9 @@ export function planZecPayout(input: {
       return {
         usable: false,
         assessment: input.assessment,
-        refusal:
-          'The owner approved shielded delivery. This provider documents Zcash as ' +
-          `"${ZEC_DOCUMENTED_SUPPORT}" and cannot substantiate a shielded payout, so the route stops ` +
-          'here. Falling back to transparent delivery would change what the owner agreed to and is not ' +
-          'offered; a transparent payout needs its own authorization with ' +
-          'destinationReceiver = "transparent-allowed".',
+        refusal: `${refusalFor(input.assessment.verdict)} Falling back to transparent delivery would change ` +
+          'what the owner agreed to and is not offered; a transparent payout needs its own authorization ' +
+          'with destinationReceiver = "transparent-allowed".',
       }
     }
     return { usable: true, assessment: input.assessment }
@@ -377,6 +546,34 @@ export function planZecPayout(input: {
     }
   }
   return { usable: true, assessment: input.assessment }
+}
+
+/** The reason a shielded requirement was not met, specific to why. */
+function refusalFor(verdict: ShieldedVerdict): string {
+  switch (verdict) {
+    case 'receiver-ambiguous':
+      return (
+        'The owner approved shielded delivery, and this recipient also exposes a transparent receiver. ' +
+        'Which one the executor pays is its choice and is not observable from outside, so this address ' +
+        'cannot be promised as private. A unified address with no transparent receiver can be.'
+      )
+    case 'sapling-unsupported':
+      return (
+        'The owner approved shielded delivery, and this recipient offers only a Sapling receiver. The ' +
+        'executor builds Orchard outputs, and the provider rejects Sapling-only addresses outright. An ' +
+        'address exposing an Orchard receiver is required.'
+      )
+    case 'transparent-only':
+      return 'The owner approved shielded delivery and this recipient exposes no shielded receiver at all.'
+    case 'unsubstantiated':
+      return (
+        'The owner approved shielded delivery and the provider would not price this recipient, so nothing ' +
+        'is known about where it would pay.'
+      )
+    case 'orchard-substantiated':
+      // Unreachable: this verdict sets deliveredReceiver to 'shielded'.
+      return 'The owner approved shielded delivery.'
+  }
 }
 
 /* ------------------------------------------------------------------ *
@@ -485,12 +682,22 @@ export async function probeOneClick(nowMs: number): Promise<IntegrationReport> {
     { id: 'dry-quote', description: 'Price SOL to ZEC without executing', verdict: 'read-only' },
     {
       id: 'shielded-payout',
-      description: 'Deliver ZEC to a shielded receiver',
+      description: 'Deliver ZEC into the Orchard pool, for a recipient with no transparent receiver',
+      verdict: 'read-only',
+      blocker:
+        `The provider still documents Zcash as "${ZEC_DOCUMENTED_SUPPORT}", and that is stale. The quote ` +
+        'endpoint requires a transparent or an Orchard receiver and rejects Sapling-only addresses, and ' +
+        `the executing connector (${ZEC_EXECUTOR.connectorContract}) is observed spending its transparent ` +
+        'UTXOs into Orchard actions in production. What remains unexecuted here is our own swap: no ' +
+        'deposit has ever been funded from this repository.',
+    },
+    {
+      id: 'sapling-payout',
+      description: 'Deliver ZEC to a Sapling receiver',
       verdict: 'unavailable',
       blocker:
-        `Documented as "${ZEC_DOCUMENTED_SUPPORT}". The quote endpoint nonetheless prices shielded-only ` +
-        'unified addresses, which is not evidence of shielded delivery — resolving the contradiction ' +
-        'needs a real mainnet swap and an inspection of the delivered transaction.',
+        'The provider rejects Sapling-only recipients with HTTP 400 "recipient is not valid", in both the ' +
+        'unified and the legacy zs1 encoding. The executor builds Orchard outputs only.',
     },
     {
       id: 'deposit',
@@ -513,8 +720,10 @@ export async function probeOneClick(nowMs: number): Promise<IntegrationReport> {
     // misreport a fee difference as a blocker.
     missingConfiguration: [],
     nextStep:
-      'Discovery and dry quotes are the ceiling here. Execution cannot be tested anywhere: there is no ' +
-      'NEAR Intents testnet, and shielded delivery is undocumented.',
+      'Discovery and dry quotes are the ceiling here, and they now answer the shielded question: quote ' +
+      'only an Orchard-bearing address with no transparent receiver. Execution still cannot be rehearsed ' +
+      'anywhere, because there is no NEAR Intents testnet. Re-run npm run verify:zec-delivery to confirm ' +
+      'the acceptance rule and the connector’s Orchard output have not changed.',
   }
 }
 

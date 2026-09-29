@@ -2,15 +2,17 @@
  * The network badge.
  *
  * Every "is this real money" indicator in the app renders through this
- * component, reading the same store as the wallet panel, so the HUD and
- * the panel cannot drift apart or contradict each other. The text itself
- * comes from `fundsLabel` in cluster.ts, which is the single place the
- * demo/test/live wording is decided.
+ * component, so the HUD and the wallet panel cannot drift apart or
+ * contradict each other. The text itself comes from `fundsLabel` in
+ * cluster.ts, which is the single place the demo/live wording is decided.
+ *
+ * It reads no state. The label depends on the configured cluster alone,
+ * which is fixed for the life of the build, so there is nothing here to
+ * subscribe to and nothing that can change under the player.
  * ------------------------------------------------------------------ */
 
 import React from 'react'
 import { fundsLabel } from './cluster'
-import { useWallet } from './wallet'
 // The badge renders in the HUD whether or not the wallet panel is mounted, so it
 // carries the stylesheet import too. Vite dedupes it.
 import './solana.css'
@@ -19,8 +21,7 @@ import './solana.css'
 export type BadgeVariant = 'chip' | 'dot' | 'foot'
 
 export function FundsBadge({ variant = 'chip' }: { variant?: BadgeVariant }) {
-  const wallet = useWallet()
-  const label = fundsLabel(wallet.status === 'connected')
+  const label = fundsLabel()
   return (
     <div
       className={`funds-badge funds-${variant} funds-${label.mode}`}

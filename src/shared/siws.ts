@@ -2,17 +2,16 @@
  * Sign-In With Solana message format, shared by client and server.
  *
  * Why this lives in one file imported by both sides: the client must be
- * able to rebuild, byte for byte, the message it is about to ask Phantom
- * to sign, and the server must rebuild the same bytes to verify it. If
- * the server simply handed the client a finished string to sign, a
- * compromised or spoofed server could put arbitrary text in front of the
- * user. Here the server only supplies *fields* (notably the nonce); the
- * client assembles the text itself and refuses anything that does not
- * match the template below.
+ * able to rebuild, byte for byte, the message it is about to sign, and the
+ * server must rebuild the same bytes to verify it. If the server simply
+ * handed the client a finished string to sign, a compromised or spoofed
+ * server could put arbitrary text in front of the user. Here the server
+ * only supplies *fields* (notably the nonce); the client assembles the
+ * text itself and refuses anything that does not match the template below.
  *
- * The layout follows the SIWS / EIP-4361 convention so the text reads as
- * a recognisable sign-in prompt inside Phantom. It is a plain UTF-8
- * message and is never a transaction: signing it can move no funds.
+ * The layout follows the SIWS / EIP-4361 convention so the text reads as a
+ * recognisable sign-in prompt in any wallet that shows it. It is a plain
+ * UTF-8 message and is never a transaction: signing it can move no funds.
  * ------------------------------------------------------------------ */
 
 /** Fixed wording. The server may not vary this, so the user always sees the same prompt. */

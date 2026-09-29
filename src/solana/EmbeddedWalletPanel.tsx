@@ -1,9 +1,13 @@
 /* ------------------------------------------------------------------ *
  * The embedded wallet, on screen.
  *
- * Three rules this component follows, and they are why it is separate
- * from `WalletPanel.tsx`, which is the Phantom path and still holds no
- * key of any kind:
+ * This is the only wallet in Voxels, and the only place in the app where
+ * a secret key can appear on screen at all. It is kept in its own file
+ * rather than inlined into `WalletPanel.tsx` — which is the frame around
+ * it and touches no key of any kind — so that the reveal path stays short
+ * enough to read in one sitting.
+ *
+ * Three rules this component follows:
  *
  *   1. The secret key is rendered only after a deliberate click on a
  *      button whose label says what it does, and only from the value the

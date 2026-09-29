@@ -5,10 +5,18 @@
  * WHY THIS EXISTS
  *   Every player who walks into the world needs a signing key, because
  *   the account system proves ownership with an ed25519 signature over a
- *   server-issued challenge and nothing else. Phantom does that for
- *   people who have Phantom. This does it for everybody else, and it is
- *   the same kind of key: 32 bytes of seed, an Ed25519 public key, a
- *   base58 Solana address that any wallet will recognise.
+ *   server-issued challenge and nothing else. This is that key, for every
+ *   player, with no extension to install and nothing to connect: 32 bytes
+ *   of seed, an Ed25519 public key, a base58 Solana address that any
+ *   wallet will recognise.
+ *
+ * WHAT IT CANNOT DO
+ *   Sign a transaction. There is no `signTransaction` here and there must
+ *   never be one: this key lives in `localStorage`, so a signer would turn
+ *   any XSS on this origin into stolen funds. Message signing is the whole
+ *   capability, and the identity flow is the whole requirement — a gold
+ *   payout is signed and sent by the treasury, with the player's signature
+ *   proving only that they control the destination address.
  *
  * WHAT IT IS NOT
  *   It is not hardware-grade and it is not custodial-grade. A key sitting
@@ -305,7 +313,7 @@ export function forgetEmbeddedWallet(): void {
 
 export type ExportedSecret = {
   address: string
-  /** What Phantom's "import private key" field expects. */
+  /** What a wallet's "import private key" field expects. */
   base58: string
   /** What `solana-keygen`/the CLI reads: the 64-byte array, as JSON text. */
   jsonArray: string

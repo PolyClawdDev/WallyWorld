@@ -34,6 +34,24 @@ import type { Surface } from './voxelBuild'
  * Variety per instance is free: yaw, a small lean, non-uniform scale and
  * a canopy tint all ride in the instance matrix and the instance colour,
  * so no two trees in the same InstancedMesh look alike.
+ *
+ * ---- Two rules every profile below has to obey ----
+ *
+ * A. THE BOLE IS NEVER WIDER THAN TWO CELLS OF RADIUS. What blocks the
+ *    player is measured off these grids (`solidRadiusBelow`), not off the
+ *    `trunk` field, so a profile that flares to six cells at the base
+ *    produces a six-cell navigation obstacle. The elder used to do
+ *    exactly that — a fourteen-metre stump against a 2.3m obstacle, so
+ *    the player walked inside the wood of the tree — and the honest fix
+ *    for that is a believable trunk, not a fourteen-metre blocker.
+ *
+ * B. THE LOWEST LEAF IS HIGH ENOUGH TO WALK AND ORBIT UNDER. `canopy.base`
+ *    is measured here and `src/wildscape.ts` floors every instance's
+ *    scale against it, so a crown that starts three rows up on a tree
+ *    that plants at 0.8 scale is a crown the camera sits inside. Give a
+ *    walk-under species a bare bole of at least six rows. A species whose
+ *    crown reaches the ground — the scrub — is a thicket instead, and
+ *    blocks over its whole width.
  * ------------------------------------------------------------------ */
 
 export type TreeSpeciesId = 'pine' | 'titanpine' | 'oak' | 'elder' | 'birch' | 'ironbark' | 'scrub'
@@ -70,6 +88,18 @@ const BIRCH_LIT = { color: '#9cb45a', roughness: 0.88 }
 const BRONZE_LEAF = { color: '#8a5f2c', roughness: 0.9 }
 const BRONZE_LIT = { color: '#b07c33', roughness: 0.88 }
 const BRONZE_DEEP = { color: '#5c3d1c', roughness: 0.92 }
+const IRON_BARK = { color: '#241c15', roughness: 0.94 }
+
+/**
+ * Which surfaces are wood rather than leaf.
+ *
+ * Declared once, by identity, because two things depend on telling the crown
+ * from the bole: the clear trunk corridor every planted tree has to keep under
+ * its canopy, and the canopy volumes the camera refuses to sit inside. Both are
+ * measured off the profile below rather than hand-entered per species, so
+ * editing a profile moves them.
+ */
+const BARKS = new Set<Surface>([BARK, BARK_DARK, BARK_PALE, BARK_PALE_MARK, BARK_RED, IRON_BARK])
 
 const profiles: Record<TreeSpeciesId, Profile> = {
   /* The workhorse conifer. Layered skirts made by letting the radius step out,
@@ -78,7 +108,7 @@ const profiles: Record<TreeSpeciesId, Profile> = {
   pine: {
     cell: 0.85,
     trunk: 0.55,
-    note: 'Wildwood pine, about 17m.',
+    note: 'Wildwood pine, about 20m, crown from 4.7m up.',
     half: [
       'L',
       'NL',
@@ -97,7 +127,13 @@ const profiles: Record<TreeSpeciesId, Profile> = {
       'NNNNNNL',
       'NNNNNd',
       'ttNNNNL',
+      // Six rows of bare bole under the lowest skirt. A pine wood seen from
+      // inside it is trunks at eye level and needles overhead; it used to be
+      // three rows, which put the lowest needles at 1.7m on a small pine.
       'tt',
+      'tt',
+      'TT',
+      'TT',
       'TT',
       'TTt',
     ],
@@ -133,16 +169,18 @@ const profiles: Record<TreeSpeciesId, Profile> = {
       'ttNNNNd',
       'ttNNNL',
       'ttNNd',
+      // A bare red bole, tapering one cell to two. It used to reach four cells
+      // at the foot, which at 1.15m a cell is a ten-metre stump.
+      'Rt',
+      'Rt',
       'RRt',
       'RRt',
       'RRt',
       'RRt',
       'RRt',
       'RRt',
-      'RRRt',
-      'RRRt',
-      'RRRt',
-      'RRRtt',
+      'RRt',
+      'RRt',
     ],
     palette: { N: PINE, L: PINE_LIT, d: PINE_DEEP, R: BARK_RED, T: BARK, t: BARK_DARK },
   },
@@ -152,7 +190,7 @@ const profiles: Record<TreeSpeciesId, Profile> = {
   oak: {
     cell: 0.95,
     trunk: 0.7,
-    note: 'Oak, about 16m, canopy 9m across.',
+    note: 'Oak, about 17m, canopy 9m across, crown from 5.2m up.',
     half: [
       '.LL',
       'LLLl',
@@ -166,10 +204,14 @@ const profiles: Record<TreeSpeciesId, Profile> = {
       'ggGGGGg',
       'TtgGGGg',
       'Tt.ggg',
+      // Six rows of bole, so the lowest leaf sits at 5.2m and an oak on open
+      // ground is something you walk under rather than into.
+      'Tt',
       'Tt',
       'TTt',
       'TTt',
-      'TTTt',
+      'TTt',
+      'TTt',
     ],
     palette: { G: LEAF, L: LEAF_LIT, l: LEAF_LIT, g: LEAF_DEEP, T: BARK, t: BARK_DARK },
   },
@@ -196,19 +238,21 @@ const profiles: Record<TreeSpeciesId, Profile> = {
       'Tt.gGGGGg',
       'Tt..ggGgg',
       'Tt...ggg',
+      // Buttressed to four cells across, which is what the line above this
+      // profile always claimed. It was authored to thirteen cells across — a
+      // fourteen-metre stump standing exactly where a player walks.
+      'Tt',
       'Tt',
       'TTt',
       'TTt',
       'TTt',
-      'TTTt',
-      'TTTt',
-      'TTTt',
-      'TTTTt',
-      'TTTTt',
-      'TTTTTt',
-      'TTTTTt',
-      'TTTTTTt',
-      'TTTTTTt',
+      'TTt',
+      'TTt',
+      'TTt',
+      'TTt',
+      'TTt',
+      'TTt',
+      'TTt',
     ],
     palette: { G: LEAF, L: LEAF_LIT, l: LEAF_LIT, g: LEAF_DEEP, T: BARK, t: BARK_DARK },
   },
@@ -260,52 +304,96 @@ const profiles: Record<TreeSpeciesId, Profile> = {
       'ddBBBl',
       'tdBBBl',
       'tt.dBd',
+      // Sixteen rows of near-black bole, two cells of radius all the way down.
+      // The taper used to run out to seven cells, so the foot of an ironbark
+      // was a sixteen-metre disc of wood with a one-metre obstacle on it.
       'tt',
       'tTt',
       'tTt',
-      'tTTt',
-      'tTTt',
-      'tTTt',
-      'tTTTt',
-      'tTTTt',
-      'tTTTt',
-      'tTTTTt',
-      'tTTTTt',
-      'tTTTTt',
-      'tTTTTTt',
-      'tTTTTTt',
-      'tTTTTTt',
-      'tTTTTTTt',
+      'tTt',
+      'tTt',
+      'tTt',
+      'tTt',
+      'tTt',
+      'tTt',
+      'tTt',
+      'tTt',
+      'tTt',
+      'tTt',
+      'tTt',
+      'tTt',
+      'tTt',
     ],
-    palette: { B: BRONZE_LEAF, L: BRONZE_LIT, l: BRONZE_LIT, d: BRONZE_DEEP, T: BARK_DARK, t: { color: '#241c15', roughness: 0.94 } },
+    palette: { B: BRONZE_LEAF, L: BRONZE_LIT, l: BRONZE_LIT, d: BRONZE_DEEP, T: BARK_DARK, t: IRON_BARK },
   },
 
   /* Meadow scrub. Three metres and almost no trunk, so open ground can be
-   * dressed without closing the sightlines a hunt needs. */
+   * dressed without closing the sightlines a hunt needs.
+   *
+   * The one species here whose leaves reach the ground, which makes it a
+   * THICKET: there is no corridor to walk under, so `wildscape.ts` blocks its
+   * whole width instead of just its stem. Kept to two cells of radius for that
+   * reason — a thicket is a navigation obstacle, and a four-metre one on open
+   * meadow is a wall. */
   scrub: {
     cell: 0.6,
     trunk: 0.3,
-    note: 'Thorn scrub, about 3m.',
+    note: 'Thorn scrub, about 3m. A thicket: blocks over its whole width.',
     half: [
       '.L',
       'GLl',
-      'GGLl',
-      'GGGl',
-      'gGGl',
+      'GGl',
+      'GGl',
+      'gGl',
       'Ttg',
     ],
     palette: { G: LEAF, L: LEAF_LIT, l: BIRCH_LIT, g: LEAF_DEEP, T: BARK, t: BARK_DARK },
   },
 }
 
+/**
+ * Where the leaves are, at scale 1, measured off the profile rather than typed
+ * in per species.
+ *
+ * `base` is the number the rest of the world cares about most: the underside of
+ * the lowest leaf. Multiplied by an instance's scale it is the clear trunk
+ * corridor that tree leaves for a player to walk through and a camera to orbit
+ * in, and `src/wildscape.ts` floors every instance's scale against it rather
+ * than trusting the authored size range to be tall enough.
+ */
+export type TreeCanopy = {
+  /** Metres, underside of the lowest foliage voxel. */
+  base: number
+  /** Metres, top of the highest foliage voxel. */
+  top: number
+  /** Metres, widest foliage half-width. */
+  radius: number
+  /** Is there a foliage voxel this far out, this high up? Cells, not metres. */
+  solid: (radiusCell: number, heightCell: number) => boolean
+  /** Metres per cell, so a caller can turn a world offset into cells. */
+  cell: number
+}
+
 export type TreeSpecies = {
   id: TreeSpeciesId
   /** Metres, feet to crown, at scale 1. */
   height: number
-  /** Metres, widest canopy half-width at scale 1. */
+  /** Metres, widest foliage half-width at scale 1. */
   canopyRadius: number
-  /** Metres, trunk half-width at scale 1. What blocks movement. */
+  /** Metres, widest half-width of anything at all, bole included. */
+  footprintRadius: number
+  /** Metres, the profile's authored trunk half-width. Advisory; see below. */
   trunkRadius: number
+  /**
+   * Metres, the widest solid half-width — bark or leaf — anywhere below
+   * `height` metres, at scale 1.
+   *
+   * This, not `trunkRadius`, is what may be registered as a navigation
+   * obstacle. The two used to differ by a factor of six on the flared species,
+   * which is the whole reason a player could stand inside a tree.
+   */
+  solidRadiusBelow: (height: number) => number
+  canopy: TreeCanopy
   note: string
   /** One welded surface per colour key, with the material it wants. */
   shells: Array<{ geometry: THREE.BufferGeometry; surface: Surface; cells: number }>
@@ -340,7 +428,7 @@ function speciesFrom(id: TreeSpeciesId): TreeSpecies {
 
   const byKey = new Map<string, Array<[number, number, number]>>()
   let cells = 0
-  let canopyRadius = 0
+  let footprintCells = 0
   for (let y = 0; y < rowCount; y++) {
     for (let dx = -maxRadius; dx <= maxRadius; dx++) {
       for (let dz = -maxRadius; dz <= maxRadius; dz++) {
@@ -349,10 +437,55 @@ function speciesFrom(id: TreeSpeciesId): TreeSpecies {
         const cy = rowCount - 1 - y
         if (!byKey.has(key)) byKey.set(key, [])
         byKey.get(key)!.push([dx, cy, dz])
-        canopyRadius = Math.max(canopyRadius, Math.abs(dx), Math.abs(dz))
+        footprintCells = Math.max(footprintCells, Math.abs(dx), Math.abs(dz))
         cells += 1
       }
     }
+  }
+
+  /* The crown, read straight off the half profile: cell (r, cy) is leaf when the
+   * row that high up carries a palette key that is not bark. That is the same
+   * lookup the revolve does, so the crown measured here is the crown drawn. */
+  const leafAt = (radiusCell: number, cy: number) => {
+    const key = keyAt(rowCount - 1 - cy, radiusCell)
+    if (!key) return false
+    return !BARKS.has(profile.palette[key]!)
+  }
+  let leafLow = Infinity
+  let leafHigh = -Infinity
+  let leafWide = -Infinity
+  for (let cy = 0; cy < rowCount; cy++) {
+    for (let r = 0; r <= maxRadius; r++) {
+      if (!leafAt(r, cy)) continue
+      leafLow = Math.min(leafLow, cy)
+      leafHigh = Math.max(leafHigh, cy)
+      leafWide = Math.max(leafWide, r)
+    }
+  }
+  const canopy: TreeCanopy = {
+    base: (leafLow - 0.5) * profile.cell,
+    top: (leafHigh + 0.5) * profile.cell,
+    radius: (leafWide + 0.5) * profile.cell,
+    solid: leafAt,
+    cell: profile.cell,
+  }
+
+  /* Widest solid radius per height cell, so the navigation obstacle can be the
+   * tree's real footprint over the band a body occupies rather than a number
+   * typed next to the profile. */
+  const widthAt: number[] = []
+  for (let cy = 0; cy < rowCount; cy++) {
+    let wide = -1
+    for (let r = 0; r <= maxRadius; r++) if (keyAt(rowCount - 1 - cy, r)) wide = r
+    widthAt[cy] = wide < 0 ? 0 : (wide + 0.5) * profile.cell
+  }
+  const solidRadiusBelow = (height: number) => {
+    let widest = 0
+    for (let cy = 0; cy < rowCount; cy++) {
+      if ((cy - 0.5) * profile.cell >= height) break
+      widest = Math.max(widest, widthAt[cy])
+    }
+    return widest
   }
 
   /* Neighbour tests run against the WHOLE body, so the boundary between two
@@ -368,8 +501,11 @@ function speciesFrom(id: TreeSpeciesId): TreeSpecies {
   return {
     id,
     height: rowCount * profile.cell,
-    canopyRadius: (canopyRadius + 0.5) * profile.cell,
+    canopyRadius: canopy.radius,
+    footprintRadius: (footprintCells + 0.5) * profile.cell,
     trunkRadius: profile.trunk,
+    solidRadiusBelow,
+    canopy,
     note: profile.note,
     shells,
     cells,
@@ -390,7 +526,33 @@ export function treeSpecies(id: TreeSpeciesId): TreeSpecies {
 /** Metrics only, for scatter spacing and navigation, without building geometry. */
 export function treeMetrics(id: TreeSpeciesId) {
   const species = treeSpecies(id)
-  return { height: species.height, canopyRadius: species.canopyRadius, trunkRadius: species.trunkRadius, note: species.note }
+  return {
+    height: species.height,
+    canopyRadius: species.canopyRadius,
+    footprintRadius: species.footprintRadius,
+    trunkRadius: species.trunkRadius,
+    solidRadiusBelow: species.solidRadiusBelow,
+    canopy: species.canopy,
+    note: species.note,
+  }
+}
+
+/**
+ * Is the point `metres` out from the trunk and `height` above the ground inside
+ * this instance's leaves?
+ *
+ * Exact against the drawn voxels rather than against a bounding cylinder: the
+ * crown is a revolved half profile, so the test is one lookup in (radius cell,
+ * height cell) space after dividing out the instance scale. Used by the camera
+ * rig to refuse a vantage point and by `scripts/verify-canopy.ts` to count how
+ * many vantage points would have been refused.
+ */
+export function inFoliage(id: TreeSpeciesId, scale: number, metres: number, height: number) {
+  const canopy = treeSpecies(id).canopy
+  if (height < canopy.base * scale || height > canopy.top * scale) return false
+  if (metres > canopy.radius * scale) return false
+  const step = canopy.cell * scale
+  return canopy.solid(Math.round(metres / step), Math.round(height / step))
 }
 
 export type TreePlacement = {

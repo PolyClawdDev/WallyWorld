@@ -27,8 +27,9 @@ Four things, in order. Nothing else is outstanding.
    - `voxels-api` → `SOLANA_RPC_URL_DEVNET` (the QuickNode URL; the access
      token is in the path, so this is a credential)
    - `voxels-worker` → `SOLANA_RPC_URL_DEVNET` (the same value)
-   - `voxels-api` → `NPC_PAYEE_ADDRESS` (a public key; leaving it unset keeps
-     payments switched off, which is a valid way to launch)
+   - `voxels-api` → `NPC_PAYEE_ADDRESS` (a public key, and optional to the point
+     of being pointless: NPC payments are off on every deployment because the
+     client has no transaction signer, so leave it unset)
    - Then correct `WALLY_PUBLIC_ORIGIN`, `WALLY_ALLOWED_ORIGINS` and
      `VITE_API_BASE_URL` to the hostnames Render actually assigned, and
      redeploy the static site so the new API URL is compiled into the bundle.

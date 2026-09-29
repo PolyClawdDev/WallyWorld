@@ -1,22 +1,29 @@
 /* ------------------------------------------------------------------ *
  * Typed client for the Voxels API.
  *
- * The only credential this module handles is an opaque session bearer
- * token issued after a wallet signature. It is not a key, it cannot sign
- * anything, and it grants access to one wallet's game record and nothing
- * else.
+ * This module handles no key material and no signing capability. The one
+ * credential it touches is an opaque session bearer token, which cannot
+ * sign anything and grants access to one account's game record.
  *
- * Tradeoff worth naming: the token is kept in localStorage so a page
- * reload does not demand a fresh Phantom signature. That means script
- * injection on this origin could steal a session. It could not steal a
- * key — the key is never here — and a stolen session can read and write a
- * character record, not move funds. A cookie would need SameSite=None and
- * Secure to work across the dev ports, which plain http cannot do.
+ * NOTE ON THE SESSION HELPERS BELOW. Nothing in this client issues a
+ * wallet session any more: `POST /api/auth/nonce` + `/api/auth/verify`
+ * were driven by the Phantom sign-in button, and that is gone. The
+ * server routes remain and `scripts/verify-solana.ts` still exercises
+ * them, but no browser code calls them, so there is no `saveSession` here
+ * any more either.
+ *
+ * `loadSession` stays because a session minted by the old Phantom sign-in
+ * can still be live in a returning player's browser, and
+ * `src/pvp/guest.ts` prefers it over minting a guest one for as long as it
+ * lasts. Those keys drain on their own as the sessions expire.
+ *
+ * Tradeoff worth naming: the token is in localStorage, so script injection
+ * on this origin could steal a session. A stolen session can read and
+ * write a character record; it cannot move funds, because nothing in this
+ * client can.
  * ------------------------------------------------------------------ */
 
 import { API_BASE_URL, API_IS_SAME_ORIGIN, API_ORIGIN, RPC_PROXY_URL } from './cluster'
-import type { Profile } from '../shared/profile'
-import type { SiwsFields } from '../shared/siws'
 
 const SESSION_KEY = 'wally-session-v1'
 
@@ -35,14 +42,6 @@ export function loadSession(): StoredSession | null {
     return { token: parsed.token, wallet: parsed.wallet, expiresAtMs: parsed.expiresAtMs }
   } catch {
     return null
-  }
-}
-
-export function saveSession(session: StoredSession) {
-  try {
-    localStorage.setItem(SESSION_KEY, JSON.stringify(session))
-  } catch {
-    /* private mode: the session simply does not survive a reload */
   }
 }
 
@@ -98,56 +97,6 @@ async function call<T>(path: string, options: { method?: string; body?: unknown;
   return parsed as T
 }
 
-/* ------------------------------------------------------------------ auth */
-
-export const requestChallenge = (publicKey: string) =>
-  call<{ challenge: SiwsFields }>('/api/auth/nonce', { method: 'POST', body: { publicKey } })
-
-export const submitSignature = (publicKey: string, nonce: string, signature: string) =>
-  call<{ token: string; expiresAtMs: number; wallet: string; profile: Profile }>('/api/auth/verify', {
-    method: 'POST',
-    body: { publicKey, nonce, signature },
-  })
-
-export const logout = (token: string) => call<{ ok: true }>('/api/auth/logout', { method: 'POST', token })
-
-/* --------------------------------------------------------------- profile */
-
-export const fetchProfile = (token: string) =>
-  call<{ profile: Profile | null; updatedAtMs: number | null }>('/api/profile', { token })
-
-export const saveProfile = (token: string, profile: Profile) =>
-  call<{ profile: Profile; updatedAtMs: number }>('/api/profile', { method: 'PUT', body: { profile }, token })
-
-/* -------------------------------------------------------------- payments */
-
-export type Quote =
-  | { available: true; service: string; label: string; recipient: string; lamports: string; cluster: string }
-  | { available: false; reason: string }
-
-export const fetchQuote = (token: string) => call<Quote>('/api/payments/quote', { token })
-
-export type ReceiptView = {
-  signature: string
-  service: string
-  recipient: string
-  lamports: string
-  cluster: string
-  status: 'submitted' | 'confirmed' | 'failed' | 'unknown'
-  detail: string | null
-  createdAtMs: number
-  confirmedAtMs: number | null
-}
-
-/** Safe to retry: the server keys receipts on the signature. */
-export const postReceipt = (token: string, signature: string) =>
-  call<{ receipt: ReceiptView; idempotent: boolean }>('/api/payments/receipt', { method: 'POST', body: { signature }, token })
-
-export const recheckReceipt = (token: string, signature: string) =>
-  call<{ receipt: ReceiptView }>('/api/payments/recheck', { method: 'POST', body: { signature }, token })
-
-export const fetchReceipts = (token: string) => call<{ receipts: ReceiptView[] }>('/api/payments/receipts', { token })
-
 /* ---------------------------------------------------------------- status */
 
 export type Health = {
@@ -157,12 +106,11 @@ export type Health = {
   rpcReachable: boolean
   rpcDetail: string
   persistence: string
-  paymentsEnabled: boolean
+  /** Always false, like `payoutsEnabled`: no client path can sign a transfer. */
+  paymentsEnabled: false
   payoutsEnabled: false
   custody: string
 }
-
-export const fetchHealth = () => call<Health>('/api/health')
 
 /* ------------------------------------------------------------------ *
  * Is this origin actually serving the Voxels API?

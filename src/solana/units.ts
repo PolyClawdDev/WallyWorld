@@ -7,6 +7,12 @@
  * problems cannot reach a balance or an amount to be signed. Decimals
  * exist only to place a separator when rendering, and user-typed decimal
  * strings are parsed digit by digit rather than through parseFloat.
+ *
+ * Nothing in the panel renders an amount any more — the balance view and
+ * the payment confirmation went with Phantom — so the only caller left is
+ * `scripts/verify-solana.ts`, which is where the float-free property is
+ * asserted. Kept rather than deleted because that assertion is the point
+ * of the module and the server's `policy/units.ts` is written to match it.
  * ------------------------------------------------------------------ */
 
 export const SOL_DECIMALS = 9

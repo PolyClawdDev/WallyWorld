@@ -111,6 +111,19 @@ Progression is persisted **only in `localStorage`**, not server-side.
 
 ### Solana integration — `src/solana/` (1,389 lines across 12 files)
 
+> **Superseded after this audit was taken.** Phantom was removed from the wallet
+> on the owner's instruction: the browser-held keypair covers every player, a
+> second optional path only made the panel ambiguous, and the planned gold payout
+> has the treasury sign and send. `phantom.ts`, `profileSync.ts` and
+> `playerBridge.ts` were deleted; `wallet.ts` became `clientStatus.ts` and now
+> holds only the RPC/API/cluster health the panel reports; `payments.ts` lost
+> `signAndSend` and `checkAffordable`, so **no client path can sign or submit a
+> transaction at all**; `FundsMode` dropped to two states, `demo` and `live`,
+> decided by the cluster alone; and `PAYMENTS_ENABLED` is now hardcoded false so
+> `/api/health` stops advertising a capability nothing can reach. The paragraph
+> below describes the repository as it stood on 27 September 2026 and is kept for
+> that reason.
+
 `cluster.ts` (176) is the source of truth for whether real funds are in play: devnet
 default, `mainnet-beta` an explicit opt-in, and a three-state `FundsMode`
 (`demo` / `test` / `live`) whose asymmetry is deliberate — `live` depends only on the
@@ -173,7 +186,9 @@ the script-only variables `VERIFY_API`, `APP_HOST`, `HARNESS_HOST`, `UI_*`, `SHO
 `verify-drag.mjs` (220), plus `test-combat.ts` (399) and Puppeteer screenshot helpers.
 `package.json` scripts: `dev`, `build` (`tsc -b && vite build`), `preview`, `server`,
 `verify:solana`, `verify:proxy`, `verify:ui`, `test:combat`, `verify:combat`.
-Devnet Phantom screenshots exist under `screenshots/solana/`.
+Devnet wallet-panel screenshots exist under `screenshots/solana/`. (`verify-wallet-ui.ts`
+was rewritten after this audit: it no longer mocks a provider, and instead injects a decoy
+`window.phantom` and asserts nothing in the client ever touches it.)
 
 ### The decisive negative finding
 
@@ -225,6 +240,15 @@ balance display resolved by mint (the proxy allowlists `getTokenAccountsByOwner`
 `getTokenAccountBalance`, so the plumbing is there, but no UI consumes it); a MAX control
 with fee reservation; a real task composer behind the drag (it currently toasts); and any
 SOL→USDC conversion for x402 funding.
+
+> **Superseded.** Phantom connection, the balance view, the per-wallet character
+> save and the NPC payment UI were all removed with the extension — see the note
+> in §1. What remains, and what the panel is now: one browser-held keypair per
+> player, account claim by signature over a server-issued single-use nonce,
+> export/import/delete, and a payout that states why it is unavailable. Funding
+> means sending SOL to that address from a wallet of your own; nothing in the app
+> can spend it. "Multi-wallet support" is no longer an absence to close but a
+> direction that was deliberately reversed.
 
 ### §4 Bounded agent authority and the execution model
 

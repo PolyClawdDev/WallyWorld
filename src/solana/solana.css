@@ -5,10 +5,10 @@
  * does not collide with concurrent edits there. Palette matches the town:
  * brass #d5a64b, cyan #7bc9ce, ember #e35e35.
  *
- * The three funds states are distinguished by their text first and their
- * colour second: devnet is cyan, demo and mainnet are brass, and mainnet
- * additionally carries a brass border and bold weight. Ember is reserved
- * for actual errors, so a badge naming the network never reads as a fault.
+ * The two funds states are distinguished by their text first and their
+ * colour second: both are brass, and mainnet additionally carries a brass
+ * border and bold weight. Ember is reserved for actual errors, so a badge
+ * naming the network never reads as a fault.
  * ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------ the badge */
@@ -27,11 +27,10 @@
 .funds-chip { margin: auto; }
 
 .funds-badge.funds-demo { color: #d5a64b; }
-.funds-badge.funds-test { color: #7bc9ce; border-color: #7bc9ce55; }
 
 /* Mainnet: brass, matching the gold chip it sits beside in the topbar. It
-   names the network it is on and does not shout, because nothing in this build
-   can move value without an explicit approval in Phantom. */
+   names the network it is on and does not shout, because no code path in this
+   build can move value at all — there is no transaction signer in the client. */
 .funds-badge.funds-live {
   color: #f0b84d;
   background: #1e2b2bdd;
@@ -52,7 +51,7 @@
 @media (max-width: 800px) {
   /* Mirrors the existing rule that hides the demo chip on narrow screens. The
      mainnet chip stays: which network this build is on is worth one line. */
-  .funds-chip.funds-demo, .funds-chip.funds-test { display: none; }
+  .funds-chip.funds-demo { display: none; }
 }
 
 /* ------------------------------------------------------------- the panel */
@@ -71,8 +70,6 @@
 .sol-banner span { font-size: 11px; line-height: 1.6; color: #96a3a4; }
 .sol-banner.funds-demo { border-color: #d5a64b66; }
 .sol-banner.funds-demo strong { color: #f0b84d; }
-.sol-banner.funds-test { border-color: #7bc9ce66; }
-.sol-banner.funds-test strong { color: #7bc9ce; }
 .sol-banner.funds-live { border-color: #d5a64b99; }
 .sol-banner.funds-live strong { color: #f0b84d; }
 
@@ -94,19 +91,9 @@
   letter-spacing: .1em;
 }
 
-.sol-block-head button {
-  color: #7bc9ce;
-  font: 9px "DM Mono", monospace;
-  letter-spacing: .08em;
-  border: 1px solid #7bc9ce44;
-  padding: 4px 7px;
-}
-.sol-block-head button:disabled { color: #5d6b6c; border-color: #ffffff12; }
-
 .sol-on { color: #7bc9ce; }
 .sol-off { color: #8b9899; }
 .sol-warn { color: #f0b84d; }
-.sol-bad-text { color: #e35e35; }
 /* The cluster tag on mainnet: brass, so it reads as "which network" rather
    than as an error, while still not looking like the cyan test clusters. */
 .sol-cluster-live { color: #d5a64b; }
@@ -124,22 +111,6 @@
 .sol-row > span { color: #8b9899; font: 9px "DM Mono", monospace; letter-spacing: .1em; text-transform: uppercase; flex: none; }
 .sol-row > div { text-align: right; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 
-.sol-address { display: flex; align-items: center; gap: 5px; }
-.sol-address code { font: 11px "DM Mono", monospace; color: #e5ddc8; }
-.sol-address button, .sol-address a {
-  color: #7bc9ce;
-  font-size: 11px;
-  text-decoration: none;
-  padding: 2px 4px;
-  border: 1px solid #7bc9ce33;
-  line-height: 1;
-}
-.sol-address button:hover, .sol-address a:hover { border-color: #7bc9ce; }
-
-.sol-balance-main { display: flex; align-items: baseline; gap: 7px; }
-.sol-balance-main strong { font: 600 30px "DM Mono", monospace; color: #e5ddc8; }
-.sol-balance-main small { color: #d5a64b; font: 11px "DM Mono", monospace; }
-
 .sol-fine { margin: 0; color: #8b9899; font-size: 10px; line-height: 1.65; }
 .sol-footer { border-top: 1px solid #ffffff12; padding-top: 12px; }
 
@@ -152,11 +123,6 @@
   font-size: 11px;
   line-height: 1.6;
 }
-
-.sol-tokens { border-top: 1px solid #ffffff12; padding-top: 10px; display: grid; gap: 7px; }
-.sol-token { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 7px 9px; background: #16212c; border: 1px solid #ffffff10; }
-.sol-token strong { display: block; font: 600 12px "DM Mono", monospace; }
-.sol-token small { display: block; color: #8b9899; font: 8px "DM Mono", monospace; margin-top: 2px; letter-spacing: .08em; }
 
 .sol-actions { display: flex; gap: 7px; flex-wrap: wrap; }
 .sol-actions .primary, .sol-actions .ghost { flex: 1 1 auto; font-size: 11px; padding: 10px 12px; }
@@ -173,30 +139,15 @@
 .ghost:disabled { color: #5d6b6c; border-color: #ffffff10; }
 .ghost.full { width: 100%; }
 
-/* Pre-signature confirmation: cyan frame, because this is the moment the user
-   is asked to agree to something specific. */
+/* A dialog that asks for a specific decision — export, import — framed in cyan
+   so it is visibly not part of the surrounding panel. */
 .sol-confirm { display: grid; gap: 8px; padding: 11px; background: #142028; border: 1px solid #7bc9ce66; }
 .sol-confirm-head { color: #7bc9ce; font: 700 10px "DM Mono", monospace; letter-spacing: .14em; }
-.sol-confirm small { color: #8b9899; font: 9px "DM Mono", monospace; }
 
-.sol-net { font: 10px "DM Mono", monospace; letter-spacing: .1em; padding: 3px 7px; border: 1px solid; }
-.sol-net-demo, .sol-net-test { color: #7bc9ce; border-color: #7bc9ce66; }
-.sol-net-live { color: #ff9b78; border-color: #e35e35; background: #3a1108; font-weight: 700; }
-
+/* Used only by the "delete this wallet" confirmation, which is destructive. */
 .sol-pending { display: grid; gap: 7px; padding: 11px; background: #16212c; border: 1px solid #d5a64b55; }
 .sol-pending.sol-bad { border-color: #e35e3588; background: #2a1310; }
 .sol-pending strong { font: 700 11px "DM Mono", monospace; letter-spacing: .12em; }
-.sol-pending a { color: #7bc9ce; font-size: 10px; }
-.sol-pending code { font: 10px "DM Mono", monospace; }
-
-.sol-receipts { border-top: 1px solid #ffffff12; padding-top: 10px; display: grid; gap: 6px; }
-.sol-receipt { display: flex; align-items: center; gap: 9px; padding: 8px 9px; background: #16212c; border: 1px solid #ffffff10; }
-.sol-receipt i { font-style: normal; font-size: 14px; flex: none; }
-.sol-receipt strong { display: block; font-size: 11px; }
-.sol-receipt small { display: block; margin-top: 3px; color: #8b9899; font-size: 9px; }
-.sol-receipt small a { color: #7bc9ce; }
-.sol-receipt > div { flex: 1 1 auto; min-width: 0; }
-.sol-receipt button { flex: none; font: 9px "DM Mono", monospace; padding: 5px 7px; }
 
 /* The payout block is styled as switched off, not as a call to action. */
 .sol-disabled-block { opacity: .92; border-style: dashed; border-color: #ffffff1f; }

@@ -1,11 +1,27 @@
 /* ------------------------------------------------------------------ *
- * User-signed SOL transfers.
+ * Planning a SOL transfer, and reading what became of one.
  *
- * The app builds an unsigned transaction and hands it to Phantom.
- * Phantom shows it to the user, the user approves, and Phantom signs and
- * submits it. This code never signs: there is no keypair here and no
- * `signTransaction` on the app's behalf. Rejecting in Phantom is always
- * a complete stop.
+ * NOTHING HERE CAN SEND A TRANSFER, and that is now structural rather
+ * than a matter of care. `signAndSend` used to live in this file: it took
+ * a Phantom provider and was the single path by which this client could
+ * move value. Phantom has been removed, so the function was removed with
+ * it rather than left dormant — a dormant signer is a signer somebody
+ * wires back up. The browser-held keypair in `embeddedWallet.ts` cannot
+ * replace it: it exposes message signing only, deliberately, because the
+ * key sits in localStorage where any script on this origin could reach it.
+ *
+ * What is left does two things, neither of which needs a key:
+ *
+ *   - `planTransfer` builds an *unsigned* transaction and asks the cluster
+ *     to price it. The object it returns has no signature on it and there
+ *     is no code in `src/` that could put one there.
+ *   - `awaitConfirmation` polls a signature somebody else submitted.
+ *
+ * Both are exercised by `scripts/verify-solana.ts`, which is their only
+ * caller now: it signs with a throwaway Node-side fixture key to prove the
+ * server's receipt verification and the confirmation state machine agree
+ * with the chain. No module under `src/` imports this file, so none of it
+ * reaches the browser bundle.
  *
  * Amounts are lamports as bigint throughout. The one narrowing to a JS
  * number happens at the SystemProgram.transfer boundary, which takes a
@@ -20,7 +36,6 @@
 
 import { PublicKey, SystemProgram, Transaction } from '@solana/web3.js'
 import { getConnection } from './rpc'
-import type { PhantomProvider } from './phantom'
 
 /** Above this, a lamport count would not survive the number conversion exactly. */
 const MAX_SAFE_LAMPORTS = BigInt(Number.MAX_SAFE_INTEGER)
@@ -84,28 +99,6 @@ export async function planTransfer(payer: string, recipient: string, lamports: b
     lastValidBlockHeight,
     transaction,
   }
-}
-
-/** Checks the payer can cover amount + fee before Phantom is opened. */
-export async function checkAffordable(plan: TransferPlan): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const balance = BigInt(await getConnection().getBalance(new PublicKey(plan.payer), 'confirmed'))
-  const needed = plan.totalLamports ?? plan.lamports
-  if (balance < needed) {
-    return { ok: false, reason: `Balance is ${balance} lamports but this transfer needs ${needed} including fee.` }
-  }
-  return { ok: true }
-}
-
-/**
- * Hands the transaction to Phantom for approval and submission.
- *
- * Returns only the signature. A signature means "submitted", never
- * "succeeded" — the caller must confirm it.
- */
-export async function signAndSend(provider: PhantomProvider, plan: TransferPlan): Promise<string> {
-  const { signature } = await provider.signAndSendTransaction(plan.transaction)
-  if (typeof signature !== 'string' || !signature) throw new PaymentError('Phantom did not return a transaction signature.')
-  return signature
 }
 
 export type ConfirmOutcome =

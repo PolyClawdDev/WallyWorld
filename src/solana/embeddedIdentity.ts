@@ -3,17 +3,18 @@
  *
  * This is deliberately NOT a second authentication path. It drives the
  * claim flow that already exists — `POST /api/account/claim/challenge`
- * then `POST /api/account/claim/verify` — the same one Phantom would use.
- * The server's rules are untouched: the challenge is server-issued,
+ * then `POST /api/account/claim/verify` — and the server's rules are
+ * untouched by it: the challenge is server-issued,
  * single-use, expiring, bound to the domain, the wallet and the session
  * hash, and the bytes the server verifies are rebuilt from its own stored
  * row rather than from anything sent here.
  *
  * What the embedded wallet changes is *coverage*. Before, only a player
- * with a browser extension could produce a signature, so a guest stayed a
- * guest. Now every player has a key, so every player can prove ownership
- * of one address on first entry and the account they build is a claimed
- * one from the start.
+ * with a browser extension installed could produce a signature, so a guest
+ * stayed a guest. Now every player has a key, so every player can prove
+ * ownership of one address on first entry and the account they build is a
+ * claimed one from the start. It is also the only signing path left: there
+ * is no extension to connect to any more.
  *
  * Three things this does not do, on purpose:
  *

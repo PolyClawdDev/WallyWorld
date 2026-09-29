@@ -356,9 +356,12 @@ export const NONCE_TTL_MS = intEnv('WALLY_NONCE_TTL_MS', 5 * 60 * 1000)
 export const SESSION_TTL_MS = intEnv('WALLY_SESSION_TTL_MS', 7 * 24 * 60 * 60 * 1000)
 
 /**
- * Where an NPC service fee is paid. There is no default: paying an address this
- * repository invented would send real money to a keypair nobody controls, so the
- * payment feature stays switched off until an operator sets this.
+ * Where an NPC service fee would be paid. There is no default: paying an address
+ * this repository invented would send real money to a keypair nobody controls.
+ *
+ * Still read, and still reported by the operator console and the x402 provider
+ * survey as a configured value, but it no longer switches anything on — see
+ * `PAYMENTS_ENABLED` below.
  */
 export const NPC_PAYEE_ADDRESS: string | null = env('NPC_PAYEE_ADDRESS') || null
 
@@ -378,7 +381,28 @@ export const SERVICE_PRICE_LAMPORTS: bigint = (() => {
   return value
 })()
 
-export const PAYMENTS_ENABLED = NPC_PAYEE_ADDRESS !== null
+/**
+ * NPC service payments. Hardcoded off, and deliberately no longer a function of
+ * whether `NPC_PAYEE_ADDRESS` is set.
+ *
+ * This used to be `NPC_PAYEE_ADDRESS !== null`, and on a deployment with a payee
+ * address configured `/api/health` therefore advertised `paymentsEnabled: true`.
+ * That is now a lie in the only direction that matters. A service payment is a
+ * SOL transfer that has to be signed by the player, and the client has no
+ * transaction signer at all: the browser extension path was removed, and the
+ * browser-held keypair in `src/solana/embeddedWallet.ts` exposes message signing
+ * only, on purpose, because the key sits in `localStorage`.
+ *
+ * So there is no sequence of actions by any player that can produce a payment,
+ * and an operator setting a payee address cannot change that. The flag says so.
+ * Turning it back on means restoring a client-side signer, at which point this
+ * line is the right place to notice that decision.
+ *
+ * The routes and the on-chain receipt verification stay: they are what confirms
+ * a payment against the ledger rather than trusting a client, and
+ * `scripts/verify-solana.ts` exercises them. They just have nothing to confirm.
+ */
+export const PAYMENTS_ENABLED = false as const
 
 /**
  * Gold-to-token payout. Hardcoded off, and not switchable by configuration:

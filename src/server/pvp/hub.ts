@@ -25,6 +25,7 @@ import {
 import { isInTown, ringById, ringStarts, TOWN_RESPAWN } from '../../shared/zones'
 import { ROOM_CAPACITY } from '../config'
 import { walletFromAuthHeader } from '../auth'
+import { publicDisplayName } from '../moderation/names'
 import { CharacterClaims } from './claims'
 import { rememberPosition, resolveMove, resumePosition, sweepPositions } from './presence'
 import { authoriseRespawn, sweepRespawns } from './respawn'
@@ -380,7 +381,14 @@ function handle(live: Live, msg: C2S) {
       if (live.state === 'dueling' || live.state === 'preparing') {
         return send(live, { t: 'error', code: 'locked', detail: 'Character and loadout are locked during a duel.' })
       }
-      saveLoadout(live.playerId, msg.displayName, loadout)
+      // The server decides the name. A blocked or rate-limited one leaves the
+      // account with the name it already had; the loadout still lands, so an
+      // honest client's appearance is never left out of step with the world.
+      // The notice says nothing about which rule fired — see `moderation/names.ts`.
+      const saved = saveLoadout(live.playerId, msg.displayName, loadout)
+      if (saved.nameOutcome === 'blocked' || saved.nameOutcome === 'rate_limited') {
+        send(live, { t: 'error', code: 'name_rejected', detail: 'That name is not available. Your character kept its previous name.' })
+      }
       welcome(live)
       broadcastPresence()
       return
@@ -560,7 +568,7 @@ function onAccept(live: Live, challengeId: string) {
   const toPose = livePose(to.player_id)
   if (!fromPose.online || !toPose.online) return send(live, { t: 'error', code: 'offline', detail: 'Both players must still be online.' })
   if (isInTown(fromPose.x, fromPose.z) || isInTown(toPose.x, toPose.z)) {
-    return send(live, { t: 'error', code: 'in_town', detail: 'Leave town to accept this challenge.' })
+    return send(live, { t: 'error', code: 'in_town', detail: 'Duels happen outside town. Step clear of the plaza, the streets and the buildings first.' })
   }
   if (duelByPlayer.has(from.player_id) || duelByPlayer.has(to.player_id)) {
     return send(live, { t: 'error', code: 'busy', detail: 'A fighter is already in a duel.' })
@@ -838,7 +846,8 @@ export function journalFor(playerId: PlayerId, limit = 40): JournalEntry[] {
     duelId: row.duel_id,
     atMs: row.created_at_ms,
     opponentId: row.opponent_id,
-    opponentName: row.opponent_name,
+    // A historic snapshot, screened on read for the same reason as an old invite.
+    opponentName: publicDisplayName(row.opponent_name),
     kind: row.kind as JournalEntry['kind'],
     stake: row.stake,
     goldDelta: row.gold_delta,

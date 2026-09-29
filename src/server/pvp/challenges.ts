@@ -15,6 +15,7 @@ import {
   type WizardId,
 } from '../../shared/pvp'
 import { DUEL_RINGS, isInTown, ringById } from '../../shared/zones'
+import { publicDisplayName } from '../moderation/names'
 import { accountByPlayer, loadoutOf, newId, type AccountRow } from './ids'
 import { goldView, readGold } from './ledger'
 import { db } from './schema'
@@ -148,7 +149,11 @@ export function offerChallenge(input: {
     return { ok: false, code: 'offline', reason: 'Both players must be online.' }
   }
   if (isInTown(input.fromPose.x, input.fromPose.z) || isInTown(input.toPose.x, input.toPose.z)) {
-    return { ok: false, code: 'in_town', reason: 'Leave town to challenge this player.' }
+    // Not "leave town": the gate is isInTown, which is the plaza plus every
+    // paved street and a skirt around each building, so the main road is town
+    // from one edge of the world to the other. The client computes a real
+    // direction for the player; this fallback can only state the rule.
+    return { ok: false, code: 'in_town', reason: 'Duels happen outside town. Step clear of the plaza, the streets and the buildings first.' }
   }
   if (distance(input.fromPose, input.toPose) > INTERACT_RANGE) {
     return { ok: false, code: 'range', reason: 'Move closer to challenge this player.' }
@@ -249,8 +254,12 @@ export function challengeView(row: ChallengeRow, you: PlayerId): ChallengeView {
     challengeId: row.challenge_id,
     fromId: row.from_id,
     toId: row.to_id,
-    fromName: row.from_name,
-    toName: row.to_name,
+    // These are name snapshots taken when the invite was sent. New rows copy an
+    // already-screened account name, so this only matters for a row that
+    // predates moderation — but an old invite is exactly the kind of thing that
+    // outlives a fix, so it is screened on the way out too.
+    fromName: publicDisplayName(row.from_name),
+    toName: publicDisplayName(row.to_name),
     fromLevel: row.from_level,
     toLevel: row.to_level,
     fromCharacter: row.from_character as WizardId,

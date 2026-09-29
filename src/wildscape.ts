@@ -13,9 +13,11 @@ import {
   wildRegions,
 } from './wildlife'
 import type { WildRegion } from './wildlife'
+import { DUEL_RINGS, WORLD_HALF, townBuildings, townPaving, townPlaza } from './shared/zones'
+import { perimeterTrees } from './townData'
 import { createBatch, disposeMaterial } from './voxelBuild'
 import type { Surface } from './voxelBuild'
-import { createTreeField, treeMetrics } from './treeArt'
+import { createTreeField, inFoliage, treeMetrics } from './treeArt'
 import type { TreePlacement, TreeSpeciesId } from './treeArt'
 
 /* ------------------------------------------------------------------ *
@@ -43,6 +45,20 @@ import type { TreePlacement, TreeSpeciesId } from './treeArt'
  *    that is the most expensive thing in this file by a wide margin.
  *    Lamps still glow — emissive costs nothing — they just do not each
  *    light the world.
+ *
+ * 4. TREES GROW OUTSIDE THE REGIONS TOO. They did not, which is why the
+ *    world read as seven forests with a lawn between them. `plantCountry`
+ *    below plants the rest of the map at a fraction of a wood's density —
+ *    copses, hedgerows, lone trees — and it goes through the same `plant`
+ *    as the woods, so every trunk registers the same navigation obstacle.
+ *
+ * 5. NOTHING THE PLAYER CAN STAND ON HAS A LEAF OVER IT BELOW
+ *    TRUNK_CORRIDOR. That is the one invariant worth defending here:
+ *    every tree either keeps a clear bare-bole corridor to 4.2m — which
+ *    is above the player, above the first-person eye at 2.7m and above
+ *    the lowest the orbit camera can get — or it is a thicket and blocks
+ *    over its whole width so nobody stands in it at all.
+ *    `scripts/verify-canopy.ts` measures that rather than trusting it.
  * ------------------------------------------------------------------ */
 
 function mulberry32(seed: number) {
@@ -58,6 +74,30 @@ function mulberry32(seed: number) {
 type Spot = { x: number; z: number; roll: number }
 
 /**
+ * One planted tree, reduced to what two other things need to know about it:
+ * the crown-separation test while planting, and the camera afterwards.
+ *
+ * `id` and `scale` are kept because the camera test is exact against the drawn
+ * voxels — a bounding cylinder round an elder oak is twenty metres across and
+ * would shove the lens out of its way for nothing.
+ */
+type Crown = {
+  id: TreeSpeciesId
+  scale: number
+  /** The wider of the two non-uniform width axes. */
+  squash: number
+  x: number
+  z: number
+  /** Metres, widest foliage half-width of this instance. */
+  crownRadius: number
+  /** Metres, widest half-width of anything at all: the cull radius. */
+  reach: number
+  /** Metres, underside of the lowest leaf and top of the highest. */
+  base: number
+  top: number
+}
+
+/**
  * Scatter `count` points across a region's open green, lobe by lobe in
  * proportion to area, so a lopsided region gets planted lopsidedly instead of
  * piling everything into the middle of its biggest blob.
@@ -65,7 +105,11 @@ type Spot = { x: number; z: number; roll: number }
 function scatter(region: WildRegion, count: number, rng: () => number, inset: number): Spot[] {
   const out: Spot[] = []
   const area = region.lobes.reduce((sum, lobe) => sum + lobe.r * lobe.r, 0)
-  for (let attempt = 0; attempt < count * 8 && out.length < count; attempt++) {
+  /* Thirty tries per wanted point, not eight. The crown-separation test below
+   * rejects most candidates in a dense wood on purpose, and at eight tries the
+   * sampler ran out of attempts long before it ran out of room — which is how
+   * raising the separation used to mean simply losing half the trees. */
+  for (let attempt = 0; attempt < count * 30 && out.length < count; attempt++) {
     let pick = rng() * area
     let lobe = region.lobes[0]
     for (const candidate of region.lobes) {
@@ -128,6 +172,13 @@ function groundPatch(region: WildRegion) {
 type Planting = {
   /** Square metres of open green per tree. */
   spacing: number
+  /**
+   * Crown separation in this kind of ground: centre distance as a fraction of
+   * the two crown radii. A wood is allowed to interlock more than a meadow —
+   * that is the difference between a wood and a meadow — but see
+   * `CROWN_SEPARATION` for what the number means and what it used to be.
+   */
+  separation: number
   /** Cumulative weights over species; the last one catches the remainder. */
   mix: Array<[TreeSpeciesId, number]>
   /** Hard cap per region on the two enormous species. */
@@ -140,28 +191,88 @@ type Planting = {
   clearing: number
 }
 
+/**
+ * Spacing is now a BUDGET, not an outcome.
+ *
+ * The real limit on how many trees stand in a wood is `CROWN_SEPARATION` below,
+ * which rejects a candidate whose crown would sit inside a neighbour's. So the
+ * densities here are deliberately more generous than the ground can take — they
+ * decide how hard the sampler tries, and the separation decides what survives.
+ * Tuning one without the other is what produced a wood of 47 trees where 98
+ * were budgeted.
+ */
 const planting: Record<WildRegion['kind'], Planting> = {
-  wildwood: { spacing: 46, mix: [['pine', 0.5], ['birch', 0.66], ['oak', 0.84], ['titanpine', 0.95], ['elder', 1]], giants: 7, grass: 26, rock: 120, clearing: 13 },
-  woods: { spacing: 52, mix: [['pine', 0.45], ['oak', 0.75], ['birch', 0.94], ['elder', 1]], giants: 2, grass: 30, rock: 150, clearing: 7 },
-  brasswood: { spacing: 44, mix: [['ironbark', 0.72], ['titanpine', 0.86], ['pine', 0.96], ['scrub', 1]], giants: 9, grass: 34, rock: 70, clearing: 10 },
-  grassland: { spacing: 210, mix: [['oak', 0.4], ['birch', 0.7], ['scrub', 1]], giants: 1, grass: 18, rock: 300, clearing: 0 },
-  meadow: { spacing: 230, mix: [['oak', 0.35], ['scrub', 1]], giants: 1, grass: 20, rock: 320, clearing: 0 },
-  fields: { spacing: 240, mix: [['birch', 0.5], ['scrub', 1]], giants: 0, grass: 22, rock: 400, clearing: 0 },
-  outskirts: { spacing: 260, mix: [['scrub', 0.7], ['birch', 1]], giants: 1, grass: 24, rock: 260, clearing: 0 },
+  wildwood: { spacing: 26, separation: 0.6, mix: [['pine', 0.52], ['birch', 0.68], ['oak', 0.85], ['titanpine', 0.95], ['elder', 1]], giants: 7, grass: 26, rock: 120, clearing: 11 },
+  woods: { spacing: 28, separation: 0.62, mix: [['pine', 0.45], ['oak', 0.75], ['birch', 0.94], ['elder', 1]], giants: 2, grass: 30, rock: 150, clearing: 6 },
+  // Fewer ironbarks than before, proportionally. A fourteen-metre bronze crown
+  // is the wood's signature and at seventy per cent of the mix there was only
+  // room for two of them in the whole region.
+  brasswood: { spacing: 24, separation: 0.58, mix: [['ironbark', 0.58], ['titanpine', 0.7], ['pine', 0.9], ['scrub', 1]], giants: 9, grass: 34, rock: 70, clearing: 4 },
+  grassland: { spacing: 70, separation: 0.8, mix: [['oak', 0.4], ['birch', 0.7], ['scrub', 1]], giants: 1, grass: 18, rock: 300, clearing: 0 },
+  meadow: { spacing: 80, separation: 0.8, mix: [['oak', 0.35], ['scrub', 1]], giants: 1, grass: 20, rock: 320, clearing: 0 },
+  fields: { spacing: 85, separation: 0.8, mix: [['birch', 0.5], ['scrub', 1]], giants: 0, grass: 22, rock: 400, clearing: 0 },
+  outskirts: { spacing: 90, separation: 0.82, mix: [['scrub', 0.7], ['birch', 1]], giants: 1, grass: 24, rock: 260, clearing: 0 },
 }
 
 const GIANT_SPECIES = new Set<TreeSpeciesId>(['titanpine', 'elder'])
 
 /** Height multiplier ranges, so one species still covers a range of ages. */
 const sizeRange: Record<TreeSpeciesId, [number, number]> = {
-  pine: [0.78, 1.26],
+  pine: [0.88, 1.3],
   titanpine: [0.9, 1.18],
   oak: [0.8, 1.2],
   elder: [0.92, 1.12],
   birch: [0.8, 1.25],
   ironbark: [0.84, 1.16],
-  scrub: [0.7, 1.4],
+  // A thicket rather than a tree, and a blocking one: kept small enough that a
+  // hedgerow of them is something a path goes round rather than a fence.
+  scrub: [0.7, 1.1],
 }
+
+/**
+ * Metres of leaf-free bole every planted tree keeps above the ground.
+ *
+ * Sized against the three things that occupy that space: the wayfinder's head
+ * at about 1.9m, the FIRST-PERSON eye at 2.7m (the camera sits at the aim point
+ * plus 1.1m, see `src/main.tsx`), and the lowest the third-person orbit can put
+ * the lens, which is a shade over 2.4m at minimum zoom and full negative pitch.
+ * 4.2m clears all three with room to spare, and `plantAt` floors every tree's
+ * scale so its own lowest leaf reaches it.
+ */
+const TRUNK_CORRIDOR = 4.2
+
+/**
+ * How close two trunks may stand, as a fraction of their combined crown radius.
+ *
+ * This number is the whole of the clumping complaint. At 0.34 — where it sat,
+ * for every tree in the world — two crowns stood at barely a third of their
+ * combined radius, which is very nearly concentric: what the player saw was not
+ * a wood but a few enormous lumps of leaf with several trunks growing out of
+ * each. At 1.0 crowns would merely touch, which reads as an orchard.
+ *
+ * This is the OPEN COUNTRY figure, used for lone trees; a wood uses the tighter
+ * `separation` on its own planting rule, and a grove tighter still. Raising all
+ * three is only half the job: the sampler's attempt budget and the `spacing`
+ * densities had to come up with them or the same rejection rate simply produces
+ * fewer trees, which is what a previous pass measured as 52% rejected.
+ */
+const CROWN_SEPARATION = 0.8
+
+/**
+ * Inside a grove the rule is relaxed on purpose.
+ *
+ * A knot of three or four trunks sharing one crown is the best-looking thing a
+ * wood does; the problem was never that it happened, it was that it happened
+ * EVERYWHERE and by accident. Groves are placed deliberately, they are a small
+ * fraction of the ground, and outside them crowns keep their distance.
+ */
+const GROVE_SEPARATION = 0.46
+const GROVE_RADIUS = 9
+/** Square metres of open green that earns a region one grove. */
+const GROVE_AREA = 420
+
+/** Absolute floor, whatever the crowns say: two boles in one square metre is one broken tree. */
+const TRUNK_FLOOR = 2.4
 
 export function createWildscape() {
   const root = new THREE.Group()
@@ -174,11 +285,78 @@ export function createWildscape() {
   const loose: THREE.Mesh[] = []
   const placements = new Map<TreeSpeciesId, TreePlacement[]>()
   const obstacles: Array<{ kind: 'circle'; x: number; z: number; r: number }> = []
+  /** Every planted tree, for the crown-separation test and for the camera. */
+  const crowns: Crown[] = []
+
   const plant = (id: TreeSpeciesId, placement: TreePlacement) => {
     if (!placements.has(id)) placements.set(id, [])
     placements.get(id)!.push(placement)
     const metrics = treeMetrics(id)
-    obstacles.push({ kind: 'circle', x: placement.x, z: placement.z, r: metrics.trunkRadius * placement.scale + 0.15 })
+    const scale = placement.scale
+    /* What blocks movement is what is SOLID in the band a body occupies, read
+     * off the voxel profile — the bare bole for a tree you walk under, the
+     * entire bush for a thicket whose leaves reach the ground. It used to be
+     * the profile's advisory `trunkRadius`, which on the flared species was out
+     * by a factor of six: the elder drew a fourteen-metre stump and blocked a
+     * 2.3m circle, so the player walked into the wood of the tree. */
+    // Non-uniform width is applied as x*squash, z/squash, so the wider axis is
+    // whichever way squash went. Take the wider one everywhere: an over-wide
+    // volume costs the camera a little room, an under-wide one is a body inside
+    // a tree — which is exactly what the 8% of squash used to buy.
+    const squash = Math.max(placement.squash ?? 1, 1 / (placement.squash ?? 1))
+    const solid = metrics.solidRadiusBelow(TRUNK_CORRIDOR / scale) * scale * squash
+    obstacles.push({ kind: 'circle', x: placement.x, z: placement.z, r: solid + 0.2 })
+    crowns.push({
+      id,
+      scale,
+      squash,
+      x: placement.x,
+      z: placement.z,
+      crownRadius: metrics.canopyRadius * scale * squash,
+      reach: Math.max(metrics.canopyRadius, metrics.footprintRadius) * scale * squash,
+      base: metrics.canopy.base * scale,
+      top: metrics.canopy.top * scale,
+    })
+  }
+
+  /**
+   * Plant one tree, or decline to.
+   *
+   * Every tree in the world goes through here — woods, copses, hedgerows, lone
+   * trees on open ground — so the two rules hold everywhere by construction:
+   * the scale is floored until the species' own lowest leaf clears
+   * TRUNK_CORRIDOR, and the crown has to stand clear of its neighbours'.
+   */
+  const plantAt = (id: TreeSpeciesId, x: number, z: number, separation: number) => {
+    const [low, high] = sizeRange[id]
+    const metrics = treeMetrics(id)
+    /* The scale at which this species' lowest leaf reaches the corridor. A
+     * thicket — leaves at ground level — can never get there at any sane size,
+     * so it keeps its authored range and blocks instead. */
+    const clearing = metrics.canopy.base > 0.25 ? TRUNK_CORRIDOR / metrics.canopy.base : Infinity
+    const floor = clearing <= high ? Math.max(low, clearing) : low
+    const scale = floor + rng() * (high - floor)
+    const radius = metrics.canopyRadius * scale
+    for (const other of crowns) {
+      const gap = Math.max(TRUNK_FLOOR, (other.crownRadius + radius) * separation)
+      if (Math.hypot(other.x - x, other.z - z) < gap) return false
+    }
+    plant(id, {
+      x,
+      z,
+      scale,
+      yaw: rng() * Math.PI * 2,
+      lean: (rng() - 0.5) * (GIANT_SPECIES.has(id) ? 0.03 : 0.09),
+      squash: 0.92 + rng() * 0.16,
+      tint: 0.88 + rng() * 0.24,
+    })
+    return true
+  }
+
+  /** Pick a species out of a cumulative-weight mix. */
+  const speciesFor = (mix: Array<[TreeSpeciesId, number]>, roll: number) => {
+    for (const [candidate, ceiling] of mix) if (roll <= ceiling) return candidate
+    return mix[mix.length - 1][0]
   }
 
   /* --- the shape of the open ground ---------------------------------- */
@@ -196,38 +374,34 @@ export function createWildscape() {
     const area = areas.get(region.id) ?? 0
     const wanted = Math.round(area / rule.spacing)
     let giants = 0
-    const planted: Array<{ x: number; z: number; r: number }> = []
+    /* Three candidate positions per tree budgeted, because the separation test
+     * below is what decides how many stand and it rejects most of what it is
+     * offered in a dense wood. Offered exactly `wanted` positions — which is
+     * what used to happen — a wood could never reach its own budget however
+     * generous the budget was: the wildwood asked for 118 and planted 23. */
+    const spots = scatter(region, wanted * 3, rng, 2.5)
 
-    for (const spot of scatter(region, wanted, rng, 2.5)) {
+    /* A handful of grove hearts, taken off the front of the same scatter so they
+     * are spread the way the region is. Inside one of these the separation rule
+     * relaxes and trunks knot together; everywhere else crowns keep clear. */
+    const groves = spots.slice(0, Math.max(1, Math.round(area / GROVE_AREA)))
+      .map(spot => ({ x: spot.x, z: spot.z }))
+    const inGrove = (x: number, z: number) =>
+      groves.some(grove => Math.hypot(grove.x - x, grove.z - z) < GROVE_RADIUS)
+
+    for (const spot of spots) {
       // Clearings stay open so the third-person camera has somewhere to sit and
       // the player can see what is coming.
       if (rule.clearing && Math.hypot(spot.x - region.x, spot.z - region.z) < rule.clearing) continue
-      let id = rule.mix[rule.mix.length - 1][0]
-      for (const [candidate, ceiling] of rule.mix) {
-        if (spot.roll <= ceiling) { id = candidate; break }
-      }
+      let id = speciesFor(rule.mix, spot.roll)
       if (GIANT_SPECIES.has(id)) {
         if (giants >= rule.giants) id = region.kind === 'brasswood' ? 'ironbark' : 'pine'
         else giants += 1
       }
-      const [low, high] = sizeRange[id]
-      const scale = low + rng() * (high - low)
-      const metrics = treeMetrics(id)
-      const radius = metrics.canopyRadius * scale
-      // Crowns may interlock — that is what a wood looks like — but two trunks
-      // in the same square metre reads as one broken tree.
-      const clash = planted.some(other => Math.hypot(other.x - spot.x, other.z - spot.z) < Math.max(1.6, (other.r + radius) * 0.34))
-      if (clash) continue
-      plant(id, {
-        x: spot.x,
-        z: spot.z,
-        scale,
-        yaw: rng() * Math.PI * 2,
-        lean: (rng() - 0.5) * (GIANT_SPECIES.has(id) ? 0.03 : 0.09),
-        squash: 0.92 + rng() * 0.16,
-        tint: 0.88 + rng() * 0.24,
-      })
-      planted.push({ x: spot.x, z: spot.z, r: radius })
+      // A giant never joins a grove: two twenty-metre crowns in one knot is the
+      // wall the giant ration exists to prevent.
+      const separation = !GIANT_SPECIES.has(id) && inGrove(spot.x, spot.z) ? GROVE_SEPARATION : rule.separation
+      if (!plantAt(id, spot.x, spot.z, separation) && GIANT_SPECIES.has(id)) giants -= 1
     }
 
     /* --- undergrowth: grass tufts and ferns, cut into the same ground --- */
@@ -255,6 +429,136 @@ export function createWildscape() {
       obstacles.push({ kind: 'circle', x: spot.x, z: spot.z, r: size * 0.6 })
     }
   }
+
+  /* --- the rest of the world ------------------------------------------ *
+   * Trees used to exist only inside the seven hunting regions, because the
+   * planting table is keyed by region kind and nothing ever asked what grew
+   * between them. The answer was nothing, so the world read as seven forests
+   * standing on a lawn.
+   *
+   * What goes in here is countryside, not wood: a few small copses, hedgerows
+   * along nothing in particular the way hedgerows are, and lone trees on open
+   * ground. Sparse by design — the woods have to stay the dense thing — and
+   * every trunk goes through the same `plantAt` as a wood's, so it keeps the
+   * same clear corridor and registers the same navigation obstacle.
+   *
+   * Where it will NOT go: on the plaza or within five metres of it, on any paved
+   * street or within three of one, on or within five and a half metres of a
+   * building footprint, inside or within four metres of a hunting region (the
+   * regions plant themselves), within six metres of a marked hunt trail, inside
+   * a duel ring plus six metres of run-up, or on top of the town's own perimeter
+   * woodland. That union also swallows the canal and its banks, the fountain,
+   * the notice board and the market stalls, all of which sit inside the paving
+   * or the plaza — so every existing navigation obstacle is already excluded.
+   *
+   * The keep-out is built from `shared/zones` rather than from `isGreen`, which
+   * is the WILDLIFE fence: its nine-metre skirt round every building and four
+   * round every street exists to keep animals out of town, and applied to trees
+   * it ruled out seventy per cent of the map — which is a different way of
+   * planting nothing.
+   * ------------------------------------------------------------------- */
+  const PAVING_CLEAR = 3
+  const PLAZA_CLEAR = 5
+  const BUILDING_CLEAR = 5.5
+  const perimeter = perimeterTrees()
+  const nearTrail = (x: number, z: number, within: number) =>
+    huntTrails.some(trail => {
+      for (let i = 0; i < trail.length - 1; i++) {
+        const [ax, az] = trail[i]
+        const [bx, bz] = trail[i + 1]
+        const dx = bx - ax
+        const dz = bz - az
+        const span = dx * dx + dz * dz
+        const t = span < 1e-6 ? 0 : Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / span))
+        if (Math.hypot(x - (ax + dx * t), z - (az + dz * t)) < within) return true
+      }
+      return false
+    })
+
+  const openCountry = (x: number, z: number) => {
+    if (Math.abs(x) > WORLD_HALF - 4 || Math.abs(z) > WORLD_HALF - 4) return false
+    if (Math.hypot(x - townPlaza.x, z - townPlaza.z) <= townPlaza.r + PLAZA_CLEAR) return false
+    if (townPaving.some(r => Math.abs(x - r.x) <= r.halfW + PAVING_CLEAR && Math.abs(z - r.z) <= r.halfD + PAVING_CLEAR)) return false
+    if (townBuildings.some(r => Math.abs(x - r.x) <= r.halfW + BUILDING_CLEAR && Math.abs(z - r.z) <= r.halfD + BUILDING_CLEAR)) return false
+    if (wildRegions.some(region => insideRegion(region, x, z, -4))) return false
+    if (nearTrail(x, z, 6)) return false
+    if (DUEL_RINGS.some(ring => Math.hypot(x - ring.x, z - ring.z) < ring.radius + 6)) return false
+    return !perimeter.some(tree => Math.hypot(x - tree.x, z - tree.z) < 4.5)
+  }
+
+  /** A point on open country, or null if forty tries could not find one. */
+  const countrySpot = (): Spot | null => {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      const x = (rng() * 2 - 1) * (WORLD_HALF - 6)
+      const z = (rng() * 2 - 1) * (WORLD_HALF - 6)
+      if (openCountry(x, z)) return { x, z, roll: rng() }
+    }
+    return null
+  }
+
+  const COPSE_MIX: Array<[TreeSpeciesId, number]> = [['birch', 0.42], ['oak', 0.7], ['pine', 0.9], ['scrub', 1]]
+  const HEDGE_MIX: Array<[TreeSpeciesId, number]> = [['scrub', 0.6], ['birch', 0.9], ['oak', 1]]
+  /* One lone tree in thirty is an elder oak, which at thirty-one metres and a
+   * twenty-metre crown is a landmark you can navigate by from across the map. */
+  const LONE_MIX: Array<[TreeSpeciesId, number]> = [['oak', 0.3], ['birch', 0.56], ['pine', 0.74], ['scrub', 0.967], ['elder', 1]]
+
+  let copses = 0
+  let hedges = 0
+  let hedgePlants = 0
+  let lone = 0
+
+  /* Copses: three to seven trees in a knot, which is the grove rule applied to
+   * open ground. This is where deliberate tight planting belongs. */
+  for (let i = 0; i < 26; i++) {
+    const heart = countrySpot()
+    if (!heart) continue
+    let grown = 0
+    for (let n = 0; n < 9; n++) {
+      const angle = rng() * Math.PI * 2
+      const radius = Math.sqrt(rng()) * 7
+      const x = heart.x + Math.cos(angle) * radius
+      const z = heart.z + Math.sin(angle) * radius
+      if (!openCountry(x, z)) continue
+      if (plantAt(speciesFor(COPSE_MIX, rng()), x, z, GROVE_SEPARATION)) grown += 1
+    }
+    if (grown) copses += 1
+  }
+
+  /* Hedgerows: a line of thicket and birch with gaps in it. The gaps are not
+   * decoration — a solid hedge is a wall, and every plant in one blocks.
+   *
+   * Laid outward from the middle in BOTH directions, each end stopping on its
+   * own. Open country between the streets and the regions comes in narrow
+   * ribbons, and a run laid one way from its start used to hit a street after
+   * two plants and give up: one hedgerow out of eighteen tries survived. */
+  for (let i = 0; i < 18; i++) {
+    const start = countrySpot()
+    if (!start) continue
+    const yaw = rng() * Math.PI * 2
+    const step = 3.4
+    let grown = 0
+    for (const way of [1, -1]) {
+      for (let n = way > 0 ? 0 : 1; n < 7; n++) {
+        // A fifth of the stations are left empty, so the run stays passable.
+        if (rng() < 0.2) continue
+        const x = start.x + Math.cos(yaw) * step * n * way + (rng() - 0.5) * 1.4
+        const z = start.z + Math.sin(yaw) * step * n * way + (rng() - 0.5) * 1.4
+        if (!openCountry(x, z)) break
+        if (plantAt(speciesFor(HEDGE_MIX, rng()), x, z, GROVE_SEPARATION)) grown += 1
+      }
+    }
+    hedgePlants += grown
+    if (grown >= 3) hedges += 1
+  }
+
+  /* Lone trees, spread over everything that is left. */
+  for (let i = 0; i < 240; i++) {
+    const spot = countrySpot()
+    if (!spot) continue
+    if (plantAt(speciesFor(LONE_MIX, spot.roll), spot.x, spot.z, CROWN_SEPARATION)) lone += 1
+  }
+
+  const country = { copses, hedges, hedgePlants, lone }
 
   /* --- the wildwood pond and standing stones ------------------------- */
   const pondX = huntingArea.x + 12
@@ -510,6 +814,92 @@ export function createWildscape() {
    * planks and the pond surface stay walkable on purpose.
    */
   root.userData.obstacles = obstacles
+
+  /* --- what the camera must not sit inside ---------------------------- *
+   * The trunk corridor keeps the player and the low end of the orbit out of the
+   * leaves, but a camera pulled back and tilted up climbs to twenty metres and
+   * there is no way to keep a wood out of that band — it is a wood. So the
+   * camera asks instead, and moves.
+   *
+   * Bucketed on a 24m grid, because this is called a handful of times a frame
+   * and the answer must not get slower as the world gains trees.
+   * ------------------------------------------------------------------- */
+  const CROWN_BUCKET = 24
+  const bucketKey = (bx: number, bz: number) => bx * 1024 + bz
+  const buckets = new Map<number, Crown[]>()
+  for (const crown of crowns) {
+    const x0 = Math.floor((crown.x - crown.reach) / CROWN_BUCKET)
+    const x1 = Math.floor((crown.x + crown.reach) / CROWN_BUCKET)
+    const z0 = Math.floor((crown.z - crown.reach) / CROWN_BUCKET)
+    const z1 = Math.floor((crown.z + crown.reach) / CROWN_BUCKET)
+    for (let bx = x0; bx <= x1; bx++) {
+      for (let bz = z0; bz <= z1; bz++) {
+        const key = bucketKey(bx, bz)
+        let list = buckets.get(key)
+        if (!list) buckets.set(key, (list = []))
+        list.push(crown)
+      }
+    }
+  }
+
+  /**
+   * Is this point inside the wood of a tree — leaf or bole?
+   *
+   * Exact against the drawn voxels rather than against a bounding cylinder. An
+   * elder oak's bounding cylinder is twenty metres across and almost all air;
+   * refusing the camera that whole volume would shove the lens across a clearing
+   * to escape a tree it was standing comfortably under.
+   */
+  const inWood = (x: number, y: number, z: number) => {
+    if (y < 0) return false
+    const list = buckets.get(bucketKey(Math.floor(x / CROWN_BUCKET), Math.floor(z / CROWN_BUCKET)))
+    if (!list) return false
+    for (const crown of list) {
+      if (y > crown.top) continue
+      const distance = Math.hypot(x - crown.x, z - crown.z) / crown.squash
+      if (distance > crown.reach) continue
+      const metrics = treeMetrics(crown.id)
+      if (distance < metrics.solidRadiusBelow(y / crown.scale) * crown.scale) return true
+      if (y >= crown.base && inFoliage(crown.id, crown.scale, distance, y)) return true
+    }
+    return false
+  }
+
+  /**
+   * Slide `eye` along the line toward `anchor` until it is out of the leaves,
+   * and leave it where it first comes clear. `anchor` is the point the camera is
+   * looking at, which sits inside a trunk corridor by construction, so this
+   * always terminates somewhere sensible.
+   */
+  const clearOfWood = (eye: THREE.Vector3, anchor: THREE.Vector3) => {
+    const dx = anchor.x - eye.x
+    const dy = anchor.y - eye.y
+    const dz = anchor.z - eye.z
+    const span = Math.hypot(dx, dy, dz)
+    if (span < 1e-4) return eye
+    /* Stepped in metres rather than in fractions of the boom. A fixed fraction
+     * sampled a 35m boom every 1.75m, which walks straight past the gaps between
+     * trunks that the camera wants to sit in and collapses the whole boom onto
+     * the player's head instead. */
+    const steps = Math.max(8, Math.min(96, Math.round(span / 0.45)))
+    /* A lens whose centre is clear but whose near plane is buried still fills the
+     * screen with leaf, so the point a little further along has to be clear too. */
+    const lead = Math.min(0.7 / span, 0.4)
+    for (let step = 0; step <= steps; step++) {
+      const t = step / steps
+      const x = eye.x + dx * t
+      const y = eye.y + dy * t
+      const z = eye.z + dz * t
+      if (inWood(x, y, z)) continue
+      const ahead = Math.min(1, t + lead)
+      if (inWood(eye.x + dx * ahead, eye.y + dy * ahead, eye.z + dz * ahead)) continue
+      return eye.set(x, y, z)
+    }
+    return eye.copy(anchor)
+  }
+
+  root.userData.canopy = { corridor: TRUNK_CORRIDOR, crowns, inWood, clearOfWood }
+
   root.userData.stats = {
     propMeshes: welded.meshes.length,
     propBoxes: welded.boxes,
@@ -518,6 +908,10 @@ export function createWildscape() {
     groundPatches: wildRegions.length,
     pointLights: 2,
     trees: trees.stats,
+    /** Trees planted outside every region: what "a bit of everywhere" cost. */
+    country,
+    corridor: TRUNK_CORRIDOR,
+    obstacles: obstacles.length,
     regionArea: [...areas.entries()].map(([id, area]) => ({ id, area })),
   }
   /**

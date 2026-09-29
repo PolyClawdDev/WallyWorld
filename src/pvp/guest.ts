@@ -76,8 +76,13 @@ export const presenceAuthProblem = () => lastProblem
 let minting: Promise<PresenceAuth | null> | null = null
 
 /**
- * Wallet session if Phantom already signed in, otherwise a guest session
- * minted from the browser's stored key. Never asks for a seed phrase.
+ * A guest session minted from this browser's stored key.
+ *
+ * `loadSession()` is still tried first, but nothing issues a wallet session any
+ * more: that came from the Phantom sign-in button, which is gone. A returning
+ * player can still have a live one in storage, so it is preferred while it
+ * lasts rather than discarded; once it expires this is the only path. Either
+ * way the embedded wallet claims the account on top — see `embeddedIdentity.ts`.
  */
 export async function resolvePresenceAuth(): Promise<PresenceAuth | null> {
   const wallet = loadSession()
@@ -144,7 +149,7 @@ export function forgetPresenceAuth(): 'wallet' | 'guest' | 'none' {
   if (wallet) {
     // The wallet session is the one being refused, so it is no more usable than
     // a guest one. Dropping it lets the next attempt fall back to a guest
-    // session and stand in the town; reconnecting Phantom is a click away.
+    // session and stand in the town, which is now the only path anyway.
     clearSession()
     return 'wallet'
   }

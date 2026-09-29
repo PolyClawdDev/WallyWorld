@@ -2,8 +2,8 @@
  * TEST FIXTURES ONLY.
  *
  * Generates throwaway devnet keypairs so `verify-solana.ts` can produce
- * real ed25519 signatures and stand in for the signature Phantom would
- * otherwise make. Nothing here is, or may become, a user wallet:
+ * real ed25519 signatures and stand in for a player's wallet. Nothing here
+ * is, or may become, a user wallet:
  *
  *   - it runs only from scripts/, never from src/ and never in the browser;
  *   - the files land in scripts/.fixtures/, which is gitignored;

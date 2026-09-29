@@ -8,6 +8,14 @@
  * so that no arithmetic is ever performed on the number form. SPL token
  * amounts arrive as decimal strings and go straight into BigInt, with
  * the float `uiAmount` field ignored entirely.
+ *
+ * What the running client actually calls is `verifyCluster`, from
+ * `clientStatus.ts`, so the panel can say when the endpoint behind the
+ * proxy serves a different chain from the one this build names. The
+ * balance readers are reached only by `scripts/verify-solana.ts` now: the
+ * on-screen balance view went with Phantom, and no block in the panel
+ * displays an amount. They are kept because the proxy allowlists exactly
+ * these calls and the script is what proves that end of it still works.
  * ------------------------------------------------------------------ */
 
 import { Connection, PublicKey } from '@solana/web3.js'

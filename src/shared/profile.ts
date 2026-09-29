@@ -52,6 +52,14 @@ export const DEFAULT_PROFILE: Profile = {
  * Player names are free text, so they are stripped of control characters and
  * clamped. They are rendered as text nodes by React, never as HTML, and are
  * never used in a query string or a SQL fragment.
+ *
+ * THIS IS NOT MODERATION. It decides what a name may CONTAIN, not what it may
+ * SAY, and it runs in the browser as well as on the server. Whether a name is
+ * fit for other players to read is decided by `src/server/moderation/names.ts`,
+ * which is server-only on purpose: the blocklist must never be compiled into
+ * the client bundle, and a check the client performs is a check the attacker
+ * controls. Every path that sets a stored name goes through both — this
+ * function first, then the server-side screen.
  */
 export function sanitisePlayerName(raw: unknown): string {
   if (typeof raw !== 'string') return ''

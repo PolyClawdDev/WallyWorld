@@ -32,73 +32,83 @@ and "DEMO · NO REAL FUNDS" labelling throughout.
 - Wildlife and hunting: chickens, reindeer, and bears wandering six green regions outside town, each with its own silhouette, threat level, and gold value. One attack ability per archetype, player health with out-of-combat regen and a safe town zone, and a gold forfeit on death.
 - Responsive HUD, minimap, map, journal, wallet, settings, and mobile-friendly service panels.
 - Archivist demo task with quote, explicit approval, deterministic queued/running/delivered states, local receipt persistence, and “Demo — no real funds” labels.
-- A typed HTTP API at `src/server/index.ts` with SQLite persistence, sign-in by wallet signature, per-wallet character saves, payment receipts, and a method-allowlisted Solana RPC proxy.
-- Non-custodial Phantom wallet integration: connect, live balances, Sign-In With Solana, and user-signed payments to NPCs. See below.
+- A typed HTTP API at `src/server/index.ts` with SQLite persistence, sign-in by wallet signature, per-account character records, and a method-allowlisted Solana RPC proxy.
+- One wallet per player, generated in the browser, used to claim and own an account. See below.
 
 ## Solana wallet integration
 
-Real, non-custodial, Phantom only. Everything lives in `src/solana/` (client),
-`src/server/` (API), and `src/shared/` (types and the sign-in message format
-used by both sides).
+Everything lives in `src/solana/` (client), `src/server/` (API), and
+`src/shared/` (types and the sign-in message format used by both sides).
 
-**The app never handles a private key or a seed phrase.** It does not generate
-one, store one, transmit one, display one, or ask for one — not on any screen,
-and there is no code path that could. Phantom holds the key and performs every
-signature. `src/server/` contains no keypair either: the server verifies
-signatures and reads the chain, and cannot move anyone's funds. If you ever see
-Voxels ask you for a seed phrase, it is not Voxels.
+**There is one wallet, the player holds it, and it cannot spend.** Every player
+who enters the world gets a real Ed25519 Solana keypair generated in their
+browser (`src/solana/embeddedWallet.ts`). It signs UTF-8 challenges to prove
+identity and nothing else: there is no `signTransaction` anywhere in the client,
+so no sequence of actions in this app can move value on any network. That is
+deliberate rather than incidental — the key is kept in `localStorage`, so a
+transaction signer would turn any XSS on this origin into stolen funds.
+
+**No browser extension, and nothing to connect.** Phantom support was removed:
+the custodial-free browser wallet covers every player, a second optional path
+only made the panel ambiguous, and the planned gold payout does not need one —
+the treasury signs and sends, and the player's signature proves only that they
+control the destination address.
+
+**The server holds no key either.** It verifies signatures and reads the chain,
+and cannot move anyone's funds because it has none. Voxels will never ask you
+for a seed phrase. If something does, it is not Voxels.
 
 What is implemented:
 
-- **Connect.** Phantom detection via `window.phantom.solana`, falling back to
-  `window.solana.isPhantom`, with a download link when it is absent. Handles
-  connect, disconnect, and `accountChanged`, and drops the session when the
-  account changes.
-- **Balances.** SOL and whatever SPL tokens the wallet actually holds, read from
-  the chain across both the Token and Token-2022 programs. Balances are held as
-  `bigint` base units and formatted only at render — there is no floating-point
-  arithmetic on a balance anywhere, and the raw integer lamport figure is shown
-  next to the formatted one.
-- **Sign-In With Solana.** The server issues a single-use nonce bound to the
-  domain, the cluster, and the wallet, with a five-minute expiry. The client
-  rebuilds the message text itself from a shared template and refuses to show
-  anything that does not match, so a malicious server cannot get a surprising
-  payload signed. The signature is verified server-side with `@noble/curves`,
-  and the nonce is consumed by a single conditional `UPDATE` so a replay loses
-  the race. No passwords.
-- **Persistence.** SQLite via `better-sqlite3`. Character, wardrobe, name, and
-  gold are stored per wallet. Every endpoint takes the wallet from the session
-  token, never from the request body, so one wallet cannot read or write
+- **The browser wallet.** A real keypair, generated locally, persisted under one
+  `localStorage` key, and exportable by the player in the two formats real
+  wallets import (base58, and the 64-byte JSON array the Solana CLI reads).
+  Export, import and delete are all in the panel. There is deliberately no seed
+  phrase, because the key is random rather than BIP39-derived, so twelve words
+  would not restore it. The storage ceiling is stated on screen at creation and
+  again at export rather than buried here.
+- **Account claim, which is how a player owns their character.** The server
+  issues a single-use nonce bound to the domain, the cluster, the wallet, and the
+  session that asked for it, with an expiry. The client rebuilds the message text
+  itself from a shared template and refuses to sign anything that does not match,
+  so a malicious server cannot get a surprising payload signed. The signature is
+  verified server-side with `@noble/curves`, and the nonce is consumed by a
+  single conditional `UPDATE` so a replay loses the race. If the address already
+  belongs to another account the server offers switch or merge and the client
+  stops and asks, rather than picking one. No passwords.
+- **Persistence.** SQLite via `better-sqlite3`. Character, wardrobe, name and
+  gold are stored per account. Every endpoint takes the identity from the session
+  token, never from the request body, so one session cannot read or write
   another's row. Lamport figures are stored as text to survive a round trip
   exactly.
-- **NPC payments.** A Phantom-signed SOL transfer. Recipient, amount, network,
-  and the fee quoted from the chain are all shown before anything is signed.
-  After submitting, confirmation is polled and resolves to one of five honest
-  outcomes — confirmed, failed, expired, timeout, or unknown — and `unknown` is
-  never quietly treated as success. Receipts are keyed by transaction signature
-  and are idempotent. The server verifies a claimed payment from the
-  transaction's own pre/post balance deltas rather than trusting the client.
+- **Service payments: no.** `/api/health` reports `paymentsEnabled: false` and
+  `/api/payments/quote` reports unavailable, on every deployment, whether or not
+  `NPC_PAYEE_ADDRESS` is configured. A service fee is a transfer the player has
+  to sign and there is nothing to sign it with. The routes and the on-chain
+  receipt verification remain — they are what would confirm a payment against
+  the chain rather than trusting a client — but no player can reach them.
 
 ### Networks, and not confusing the two
 
 The cluster comes from `VITE_SOLANA_CLUSTER` (client) and `SOLANA_CLUSTER`
 (server), **defaulting to devnet**. `mainnet-beta` is an explicit opt-in.
 
-Labelling is deliberately asymmetric, because the two mistakes are not equally
-bad. The live state depends only on the configured cluster, so a mainnet build
-names its network before a wallet is even connected: a `MAINNET` chip on every
-screen, whose tooltip says that nothing moves value until a payment is approved
-in Phantom and that such a payment is real, irreversible SOL. Devnet shows
-`DEMO · NO REAL FUNDS` until a wallet connects and `DEVNET · TEST FUNDS`
-afterwards. A demo build cannot display the live styling, and a mainnet build
-cannot display the demo styling.
+There are two labels and the configured cluster alone decides which one shows,
+so a demo build cannot display the live styling and a mainnet build cannot
+display the demo styling. A mainnet build shows a `MAINNET` chip on every screen,
+whose tooltip says the honest thing: the address in your browser is a real
+mainnet address, so SOL sent to it is real, and this app cannot spend it. A test
+cluster shows `DEMO · NO REAL FUNDS`.
+
+There used to be a third label for "a wallet is connected". It went with Phantom:
+nothing connects now, the browser wallet is simply always there, and a branch
+that can never be taken is worse than no branch at all.
 
 The chip is brass rather than red, and there is no full-width alarm strip. That
-is proportionate rather than lax: no code path in this build can move value
-without an explicit approval in Phantom (`src/solana/payments.ts` requires a
-`PhantomProvider`), the browser-held key signs identity only and has no
-transaction signer at all, and payouts are hardcoded off. Red is reserved for
-real faults, so a badge naming the network never reads as one.
+is proportionate rather than lax: **no code path in this build can move value**.
+`signAndSend` was deleted along with Phantom, the browser-held key signs messages
+only, and payouts are hardcoded off. Red is reserved for real faults, so a badge
+naming the network never reads as one.
 
 The server independently reads the RPC genesis hash at boot and reports it on
 `/api/health`, so an endpoint that disagrees with the configured cluster is
@@ -203,9 +213,9 @@ Verified end to end, by scripts in this repository:
 
 | Command | Covers | Result |
 | --- | --- | --- |
-| `npm run verify:solana` | Nonce issuance, ed25519 verification, replay and tampering rejection, session handling, per-wallet isolation, persistence round-trip, input validation, devnet balance reads, transaction building, fee quoting, confirmation polling | 98 passed, 0 failed, 3 skipped |
+| `npm run verify:solana` | Nonce issuance, ed25519 verification, replay and tampering rejection, session handling, per-account isolation, persistence round-trip, input validation, devnet balance reads, transaction building, fee quoting, confirmation polling, and payments reporting themselves disabled for the right reason | 97 passed, 0 failed, 4 skipped |
 | `npm run verify:proxy` | Allowlisted methods, twelve forbidden methods refused, airdrop gated by cluster, batch handling, oversized bodies, CORS, and a leak scan over every client-visible byte | 53/53 on devnet, 53/53 against a real QuickNode mainnet endpoint |
-| `npm run verify:ui` | The UI in real Chrome: funds labelling on every screen, connect, balance display, sign-in, character save, payout staying disabled, and no key or seed input anywhere | 27/27 devnet, 22/22 mainnet |
+| `npm run verify:ui` | The panel in real Chrome: funds labelling on every screen, that no Phantom section or connect control exists, that an injected decoy provider is never touched, the browser wallet reaching LINKED, export/import/delete, the payout staying disabled, and no seed input anywhere | 56/56 devnet, 57/57 mainnet |
 | `npm run audit:bundle` | The built client contains no provider URL, host, or token | PASS |
 
 All four need `npm run server` running, and `verify:ui` also needs a client to
@@ -214,24 +224,22 @@ minute apart: the RPC proxy's own rate limit is 240 requests per minute per IP,
 and two suites back to back will trip it and report failures that are really
 just `429`s.
 
-`verify:ui` cannot install the Phantom extension in headless Chrome, so it mocks
-the provider. The mock is not a stub: its `signMessage` returns a genuine
-ed25519 signature from a throwaway fixture key, and the real server has to
-accept it for the test to pass. So the client's sign-in path, the message
-format, the verification, and the session are all genuinely exercised — but
-against a mock, not against Phantom.
+`verify:ui` no longer mocks a wallet provider, because there is no provider path
+left to mock. It does the opposite: it installs a decoy `window.phantom` whose
+every property and method records that it was touched, and asserts the recording
+stays empty. The signing that matters — the account-claim signature — is done by
+the real browser-held key against the real server, so the ed25519 verification
+has to pass for the panel to show LINKED in a screenshot.
 
 **Not verified, and not claimed:**
 
-- **The real Phantom extension.** Its approval dialogs, its own RPC handling,
-  and its behaviour when the user switches network inside the extension. A mock
-  cannot prove the real extension agrees with it. This needs a human with
-  Phantom installed, on devnet first.
 - **A self-submitted on-chain transfer.** The devnet faucet is rate-limited and
   would not fund the fixture, so the code path that submits a transfer and
   confirms it was exercised against already-confirmed on-chain transactions
-  rather than one this repository created. Building, signing, fee quoting, and
-  the polling state machine are all covered; the submission itself is not.
+  rather than one this repository created. Building, fee quoting and the polling
+  state machine are all covered; the submission itself is not. Note that this is
+  a property of `scripts/verify-solana.ts` only — the transfer is built and
+  signed in Node by a fixture key, and there is no equivalent path in the app.
 - **Expired-nonce rejection**, which needs `WALLY_NONCE_TTL_MS` set low. The
   expiry is enforced in the same SQL predicate that consumes the nonce, and
   replay of a *consumed* nonce is covered.
@@ -249,11 +257,13 @@ Hunting gold remains a local demo counter written to an in-memory ledger in
 `src/rewards.ts`, and the "pending conversion" window in the hunt log is a
 simulated queue that never pays out. Gold cannot be converted to anything.
 
-What *is* real, when you configure it: Phantom connect, on-chain balance reads,
-sign-in by signature, per-wallet persistence, and user-signed SOL transfers to
-an NPC payee address that you supply. Those are genuine chain interactions and
-on mainnet they move real money. The wallet pouch grid and its item stacks are
-still simulated and have no mint behind them.
+What *is* real: the browser-held keypair and its address, the signatures it makes
+over server-issued challenges, the ed25519 verification behind account ownership,
+the genesis-hash check against the configured cluster, and the on-chain reads
+through the RPC proxy. On mainnet the wallet address is a real mainnet address,
+so SOL sent to it is real — and nothing in this app can send it anywhere. The
+wallet pouch grid and its item stacks are still simulated and have no mint
+behind them.
 
 No seed phrase or deposit is ever requested. Any production adapter must enforce
 spend policies outside the model, use integer base units, authenticate
@@ -267,9 +277,8 @@ The current visual foundation is intentionally self-contained: `src/main.tsx` co
 The Solana layer is kept in new files so it stays separable: `src/solana/` for
 the client, `src/server/` for the API, and `src/shared/` for the handful of
 types and the sign-in message template that both sides must agree on exactly.
-`src/main.tsx` touches it in five places only — the funds badge on three
-screens, the wallet panel inside the pouch popup, and one registration that lets
-the panel read and restore the live character.
+`src/main.tsx` touches it in four places only — the funds badge on three screens
+and the wallet panel inside the pouch popup.
 
 `@solana/web3.js` is written against Node and reaches for the `Buffer` global,
 which browsers do not have, so `src/solana/bufferPolyfill.ts` supplies one from

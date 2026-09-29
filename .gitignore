@@ -21,6 +21,10 @@ dist-dev
 dist-wood/
 .baseline/
 
+# One-off probes written while chasing a specific bug. Kept out of the repo so
+# they can't be mistaken for the maintained checks in package.json.
+scripts/tmp-*
+
 # Screenshots written by the verification scripts on every run.
 screenshots/
 

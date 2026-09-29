@@ -77,24 +77,38 @@ export type BuildingSpec = {
   trim?: string
 }
 
+/**
+ * Heights only. Every footprint below is byte-identical to before on purpose.
+ *
+ * `width`/`depth` are what `createNavGrid` builds its obstacles from and what
+ * the duplicate `townBuildings` table in src/shared/zones.ts repeats for
+ * server-side checks, so moving or resizing a building means changing both or
+ * players walk through walls. Height is outside all of that, which is how a
+ * skyline can be had without touching navigation.
+ *
+ * Meant to read as a skyline rather than a list. The Spell Tower clears the 39m
+ * trees so it is visible from the hunting grounds, the Observatory, Archive and
+ * Chapel answer it from the other quarters, and the trades ringing the plaza
+ * stay low enough that the plaza still reads as a room you are standing in.
+ */
 export const buildingSpecs: BuildingSpec[] = [
-  { name: 'Hearth Inn', kind: 'inn', x: -17, z: 16, width: 12, depth: 9, height: 5.3, wall: '#795c50', roof: '#463b43', sign: 'HEARTH', accent: '#d5a64b', trim: '#e5ddc8' },
-  { name: 'Town Hall', kind: 'hall', x: 17, z: 16, width: 11, depth: 9, height: 5.8, wall: '#626b70', roof: '#39444d', sign: 'HALL', accent: '#9580b8', trim: '#e5ddc8' },
-  { name: 'Bakery', kind: 'bakery', x: -17, z: -17, width: 10, depth: 8, height: 4.6, wall: '#8a6a55', roof: '#57434a', sign: 'BAKERY', accent: '#d9a35c', trim: '#e5ddc8' },
-  { name: 'Stable', kind: 'stable', x: 17, z: -17, width: 11, depth: 8, height: 4.3, wall: '#6d594b', roof: '#4a3d39', sign: 'STABLE', accent: '#9a7046' },
-  { name: 'Potion Shop', kind: 'apothecary', x: 50, z: -16, width: 12, depth: 9, height: 5.2, wall: '#5c6e68', roof: '#3d4d4d', sign: 'ALCHEMY', accent: '#7bc9ce', trim: '#e5ddc8' },
-  { name: 'Workshop', kind: 'smithy', x: 50, z: 18, width: 13, depth: 10, height: 5.5, wall: '#765a46', roof: '#4e3d38', sign: 'FORGE', accent: '#e37c42' },
-  { name: 'Market Hall', kind: 'market', x: 72, z: 0, width: 14, depth: 12, height: 5.6, wall: '#68655d', roof: '#45494a', sign: 'MARKET', accent: '#d5a64b', trim: '#e5ddc8' },
-  { name: 'Post Office', kind: 'post', x: 50, z: 50, width: 12, depth: 9, height: 5.0, wall: '#78645c', roof: '#4b4145', sign: 'POST', accent: '#9580b8', trim: '#e5ddc8' },
-  { name: 'The Archive', kind: 'archive', x: -59, z: 43, width: 12, depth: 11, height: 9.0, wall: '#5a6879', roof: '#3b4350', sign: 'ARCHIVE', accent: '#7bc9ce', trim: '#e5ddc8' },
-  { name: 'Observatory', kind: 'observatory', x: -72, z: 70, width: 14, depth: 12, height: 7.4, wall: '#645b7d', roof: '#39364d', sign: 'STARS', accent: '#9580b8' },
-  { name: 'Garden House', kind: 'garden', x: -42, z: 76, width: 11, depth: 9, height: 4.7, wall: '#5e705c', roof: '#3d5546', sign: 'GARDEN', accent: '#9ca66d', trim: '#e5ddc8' },
-  { name: 'Spell Tower', kind: 'tower', x: -82, z: 52, width: 10, depth: 10, height: 11, wall: '#555b70', roof: '#38384d', sign: 'TOWER', accent: '#9580b8' },
-  { name: 'Crystal Conservatory', kind: 'glasshouse', x: -15, z: 74, width: 14, depth: 9, height: 5.2, wall: '#587275', roof: '#354f58', sign: 'GLASS', accent: '#7bc9ce' },
-  { name: 'Weaver', kind: 'weaver', x: 74, z: 72, width: 11, depth: 9, height: 5.0, wall: '#826557', roof: '#544047', sign: 'WEAVER', accent: '#e39a6d', trim: '#e5ddc8' },
-  { name: 'Cartwright', kind: 'cartwright', x: 83, z: -54, width: 12, depth: 10, height: 4.8, wall: '#74604d', roof: '#4c443d', sign: 'CARTS', accent: '#d5a64b' },
-  { name: 'River Chapel', kind: 'chapel', x: 0, z: -68, width: 11, depth: 9, height: 6.0, wall: '#69767b', roof: '#424e57', sign: 'CHAPEL', accent: '#7bc9ce', trim: '#e5ddc8' },
-  { name: 'Fisher Shed', kind: 'fishery', x: 52, z: -70, width: 10, depth: 8, height: 4.0, wall: '#596b67', roof: '#3d4b48', sign: 'FISH', accent: '#7bc9ce' },
+  { name: 'Hearth Inn', kind: 'inn', x: -17, z: 16, width: 12, depth: 9, height: 14, wall: '#795c50', roof: '#463b43', sign: 'HEARTH', accent: '#d5a64b', trim: '#e5ddc8' },
+  { name: 'Town Hall', kind: 'hall', x: 17, z: 16, width: 11, depth: 9, height: 26, wall: '#626b70', roof: '#39444d', sign: 'HALL', accent: '#9580b8', trim: '#e5ddc8' },
+  { name: 'Bakery', kind: 'bakery', x: -17, z: -17, width: 10, depth: 8, height: 10, wall: '#8a6a55', roof: '#57434a', sign: 'BAKERY', accent: '#d9a35c', trim: '#e5ddc8' },
+  { name: 'Stable', kind: 'stable', x: 17, z: -17, width: 11, depth: 8, height: 8, wall: '#6d594b', roof: '#4a3d39', sign: 'STABLE', accent: '#9a7046' },
+  { name: 'Potion Shop', kind: 'apothecary', x: 50, z: -16, width: 12, depth: 9, height: 17, wall: '#5c6e68', roof: '#3d4d4d', sign: 'ALCHEMY', accent: '#7bc9ce', trim: '#e5ddc8' },
+  { name: 'Workshop', kind: 'smithy', x: 50, z: 18, width: 13, depth: 10, height: 15, wall: '#765a46', roof: '#4e3d38', sign: 'FORGE', accent: '#e37c42' },
+  { name: 'Market Hall', kind: 'market', x: 72, z: 0, width: 14, depth: 12, height: 21, wall: '#68655d', roof: '#45494a', sign: 'MARKET', accent: '#d5a64b', trim: '#e5ddc8' },
+  { name: 'Post Office', kind: 'post', x: 50, z: 50, width: 12, depth: 9, height: 13, wall: '#78645c', roof: '#4b4145', sign: 'POST', accent: '#9580b8', trim: '#e5ddc8' },
+  { name: 'The Archive', kind: 'archive', x: -59, z: 43, width: 12, depth: 11, height: 31, wall: '#5a6879', roof: '#3b4350', sign: 'ARCHIVE', accent: '#7bc9ce', trim: '#e5ddc8' },
+  { name: 'Observatory', kind: 'observatory', x: -72, z: 70, width: 14, depth: 12, height: 37, wall: '#645b7d', roof: '#39364d', sign: 'STARS', accent: '#9580b8' },
+  { name: 'Garden House', kind: 'garden', x: -42, z: 76, width: 11, depth: 9, height: 9, wall: '#5e705c', roof: '#3d5546', sign: 'GARDEN', accent: '#9ca66d', trim: '#e5ddc8' },
+  { name: 'Spell Tower', kind: 'tower', x: -82, z: 52, width: 10, depth: 10, height: 52, wall: '#555b70', roof: '#38384d', sign: 'TOWER', accent: '#9580b8' },
+  { name: 'Crystal Conservatory', kind: 'glasshouse', x: -15, z: 74, width: 14, depth: 9, height: 16, wall: '#587275', roof: '#354f58', sign: 'GLASS', accent: '#7bc9ce' },
+  { name: 'Weaver', kind: 'weaver', x: 74, z: 72, width: 11, depth: 9, height: 12, wall: '#826557', roof: '#544047', sign: 'WEAVER', accent: '#e39a6d', trim: '#e5ddc8' },
+  { name: 'Cartwright', kind: 'cartwright', x: 83, z: -54, width: 12, depth: 10, height: 11, wall: '#74604d', roof: '#4c443d', sign: 'CARTS', accent: '#d5a64b' },
+  { name: 'River Chapel', kind: 'chapel', x: 0, z: -68, width: 11, depth: 9, height: 28, wall: '#69767b', roof: '#424e57', sign: 'CHAPEL', accent: '#7bc9ce', trim: '#e5ddc8' },
+  { name: 'Fisher Shed', kind: 'fishery', x: 52, z: -70, width: 10, depth: 8, height: 7, wall: '#596b67', roof: '#3d4b48', sign: 'FISH', accent: '#7bc9ce' },
 ]
 
 /**

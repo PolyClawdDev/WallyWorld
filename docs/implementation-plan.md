@@ -288,7 +288,7 @@ Work through this as a checklist. Marked **[have]** where the repository already
 | `SOLANA_CLUSTER` / `VITE_SOLANA_CLUSTER` | Which cluster. `mainnet-beta` is an explicit opt-in | **[have]** in `.env.example` |
 | `SOLANA_RPC_URL`, `SOLANA_RPC_URL_MAINNET_BETA`, `SOLANA_RPC_URL_DEVNET`, `SOLANA_RPC_URL_TESTNET` | Server-side Solana RPC, resolved per cluster. Treated as a credential: never logged, never returned, never sent to the browser | **[have]** — a mainnet RPC is already configured server-side. The cluster-scoped names were added to `.env.example` by a concurrent agent while this audit was running, so the template now matches `src/server/config.ts` |
 | `VITE_API_BASE_URL`, `PORT`, `WALLY_DB_PATH`, `WALLY_ALLOWED_ORIGINS`, `WALLY_SIWS_DOMAINS`, `WALLY_NONCE_TTL_MS`, `WALLY_SESSION_TTL_MS` | API base, port, SQLite path, CORS allowlist, signed-domain allowlist, challenge and session lifetimes | **[have]** |
-| `NPC_PAYEE_ADDRESS`, `NPC_SERVICE_PRICE_LAMPORTS` | Public payee address for NPC fees (public key only) and integer lamport price | **[have]** — payments stay off while the address is empty, which is correct |
+| `NPC_PAYEE_ADDRESS`, `NPC_SERVICE_PRICE_LAMPORTS` | Public payee address for NPC fees (public key only) and integer lamport price | **[have]**, and inert — payments are off on every deployment now, because the client has no transaction signer. Setting the address does not switch them on |
 
 ### Tier 1 — free, no account, unblocks the most work
 
@@ -340,9 +340,13 @@ Everything here presupposes an accepted decision to hold customer funds. Read
 
 There is **no WALLY token mint** and none should be created — the `.env.example` already
 says so. §8 also states the Artificer must not require minting a token or NFT. And no
-private key or seed phrase is needed anywhere on the *Solana* side: Phantom holds the user's
-key and performs every signature, and the server verifies rather than signs. The Zcash side
-is the sole exception, and that is precisely why it is the hard part.
+private key or seed phrase is needed anywhere on the *Solana* side: each player's key is
+generated in their own browser, never leaves it, and signs only the identity challenges the
+server issues; the server verifies rather than signs. (Updated: that browser-held key is now
+the only wallet — Phantom was removed — and it has no transaction signer, deliberately,
+because it lives in `localStorage`. Any phase that assumes a player can sign a transfer has
+to say where that signer comes from.) The Zcash side is the sole exception, and that is
+precisely why it is the hard part.
 
 ---
 

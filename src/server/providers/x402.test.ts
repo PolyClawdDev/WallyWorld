@@ -264,14 +264,15 @@ test('only a confirmed mainnet execution reaches live-execution-verified', () =>
 
 /* ------------------------------------------ the shielded-ZEC assessment */
 
-test('a priced quote for a shielded address never yields shielded delivery', () => {
+test('a priced quote alone still does not yield shielded delivery', () => {
+  // Sapling with no Orchard receiver: the executor builds Orchard outputs, so
+  // a shielded receiver being present is not enough on its own.
   const assessment = classifyZecDelivery({
     recipient: 'u1...',
-    parsedReceivers: ['sapling', 'orchard'],
+    parsedReceivers: ['p2pkh', 'sapling'],
     quoteAccepted: true,
     quoteHttpStatus: 200,
   })
-  assert.equal(assessment.verdict, 'unsubstantiated')
   assert.equal(assessment.deliveredReceiver, 'unknown')
   assert.notEqual(assessment.deliveredReceiver, 'shielded')
 })

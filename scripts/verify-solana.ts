@@ -5,12 +5,20 @@
  *
  * WHAT THIS CAN AND CANNOT PROVE
  *
- * It cannot prove the Phantom flow. A browser extension cannot be
- * installed in this environment, so the one thing standing in for Phantom
- * is a throwaway fixture keypair from scripts/.fixtures/ which produces
- * the same kind of ed25519 signature Phantom would. That fixture is a
+ * The signing side is a stand-in. A throwaway fixture keypair from
+ * scripts/.fixtures/ produces the ed25519 signatures a player's wallet
+ * would, so the server's verification, its nonce handling and its
+ * on-chain receipt checks are all exercised for real. That fixture is a
  * test double, never a user wallet, and the application code has no path
  * that reads it.
+ *
+ * It also exercises server routes the browser no longer calls. Phantom was
+ * removed, so `/api/auth/{nonce,verify}`, `/api/profile` and the four
+ * `/api/payments/*` routes have no client caller left: the wallet panel is
+ * the browser-held keypair and the account-claim flow, and there is no
+ * transaction signer anywhere in the client. The routes still work and are
+ * still checked here; what they no longer have is a way for a player to
+ * reach them.
  *
  * Everything else is exercised for real: the running HTTP server, real
  * SQLite writes, real devnet RPC, and — when an airdrop succeeds — a real
@@ -81,7 +89,7 @@ async function api(path: string, options: { method?: string; body?: unknown; tok
   return { status: response.status, body }
 }
 
-/** Signs the sign-in text exactly as Phantom's signMessage would. */
+/** Signs the sign-in text exactly as a wallet's signMessage would. */
 function signMessageAsWallet(keypair: Keypair, message: string): string {
   const signature = ed25519.sign(new TextEncoder().encode(message), keypair.secretKey.slice(0, 32))
   return bs58.encode(signature)
@@ -173,7 +181,7 @@ async function main() {
   console.log(`  api      ${API}`)
   console.log(`  cluster  ${CLUSTER}`)
   console.log(`  rpc      ${RPC.ok ? RPC.endpoint : `MISCONFIGURED: ${RPC.problem}`}`)
-  console.log(`  fixture  ${payerAddress}  (test double for Phantom — never a user wallet)`)
+  console.log(`  fixture  ${payerAddress}  (signing test double — never a user wallet)`)
 
   /* ---------------------------------------------------------------- units */
   section('Integer base units (no floating point on any amount)')
@@ -197,11 +205,15 @@ async function main() {
   check('zero rejected', parseAmountToBaseUnits('0', 9).ok === false)
 
   /* ------------------------------------------------------------ labelling */
-  section('Demo / test / live labelling')
-  check('disconnected on devnet reads as demo', fundsLabel(false).mode === 'demo', fundsLabel(false).short)
-  check('connected on devnet reads as test funds', fundsLabel(true).mode === 'test', fundsLabel(true).short)
-  check('devnet never claims real funds', !fundsLabel(true).short.includes('REAL'))
-  check('demo label says no real funds', fundsLabel(false).short.includes('NO REAL FUNDS'))
+  // Two states now, decided by the cluster alone. There is no "a wallet is
+  // connected" state to label: nothing connects, the browser-held keypair is
+  // always there, and it cannot sign a transaction.
+  section('Demo / live labelling')
+  check('devnet reads as demo', fundsLabel().mode === 'demo', fundsLabel().short)
+  check('demo label says no real funds', fundsLabel().short.includes('NO REAL FUNDS'))
+  check('the label takes no arguments, so it cannot disagree with itself', fundsLabel.length === 0)
+  check('devnet never claims real funds', !fundsLabel().short.includes('REAL FUNDS') || fundsLabel().short.includes('NO REAL FUNDS'))
+  check('the long form states there is no signer', /no transaction signer/i.test(fundsLabel().long), fundsLabel().long)
   check('address truncation keeps both ends', truncateAddress(payerAddress, 4, 4) === `${payerAddress.slice(0, 4)}…${payerAddress.slice(-4)}`)
 
   /* ----------------------------------------------------------------- rpc */
@@ -231,6 +243,11 @@ async function main() {
   check('persistence is sqlite, not memory', health.body?.persistence === 'sqlite')
   check('rpc reachable from the server', health.body?.rpcReachable === true, String(health.body?.rpcDetail))
   check('payouts reported disabled', health.body?.payoutsEnabled === false)
+  // The advertised capability has to match what a player can actually do. With
+  // no client-side transaction signer, a green payments flag would be a lie
+  // even on a deployment that has NPC_PAYEE_ADDRESS configured.
+  check('payments reported disabled', health.body?.paymentsEnabled === false, String(health.body?.paymentsEnabled))
+  check('and the reason names the missing signer', /signer/i.test(String(health.body?.paymentsDisabledReason)), String(health.body?.paymentsDisabledReason))
   check('declares no custody', /none/i.test(String(health.body?.custody)))
 
   /* ------------------------------------------------------------- sign-in */
@@ -470,8 +487,8 @@ async function main() {
     check('a receipt for a never-sent signature is not confirmed', bogus.body?.receipt?.status !== 'confirmed', String(bogus.body?.receipt?.status))
   } else {
     const plan = await planTransfer(payerAddress, recipient, planLamports)
-    // The fixture signs here in place of Phantom. In the app this step happens
-    // inside the extension and no key is ever present in the page.
+    // The fixture signs here, in Node. There is no equivalent step in the app:
+    // `signAndSend` was deleted with Phantom and the client has no signer.
     plan.transaction.sign(payer)
     const signature = await getConnection().sendRawTransaction(plan.transaction.serialize())
     console.log(`  ..    submitted ${signature}`)
@@ -498,11 +515,20 @@ async function main() {
     check('the receipt is not visible to another wallet', !theirReceipts.body?.receipts?.some((r: any) => r.signature === signature))
   }
 
-  section('Malformed payment input')
-  check('non-base58 signature refused', (await api('/api/payments/receipt', { method: 'POST', token, body: { signature: 'nope!' } })).status === 400)
-  check('short signature refused', (await api('/api/payments/receipt', { method: 'POST', token, body: { signature: 'abc' } })).status === 400)
+  section('Payment input, with payments structurally off')
+  // The 409 lands before the body is looked at, which is the point: the route
+  // refuses everything because no client can produce a signature for it, not
+  // because this particular body was malformed.
+  const malformed = await api('/api/payments/receipt', { method: 'POST', token, body: { signature: 'nope!' } })
+  check('recording a payment is refused outright', malformed.status === 409, `status ${malformed.status}`)
+  check('and says why', malformed.body?.error === 'payments_disabled', String(malformed.body?.error))
   check('recheck of an unknown signature is 404', (await api('/api/payments/recheck', { method: 'POST', token, body: { signature: bs58.encode(Uint8Array.from({ length: 64 }, () => 11)) } })).status === 404)
   check('payments require a session', (await api('/api/payments/quote')).status === 401)
+  const offQuote = await api('/api/payments/quote', { token })
+  check('the quote reports unavailable', offQuote.body?.available === false, String(offQuote.body?.available))
+  check('and the reason is the missing signer, not an unset variable',
+    /no transaction signer/i.test(String(offQuote.body?.reason)) && !/NPC_PAYEE_ADDRESS/.test(String(offQuote.body?.reason)),
+    String(offQuote.body?.reason))
 
   /* -------------------------------------------------------------- payouts */
   section('Gold payout stays disabled')
@@ -539,13 +565,14 @@ async function main() {
     skipped.forEach(entry => console.log(`  - ${entry}`))
   }
   console.log('\nNot covered by this script:')
-  console.log('  - The UI, provider detection, connect/disconnect, and the signed-in')
-  console.log('    view. `npm run verify:ui` drives those in a real browser against a')
-  console.log('    mocked provider that returns genuine signatures.')
-  console.log('\nNot verifiable anywhere in this environment, and not claimed:')
-  console.log('  - The real Phantom extension: its approval dialogs, its own RPC')
-  console.log('    handling, and its behaviour on network switch. A mock cannot prove')
-  console.log('    the real extension agrees. This needs a human with Phantom installed.')
+  console.log('  - The wallet panel: the browser-held keypair, account linking,')
+  console.log('    export/import/delete, and the payout notice. `npm run verify:ui`')
+  console.log('    drives those in a real browser.')
+  console.log('\nWhat is no longer verified here, because it no longer exists:')
+  console.log('  - Any client path that can sign or submit a transaction. Phantom was')
+  console.log('    removed and `signAndSend` was deleted with it; the browser-held key')
+  console.log('    signs UTF-8 challenges only. The transfer submitted above was signed')
+  console.log('    in Node by a fixture key, which no application code can reach.')
   process.exit(failed === 0 ? 0 : 1)
 }
 

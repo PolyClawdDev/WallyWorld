@@ -23,7 +23,6 @@ import { attachHuntSession, claimKillOnServer, reportDeathOnServer } from './ser
 import { JournalPanel, SettingsPanel } from './panels'
 import { FundsBadge } from './solana/FundsBadge'
 import { WalletSolanaPanel } from './solana/WalletPanel'
-import { registerPlayer } from './solana/playerBridge'
 import { createBattle } from './battle/engine'
 import type { BattleSystem } from './battle/engine'
 import { createNavGrid } from './battle/nav'
@@ -607,6 +606,13 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
     // pines and boulders. Click-to-move paths and shots are resolved against it.
     const nav = createNavGrid((wildscape.userData.obstacles as Obstacle[] | undefined) ?? [])
     nav.resolve(player.position)
+    /* Where the leaves and the boles are, so the orbit camera can decline to sit
+     * inside one. Published by createWildscape rather than re-derived here: the
+     * forest is scattered from one RNG sequence and a second pass would produce a
+     * different wood. See the canopy section of src/wildscape.ts. */
+    const canopy = wildscape.userData.canopy as
+      | { clearOfWood: (eye: THREE.Vector3, anchor: THREE.Vector3) => THREE.Vector3 }
+      | undefined
     // Lets the pouch raycast drops onto NPCs and the map read the player's pose.
     const unregisterWorld = registerWorld({ scene, camera, canvas: renderer.domElement, player })
     const keys = keysRef.current
@@ -1093,6 +1099,12 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         const desired = target.clone().add(new THREE.Vector3(Math.sin(yaw) * flat, Math.sin(elevation) * boom, Math.cos(yaw) * flat))
         // Never below the street, and never inside the wayfinder's own hat.
         desired.y = Math.max(desired.y, 1.4)
+        /* And never inside a tree. Every trunk keeps a clear corridor well above
+         * head height, so the low orbit is safe by construction, but a boom
+         * tilted up climbs twenty metres into the crowns — and that is a wood,
+         * there is nothing to be done about it from the planting side. So the
+         * boom shortens until the lens is out of the leaves. */
+        canopy?.clearOfWood(desired, target)
         /* Looking ahead of the wayfinder is what makes the default framing read
          * as a street view, but it makes no sense from overhead: fade the lead
          * out, and raise the look point onto the wayfinder, as the camera
@@ -1102,6 +1114,9 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         const streetLook = target.clone().add(new THREE.Vector3(-Math.sin(yaw) * ahead, 0.1 * lead, -Math.cos(yaw) * ahead))
         camera.position.lerp(desired, chase(12))
         camera.position.y = Math.max(camera.position.y, 1.4)
+        // The ease toward a clear vantage point can still pass through a crown on
+        // the way, so the lens is checked where it actually ended up as well.
+        canopy?.clearOfWood(camera.position, target)
         camera.lookAt(streetLook)
       }
       // Backwards, because a collected coin leaves the list. It used to be only
@@ -1274,19 +1289,6 @@ function App() {
   const [toast, setToast] = useState('')
   const [gold, setGold] = useState(0)
   const [tab, setTab] = useState<'select' | 'preview' | 'world'>('select')
-  // Lets the wallet panel read the live character and write a loaded save back,
-  // without threading four setters through the popup. Re-registers on change so
-  // `read` never returns a stale snapshot.
-  useEffect(() => registerPlayer({
-    read: () => ({ character: wizard, style, playerName, gold }),
-    apply: saved => {
-      if (isDuelLocked()) return false
-      setWizard(saved.character)
-      setStyle(saved.style)
-      setPlayerName(saved.playerName)
-      setGold(saved.gold)
-    },
-  }), [wizard, style, playerName, gold])
   useEffect(() => {
     const probe = window as unknown as { __pvpLocked?: () => boolean }
     probe.__pvpLocked = () => isDuelLocked()

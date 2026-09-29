@@ -67,6 +67,8 @@ import { createSession, issueChallenge, revokeFromAuthHeader, verifySignIn, wall
 import { issueGuestSession } from './pvp/guest'
 import { ensureAccount } from './pvp/ids'
 import { goldView } from './pvp/ledger'
+import { nameChangeAllowed } from './moderation/nameRate'
+import { blocklistSize, screenDisplayName } from './moderation/names'
 import { originContext } from './origin'
 import { handleOperatorHttp } from './operator/http'
 import { handleAccountHttp } from './routes/account'
@@ -376,7 +378,13 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
       jobs: { queue: 'sqlite lease', worker: 'npm run worker', handlers: handlerKinds() },
       withdrawals: { endpoint: '/api/withdrawals/quote', signer: TREASURY_SIGNER },
       auth: 'sign-in-with-solana',
+      /**
+       * Always false, and not a function of `NPC_PAYEE_ADDRESS` any more. A
+       * service payment needs a player-signed transfer and no client can sign
+       * one: see the reasoning on `PAYMENTS_ENABLED` in config.ts.
+       */
       paymentsEnabled: PAYMENTS_ENABLED,
+      paymentsDisabledReason: 'no client-side transaction signer exists',
       /** Always false. Not switchable by configuration; see the README. */
       payoutsEnabled: PAYOUTS_ENABLED,
       custody: 'none — this server holds no keys and cannot sign',
@@ -455,6 +463,40 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     if (!parsed.ok) return failBody(res, parsed)
     const check = validateProfile((parsed.body as { profile?: unknown }).profile)
     if (!check.ok) return fail(res, 422, 'invalid_profile', check.reason)
+
+    /*
+     * Display-name moderation, at the edge.
+     *
+     * Rejecting here rather than silently renaming is a deliberate trade. A
+     * reject tells an attacker that something tripped, which a silent rename
+     * would not — but a silent rename tells an HONEST player nothing at all,
+     * and they walk into town under a name they did not choose and cannot
+     * fix. That is a worse outcome more often, because most rejections are
+     * ordinary players hitting a false positive, not the one person probing.
+     *
+     * The cost is paid down two ways. The message is generic, so it does not
+     * say which rule fired or which part of the name did it; and the attempt
+     * spends name-change budget, so iterating towards a pass is slow. The
+     * broadcast layer in `pvp/ids.ts` is what makes the reject non-essential
+     * anyway: a name that gets past this check by some other route still
+     * never reaches another player's screen.
+     *
+     * Only counted when the name actually changes, so saving a hat is free.
+     */
+    const heldName = readProfile(wallet)?.profile.playerName
+    if (check.profile.playerName !== heldName) {
+      if (!nameChangeAllowed(wallet)) {
+        return fail(res, 429, 'too_many_name_changes', 'Too many name changes. Wait a few minutes.')
+      }
+      const verdict = screenDisplayName(check.profile.playerName)
+      if (!verdict.ok) {
+        // The fingerprint, never the name: an operator can tell two attempts
+        // apart in an incident without the string entering the logs.
+        safeLog(`profile: display name refused (${verdict.tier}, ${verdict.fingerprint})`)
+        return fail(res, 422, 'invalid_profile', 'That name is not available. Please choose a different name.')
+      }
+    }
+
     // The wallet comes from the session, never from the body: there is no code
     // path by which one session can write another wallet's row.
     const stored = writeProfile(wallet, check.profile, CLUSTER)
@@ -466,9 +508,13 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const wallet = requireWallet(req, res)
     if (!wallet) return
     if (!PAYMENTS_ENABLED || !NPC_PAYEE_ADDRESS) {
+      // Not a configuration gap, so the reason does not name a variable to set.
+      // A service payment is a transfer the player signs, and there is no
+      // transaction signer in the client: the browser-held key signs identity
+      // challenges only. Setting NPC_PAYEE_ADDRESS would not change this.
       return send(res, 200, {
         available: false,
-        reason: 'No NPC payee address is configured. Set NPC_PAYEE_ADDRESS on the server to enable service payments.',
+        reason: 'Service payments are switched off. Paying would need a transfer signed by you, and this app has no transaction signer — the wallet in your browser signs identity messages only.',
       })
     }
     // The price and the recipient are decided here, not by the client.
@@ -739,7 +785,9 @@ server.listen(PORT, BIND_HOST, () => {
   safeLog(`  shutdown       ${SHUTDOWN_GRACE_MS}ms drain on SIGTERM`)
   safeLog(`  rpc endpoint   from ${RPC_SOURCE_VAR}${RPC_IS_PUBLIC ? ' (public endpoint)' : ' (keyed — treated as a credential, never logged or served)'}`)
   safeLog(`  rpc proxy      POST /api/rpc · ${allowedMethodNames().length} methods allowlisted`)
-  safeLog(`  payments       ${PAYMENTS_ENABLED ? `enabled → ${NPC_PAYEE_ADDRESS}` : 'disabled (NPC_PAYEE_ADDRESS unset)'}`)
+  // Counts only. The terms themselves never reach a log line.
+  safeLog(`  name filter    ${blocklistSize.always + blocklistSize.word} blocked terms · ${blocklistSize.innocent} allowlisted words · enforced at the profile API and at every presence broadcast`)
+  safeLog(`  payments       disabled (no client-side transaction signer)${NPC_PAYEE_ADDRESS ? ' · NPC_PAYEE_ADDRESS is set but unused' : ''}`)
   safeLog(`  gold payouts   disabled (not implemented by design)`)
   safeLog(`  custody        none — no keys in this process`)
   verifyClusterIdentity().then(chain => {

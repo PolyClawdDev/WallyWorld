@@ -76,20 +76,20 @@ equal('and redeemable headroom from hunting', goldBeforeClaim.redeemable, 320n)
 
 section('claiming with a wallet proves control and keeps the account')
 
-const phantom = newWallet()
+const playerWallet = newWallet()
 const session = newSession(guestPrincipal)
 
-check('a wallet that has never signed owns nothing', walletOwner(phantom.address) === null)
+check('a wallet that has never signed owns nothing', walletOwner(playerWallet.address) === null)
 
 const challenge = issueClaimChallenge({
   userId: guest.userId,
-  wallet: phantom.address,
+  wallet: playerWallet.address,
   domain: DOMAIN,
   uri: URI,
   sessionHash: session,
 })
 equal('the challenge binds this application', challenge.fields.domain, DOMAIN)
-equal('and this wallet', challenge.fields.address, phantom.address)
+equal('and this wallet', challenge.fields.address, playerWallet.address)
 equal('and carries a 32-byte nonce', challenge.fields.nonce.length, 64)
 check('and expires', challenge.expiresAtMs > Date.now())
 check('the link statement is not the sign-in statement', LINK_STATEMENT !== SIWS_STATEMENT)
@@ -99,7 +99,7 @@ const impostor = newWallet()
 const forged = verifyClaim({
   userId: guest.userId,
   sessionHash: session,
-  wallet: phantom.address,
+  wallet: playerWallet.address,
   nonce: challenge.fields.nonce,
   signature: signChallenge(impostor, challenge.fields),
 })
@@ -110,19 +110,19 @@ const otherSession = newSession(guestPrincipal)
 const wrongSession = verifyClaim({
   userId: guest.userId,
   sessionHash: otherSession,
-  wallet: phantom.address,
+  wallet: playerWallet.address,
   nonce: challenge.fields.nonce,
-  signature: signChallenge(phantom, challenge.fields),
+  signature: signChallenge(playerWallet, challenge.fields),
 })
 check('a challenge cannot be redeemed from a different session', !wrongSession.ok,
   wrongSession.ok ? 'it linked' : wrongSession.reason)
 
 // A sign-in signature must not work as a link signature: different bytes.
-const signInBytes = phantom.sign(buildSiwsMessage({ ...challenge.fields, statement: SIWS_STATEMENT }))
+const signInBytes = playerWallet.sign(buildSiwsMessage({ ...challenge.fields, statement: SIWS_STATEMENT }))
 const crossReplay = verifyClaim({
   userId: guest.userId,
   sessionHash: session,
-  wallet: phantom.address,
+  wallet: playerWallet.address,
   nonce: challenge.fields.nonce,
   signature: signInBytes,
 })
@@ -132,9 +132,9 @@ check('a sign-in signature cannot be replayed as a link', !crossReplay.ok,
 const claimed = verifyClaim({
   userId: guest.userId,
   sessionHash: session,
-  wallet: phantom.address,
+  wallet: playerWallet.address,
   nonce: challenge.fields.nonce,
-  signature: signChallenge(phantom, challenge.fields),
+  signature: signChallenge(playerWallet, challenge.fields),
 })
 check('a correct signature links the wallet', claimed.ok && claimed.kind === 'linked',
   claimed.ok ? claimed.kind : claimed.reason)
@@ -142,24 +142,24 @@ check('a correct signature links the wallet', claimed.ok && claimed.kind === 'li
 const replay = verifyClaim({
   userId: guest.userId,
   sessionHash: session,
-  wallet: phantom.address,
+  wallet: playerWallet.address,
   nonce: challenge.fields.nonce,
-  signature: signChallenge(phantom, challenge.fields),
+  signature: signChallenge(playerWallet, challenge.fields),
 })
 check('the nonce cannot be used twice', !replay.ok, replay.ok ? 'it linked again' : replay.reason)
 
 section('nothing was reset, duplicated or granted')
 
-equal('the wallet belongs to the guest account', walletOwner(phantom.address), guest.userId)
+equal('the wallet belongs to the guest account', walletOwner(playerWallet.address), guest.userId)
 equal('resolving by wallet finds that same account, not a new one',
-  resolveUserForPrincipal(phantom.address).userId, guest.userId)
-check('resolving by wallet created nothing', !resolveUserForPrincipal(phantom.address).created)
+  resolveUserForPrincipal(playerWallet.address).userId, guest.userId)
+check('resolving by wallet created nothing', !resolveUserForPrincipal(playerWallet.address).created)
 equal('resolving by the guest key still finds it too', resolveUserForPrincipal(guestPrincipal).userId, guest.userId)
 equal('one linked wallet', walletsFor(guest.userId).length, 1)
 // Reading by the wallet must find the character that already existed under the
 // guest key. This is the assertion that linking did not start a fresh save.
-equal('the character survived the claim', readProfile(phantom.address)?.profile.character, 'CINDER')
-equal('the name survived the claim', readProfile(phantom.address)?.profile.playerName, 'Wisp')
+equal('the character survived the claim', readProfile(playerWallet.address)?.profile.character, 'CINDER')
+equal('the name survived the claim', readProfile(playerWallet.address)?.profile.playerName, 'Wisp')
 equal('gold is unchanged — linking grants nothing', goldSnapshot(guest.userId).total, goldBeforeClaim.total)
 equal('redeemable headroom is unchanged', goldSnapshot(guest.userId).redeemable, goldBeforeClaim.redeemable)
 equal('the account is marked claimed', readUser(guest.userId)?.status, 'active')
@@ -178,7 +178,7 @@ const secondSession = newSession(secondPrincipal)
 
 const conflictChallenge = issueClaimChallenge({
   userId: second.userId,
-  wallet: phantom.address,
+  wallet: playerWallet.address,
   domain: DOMAIN,
   uri: URI,
   sessionHash: secondSession,
@@ -186,16 +186,16 @@ const conflictChallenge = issueClaimChallenge({
 const conflict = verifyClaim({
   userId: second.userId,
   sessionHash: secondSession,
-  wallet: phantom.address,
+  wallet: playerWallet.address,
   nonce: conflictChallenge.fields.nonce,
-  signature: signChallenge(phantom, conflictChallenge.fields),
+  signature: signChallenge(playerWallet, conflictChallenge.fields),
 })
 check('a good signature over a taken wallet asks rather than guessing',
   conflict.ok && conflict.kind === 'choice_required', conflict.ok ? conflict.kind : conflict.reason)
 if (conflict.ok && conflict.kind === 'choice_required') {
   equal('it names the account that holds the wallet', conflict.otherUserId, guest.userId)
 }
-equal('nothing moved while the choice is pending', walletOwner(phantom.address), guest.userId)
+equal('nothing moved while the choice is pending', walletOwner(playerWallet.address), guest.userId)
 
 // The resolution is authorised by the nonce, which only reached `pending_choice`
 // after a verified signature from this session. No request field selects the
@@ -231,7 +231,7 @@ equal('its gold arrived', balanceOf(playerAvailable(guest.userId)), guestGoldBef
 equal('and left', balanceOf(playerAvailable(second.userId)), 0n)
 equal('the merge did not manufacture redeemable headroom', eligibilityOf(guest.userId).accrued, 320n)
 equal('the guest key now resolves to the survivor', resolveUserForPrincipal(secondPrincipal).userId, guest.userId)
-equal('still one account holding the wallet', walletOwner(phantom.address), guest.userId)
+equal('still one account holding the wallet', walletOwner(playerWallet.address), guest.userId)
 
 section('switch: the session adopts the wallet\'s account, and nothing moves')
 
@@ -243,7 +243,7 @@ const thirdSession = newSession(thirdPrincipal)
 
 const switchChallenge = issueClaimChallenge({
   userId: third.userId,
-  wallet: phantom.address,
+  wallet: playerWallet.address,
   domain: DOMAIN,
   uri: URI,
   sessionHash: thirdSession,
@@ -251,9 +251,9 @@ const switchChallenge = issueClaimChallenge({
 const switchConflict = verifyClaim({
   userId: third.userId,
   sessionHash: thirdSession,
-  wallet: phantom.address,
+  wallet: playerWallet.address,
   nonce: switchChallenge.fields.nonce,
-  signature: signChallenge(phantom, switchChallenge.fields),
+  signature: signChallenge(playerWallet, switchChallenge.fields),
 })
 check('the conflict is raised again', switchConflict.ok && switchConflict.kind === 'choice_required')
 
@@ -272,7 +272,7 @@ check('the switch was applied', switched.ok && switched.action === 'switch', swi
 // leave that account with no way to sign in, which is a worse outcome than asking
 // the player to pick the account they actually meant.
 equal('the answer is the account the wallet owns', switched.ok ? switched.userId : '', guest.userId)
-equal('the wallet stays where it was', walletOwner(phantom.address), guest.userId)
+equal('the wallet stays where it was', walletOwner(playerWallet.address), guest.userId)
 equal('the wallet\'s account keeps its gold', balanceOf(playerAvailable(guest.userId)), survivorGoldBefore)
 equal('the switching account keeps its gold', balanceOf(playerAvailable(third.userId)), thirdGoldBefore)
 equal('neither account was merged away', readUser(third.userId)?.status, 'active')

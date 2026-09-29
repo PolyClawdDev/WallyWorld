@@ -170,61 +170,52 @@ export const CHAIN_ID = chainIdFor(CLUSTER)
 /* ------------------------------------------------------------------ *
  * Funds labelling.
  *
- * Three states, and the distinction matters in both directions: a demo
+ * Two states, decided by the configured cluster and nothing else: a demo
  * state must never look real, and a real state must never look like a
  * demo. Every badge in the app derives its text from `fundsLabel` so the
  * two can never drift apart.
+ *
+ * There used to be a third state for "a wallet is connected", which meant
+ * Phantom. Nothing connects any more — the browser-held keypair in
+ * `embeddedWallet.ts` is always there and signs messages only — so a
+ * connection flag would have been a branch that could never be taken, and
+ * a label that said "not connected" would have been describing a thing
+ * this app no longer has.
  * ------------------------------------------------------------------ */
 
 export type FundsMode =
-  /** Test cluster, no wallet connected. Nothing in the app can move value. */
+  /** A test cluster. The SOL on it is worth nothing. */
   | 'demo'
-  /** Test cluster, wallet connected: real signatures over worthless SOL. */
-  | 'test'
-  /** mainnet-beta. A payment approved in Phantom is real SOL. */
+  /** mainnet-beta. The browser's wallet address is a real mainnet address. */
   | 'live'
-
-/**
- * Note the asymmetry, which is deliberate.
- *
- * `live` depends only on the configured cluster, not on whether a wallet is
- * currently connected: which chain this build talks to is a fact about the
- * build, and it is stated before a wallet appears rather than after. `demo` is
- * the narrow case — a test cluster with nothing connected — so a demo can never
- * be dressed up as real, and a real deployment can never be mistaken for a demo.
- */
-export function fundsMode(walletConnected: boolean): FundsMode {
-  if (IS_MAINNET) return 'live'
-  return walletConnected ? 'test' : 'demo'
-}
 
 export type FundsLabel = { mode: FundsMode; short: string; long: string }
 
-export function fundsLabel(walletConnected: boolean): FundsLabel {
-  const mode = fundsMode(walletConnected)
-  if (mode === 'live') {
+/**
+ * What is true in both states, and the reason neither of them is an alarm:
+ * there is no transaction signer anywhere in this client. The browser-held
+ * key signs UTF-8 challenges to prove identity and has no `signTransaction`
+ * of any kind, so no sequence of clicks in this app can move value — not on
+ * devnet and not on mainnet.
+ *
+ * `live` therefore names the network rather than warning about it, and says
+ * the one thing that *is* at stake on mainnet: the address is real, so SOL
+ * sent to it is real, and only the key holder can ever move it back out.
+ */
+export function fundsLabel(): FundsLabel {
+  if (IS_MAINNET) {
     return {
-      mode,
+      mode: 'live',
       short: 'MAINNET',
-      long: walletConnected
-        ? 'Mainnet-beta. A payment you approve in Phantom moves real SOL and cannot be reversed.'
-        : 'Mainnet-beta. Nothing moves value until you approve a payment in Phantom, and a payment approved there is real SOL that cannot be reversed.',
-    }
-  }
-  if (mode === 'test') {
-    const name = CLUSTER === 'testnet' ? 'TESTNET' : 'DEVNET'
-    return {
-      mode,
-      short: `${name} · TEST FUNDS`,
-      long: `Connected on ${CLUSTER}. Signatures are real, but the SOL has no value and cannot be exchanged for anything.`,
+      long:
+        'Mainnet-beta. The wallet in this browser is a real mainnet address, so anything you send to it is real SOL. ' +
+        'This app cannot spend it: the key signs messages only and there is no transaction signer in the client at all.',
     }
   }
   return {
-    mode,
+    mode: 'demo',
     short: 'DEMO · NO REAL FUNDS',
-    // Specifically "Phantom", not "no wallet": every player now has a real
-    // browser-held keypair, so claiming there is no wallet would be false.
-    long: `Phantom is not connected, and the app is pointed at ${CLUSTER}. Nothing in this session can send or receive value.`,
+    long: `The app is pointed at ${CLUSTER}, where SOL is worth nothing, and the client has no transaction signer in any case. Nothing in this session can send value.`,
   }
 }
 
@@ -235,7 +226,6 @@ function explorerUrl(path: string) {
 }
 
 export const explorerAddress = (address: string) => explorerUrl(`address/${encodeURIComponent(address)}`)
-export const explorerTx = (signature: string) => explorerUrl(`tx/${encodeURIComponent(signature)}`)
 
 /** Middle-truncated address for display. Never used for comparison or signing. */
 export function truncateAddress(address: string, lead = 4, tail = 4) {

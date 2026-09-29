@@ -1,35 +1,45 @@
 /* ------------------------------------------------------------------ *
- * Browser verification of the wallet UI and the funds labelling.
+ * Browser verification of the wallet panel and the funds labelling.
  *
- * A real Phantom extension cannot be installed in headless Chrome, so the
- * provider is mocked: `window.phantom.solana` is replaced with an object
- * exposing the same surface the app uses (connect, disconnect,
- * signMessage, accountChanged). The signature it returns is genuine —
- * `signMessage` calls back into Node, which signs with the throwaway
- * fixture keypair — so the sign-in path is exercised end to end through
- * the real client code and the real server, and the server's ed25519
- * verification has to pass for the screenshots to show a session.
+ * There is no provider mock in this file any more, and that is the point.
+ * Phantom was removed: there is nothing to connect, no second address, and
+ * no code path in the client that can sign or submit a transaction. So the
+ * things worth proving in a real browser changed shape.
  *
- * What this cannot prove: that the real Phantom extension behaves as
- * mocked here. Its approval dialogs and its own RPC handling need a human
- * with the extension installed.
+ * What this checks:
+ *   - the network badge names the configured cluster on every screen, with
+ *     no alarm strip and no `role="alert"`;
+ *   - the panel contains no Phantom section, no connect control, and the
+ *     word "Phantom" nowhere in what a player reads;
+ *   - injecting a fake `window.phantom.solana` changes nothing, which is
+ *     the check that no dormant provider path survived the removal;
+ *   - the browser-held wallet is real and reaches LINKED against the
+ *     running server, which exercises the account-claim flow end to end:
+ *     server-issued nonce, ed25519 verification, single use;
+ *   - export, import and delete all work, and a re-linked replacement
+ *     wallet reaches LINKED too;
+ *   - the gold-to-tokens block still states its true unavailable reason;
+ *   - no RPC credential reaches the page.
+ *
+ * The secret key is inspected only inside the page, by shape and length.
+ * It is never returned to Node and never printed.
+ *
+ * Needs the API and the dev server up:
+ *   npm run server   (and)   npm run dev   (then)   npm run verify:ui
  *
  * Usage:  npm run verify:ui            (devnet dev server on 5173)
  *         UI_TARGET=http://127.0.0.1:5174 UI_EXPECT=live npm run verify:ui
  * ------------------------------------------------------------------ */
 
 import puppeteer, { type Page } from 'puppeteer'
-import { ed25519 } from '@noble/curves/ed25519.js'
+import { Keypair } from '@solana/web3.js'
 import bs58 from 'bs58'
 import { mkdirSync } from 'node:fs'
-import { fixtureKeypair } from './fixture-keys'
 
 const TARGET = process.env.UI_TARGET ?? 'http://127.0.0.1:5173'
-/** Expected funds mode once a wallet is connected: 'test' on devnet, 'live' on mainnet. */
-const EXPECT_CONNECTED = (process.env.UI_EXPECT ?? 'test') as 'test' | 'live'
-/** Mainnet is loud before connecting too, so the disconnected expectation differs. */
-const EXPECT_DISCONNECTED = EXPECT_CONNECTED === 'live' ? 'live' : 'demo'
-const LABEL = process.env.UI_LABEL ?? (EXPECT_CONNECTED === 'live' ? 'mainnet' : 'devnet')
+/** Expected funds mode: 'demo' on a test cluster, 'live' on a mainnet build. */
+const EXPECT = (process.env.UI_EXPECT ?? 'demo') as 'demo' | 'live'
+const LABEL = process.env.UI_LABEL ?? (EXPECT === 'live' ? 'mainnet' : 'devnet')
 const SHOTS = 'screenshots/solana'
 
 /**
@@ -93,7 +103,7 @@ async function waitForText(page: Page, text: string, timeout = 10_000) {
   }
 }
 
-async function waitForBody(page: Page, text: string, timeout = 15_000) {
+async function waitForBody(page: Page, text: string, timeout = 20_000) {
   try {
     await page.waitForFunction(t => document.body.innerText.includes(t), { timeout }, text)
     return true
@@ -102,22 +112,35 @@ async function waitForBody(page: Page, text: string, timeout = 15_000) {
   }
 }
 
+const panelText = (page: Page) =>
+  page.evaluate(() => {
+    const panel = document.querySelector('.sol-panel')
+    return panel instanceof HTMLElement ? panel.innerText : ''
+  })
+
+/** The address the wallet block is currently showing, truncated as rendered. */
+const shownAddress = (page: Page) =>
+  page.evaluate(() => {
+    const rows = [...document.querySelectorAll('.sol-panel .sol-row')]
+    const row = rows.find(r => r.querySelector('span')?.textContent?.trim() === 'Address')
+    return row?.querySelector('code')?.textContent?.trim() ?? null
+  })
+
 async function main() {
   mkdirSync(SHOTS, { recursive: true })
-  const fixture = fixtureKeypair('test-payer')
-  const address = fixture.publicKey.toBase58()
 
   console.log('Voxels · wallet UI verification')
   console.log(`  target   ${TARGET}`)
-  console.log(`  expect   disconnected=${EXPECT_DISCONNECTED}  connected=${EXPECT_CONNECTED}`)
-  console.log(`  mock     Phantom provider for ${address}`)
+  console.log(`  expect   funds mode ${EXPECT}`)
+  console.log('  provider none — Phantom is removed; a decoy is injected to prove nothing uses it')
 
   const browser = await puppeteer.launch({
     executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
     headless: 'new',
-    args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox'],
-    // Software WebGL renders the town slowly enough that the default 30s
-    // protocol timeout can expire mid-screenshot.
+    // Chrome's default GL backend reaches the real renderer even headlessly and
+    // is an order of magnitude faster than SwiftShader here, which matters
+    // because the world tick clamps dt and a slow frame rate is a slow world.
+    args: ['--no-sandbox'],
     protocolTimeout: 120_000,
   })
   const page = await browser.newPage()
@@ -127,60 +150,31 @@ async function main() {
     if (message.type() === 'error') console.log(`  [console] ${message.text().slice(0, 300)}`)
   })
 
-  // The real signature. The page never sees the key; it asks Node for a
-  // signature over the exact bytes, which is what Phantom does over IPC.
-  await page.exposeFunction('__fixtureSign', (base64Message: string) => {
-    const message = Buffer.from(base64Message, 'base64')
-    return bs58.encode(ed25519.sign(new Uint8Array(message), fixture.secretKey.slice(0, 32)))
-  })
-
-  // Injected as a source string on purpose. tsx compiles this file with
-  // esbuild, and esbuild rewrites named object methods to `__name(...)` calls
-  // for stack-trace fidelity. That helper does not exist in the page, so a
-  // transpiled function passed here dies with `__name is not defined` and the
-  // app quite correctly reports that Phantom is missing. A string is handed to
-  // the page verbatim.
+  /* ------------------------------------------------------------- decoy *
+   * A provider that screams if anything touches it. Injected as a source
+   * string because tsx compiles this file with esbuild, which rewrites named
+   * object methods to `__name(...)` calls that do not exist in the page.
+   *
+   * Nothing in the client should look for `window.phantom` or `window.solana`
+   * at all now. If some detection survived the removal, one of these getters
+   * or methods fires and the flag below turns true.
+   * ------------------------------------------------------------------ */
   await page.evaluateOnNewDocument(`(() => {
-    const ADDRESS = ${JSON.stringify(address)};
-    const listeners = {};
-    const publicKey = { toBase58: () => ADDRESS, toString: () => ADDRESS };
-    const emit = (event, payload) => (listeners[event] || []).forEach(fn => fn(payload));
+    window.__providerTouched = [];
+    const note = what => { window.__providerTouched.push(what); };
     const provider = {
       isPhantom: true,
-      publicKey: null,
       isConnected: false,
-      connect: async options => {
-        // Mirrors Phantom: onlyIfTrusted rejects for a site never approved.
-        if (options && options.onlyIfTrusted) throw new Error('not trusted');
-        provider.publicKey = publicKey;
-        provider.isConnected = true;
-        emit('connect', publicKey);
-        return { publicKey };
-      },
-      disconnect: async () => {
-        provider.publicKey = null;
-        provider.isConnected = false;
-        emit('disconnect');
-      },
-      signMessage: async message => {
-        let binary = '';
-        for (const byte of message) binary += String.fromCharCode(byte);
-        const signatureBase58 = await window.__fixtureSign(btoa(binary));
-        // Phantom hands back raw bytes, so decode before returning.
-        const alphabet = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
-        let num = 0n;
-        for (const char of signatureBase58) num = num * 58n + BigInt(alphabet.indexOf(char));
-        const bytes = [];
-        while (num > 0n) { bytes.unshift(Number(num % 256n)); num = num / 256n; }
-        for (const char of signatureBase58) { if (char !== '1') break; bytes.unshift(0); }
-        return { signature: Uint8Array.from(bytes), publicKey };
-      },
-      signAndSendTransaction: async () => { throw new Error('mock provider does not submit transactions'); },
-      on: (event, handler) => { (listeners[event] = listeners[event] || []).push(handler); },
-      off: (event, handler) => { listeners[event] = (listeners[event] || []).filter(fn => fn !== handler); },
+      get publicKey() { note('publicKey'); return null; },
+      connect: async () => { note('connect'); throw new Error('decoy'); },
+      disconnect: async () => { note('disconnect'); },
+      signMessage: async () => { note('signMessage'); throw new Error('decoy'); },
+      signAndSendTransaction: async () => { note('signAndSendTransaction'); throw new Error('decoy'); },
+      on: () => { note('on'); },
+      off: () => { note('off'); },
     };
-    window.phantom = { solana: provider };
-    window.solana = provider;
+    Object.defineProperty(window, 'phantom', { get: () => { note('window.phantom'); return { solana: provider }; } });
+    Object.defineProperty(window, 'solana', { get: () => { note('window.solana'); return provider; } });
   })()`)
 
   const fundsMode = () => page.evaluate(() => document.querySelector('[data-funds-mode]')?.getAttribute('data-funds-mode') ?? null)
@@ -190,26 +184,38 @@ async function main() {
   console.log('\nEntry screen')
   await page.goto(TARGET, { waitUntil: 'networkidle0' })
   await sleep(600)
-  check(`entry badge reads ${EXPECT_DISCONNECTED}`, (await fundsMode()) === EXPECT_DISCONNECTED, String(await badgeText()))
+  check(`entry badge reads ${EXPECT}`, (await fundsMode()) === EXPECT, String(await badgeText()))
   await page.screenshot({ path: `${SHOTS}/${LABEL}-1-entry.png` })
 
   /* ------------------------------------------------- character select */
   console.log('\nCharacter select')
-  await clickText(page, 'Enter the world')
-  await sleep(500)
-  check(`select badge reads ${EXPECT_DISCONNECTED}`, (await fundsMode()) === EXPECT_DISCONNECTED, String(await badgeText()))
+  check('the entry screen offers a way in', await clickText(page, 'Enter world'))
+  check('the character select screen appears', await page.waitForSelector('#wayfinder-name', { timeout: 10_000 }).then(() => true, () => false))
+  check(`select badge reads ${EXPECT}`, (await fundsMode()) === EXPECT, String(await badgeText()))
+
+  // The name field is controlled by React, so the value has to go through the
+  // value setter or React never sees it.
+  await page.evaluate(() => {
+    const input = document.querySelector('#wayfinder-name') as HTMLInputElement | null
+    if (!input) return
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+    setter?.call(input, 'Wallet Verify')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })
+  await sleep(300)
   await page.screenshot({ path: `${SHOTS}/${LABEL}-2-select.png` })
 
   /* -------------------------------------------------------- the world */
   console.log('\nIn the world')
-  await clickText(page, 'Continue with')
-  await sleep(500)
+  check('the name carries into the preview', await clickText(page, 'Continue with'))
+  check('the preview screen appears', await waitForText(page, 'Enter Voxels'))
   await clickText(page, 'Enter Voxels')
-  await sleep(4000)
+  check('the world canvas mounts', await page.waitForSelector('.world-canvas', { timeout: 20_000 }).then(() => true, () => false))
+  await sleep(4500)
 
   // The network is named by the badge alone. There is no full-width alarm strip
-  // on any cluster: nothing in this build can move value without an explicit
-  // approval in Phantom, so the HUD states the network and leaves it there.
+  // on any cluster: no code path in this build can move value at all, so the HUD
+  // states the network and leaves it there.
   const alarm = await page.evaluate(() => ({
     banner: !!document.querySelector('.mainnet-banner'),
     siren: !!document.querySelector('.funds-siren'),
@@ -217,8 +223,8 @@ async function main() {
   }))
   check('no full-width mainnet alarm strip in the world', !alarm.banner)
   check('the funds badge is not an alert and carries no siren', !alarm.siren && !alarm.alert)
-  check(`world badge reads ${EXPECT_DISCONNECTED}`, (await fundsMode()) === EXPECT_DISCONNECTED, String(await badgeText()))
-  if (EXPECT_DISCONNECTED === 'live') {
+  check(`world badge reads ${EXPECT}`, (await fundsMode()) === EXPECT, String(await badgeText()))
+  if (EXPECT === 'live') {
     // The topbar is offset only when something sits above it; the banner's
     // removal must not leave that gap behind.
     const topbarTop = await page.evaluate(() => {
@@ -230,25 +236,13 @@ async function main() {
   await page.screenshot({ path: `${SHOTS}/${LABEL}-3-world.png` })
 
   /* ------------------------------------------------------ wallet panel */
-  console.log('\nWallet panel · disconnected')
+  console.log('\nWallet panel')
   await page.keyboard.press('k')
   await page.waitForSelector('.sol-panel', { timeout: 10_000 }).catch(() => null)
-  const panelOpen = await page.evaluate(() => !!document.querySelector('.sol-panel'))
-  check('the Solana panel is mounted in the pouch popup', panelOpen)
-  if (process.env.UI_DUMP) {
-    const dump = await page.evaluate(() => {
-      const panel = document.querySelector('.sol-panel')
-      return {
-        text: panel instanceof HTMLElement ? panel.innerText : null,
-        buttons: [...(panel?.querySelectorAll('button') ?? [])].map(b => b.textContent?.trim()),
-      }
-    })
-    console.log('  [dump] panel text:', JSON.stringify(dump.text))
-    console.log('  [dump] buttons:', JSON.stringify(dump.buttons))
-  }
-  // Provider detection is asynchronous, so wait for the control rather than
-  // photographing the transient "looking for Phantom" state.
-  check('a connect button is offered', await waitForText(page, 'Connect Phantom'))
+  // The popup fades in. Photographing it mid-transition produces a translucent
+  // screenshot that cannot be read, which is worse than no screenshot.
+  await sleep(1200)
+  check('the Solana panel is mounted in the pouch popup', await page.evaluate(() => !!document.querySelector('.sol-panel')))
   check(
     'the panel is reachable by scrolling inside the popup',
     await page.evaluate(() => {
@@ -259,61 +253,155 @@ async function main() {
       return box.height > 0 && box.top < window.innerHeight && box.bottom > 0
     }),
   )
+
+  const text = await panelText(page)
+  if (process.env.UI_DUMP) {
+    const buttons = await page.evaluate(() => [...document.querySelectorAll('.sol-panel button')].map(b => b.textContent?.trim()))
+    console.log('  [dump] panel text:', JSON.stringify(text))
+    console.log('  [dump] buttons:', JSON.stringify(buttons))
+  }
+
+  /* ------------------------------------------------- Phantom is absent */
+  console.log('\nNothing about Phantom is left')
+  const bodyText = await page.evaluate(() => document.body.innerText)
+  check('the word "Phantom" appears nowhere in the panel', !/phantom/i.test(text))
+  check('nor anywhere else a player can read', !/phantom/i.test(bodyText))
+  const controls = await page.evaluate(() =>
+    [...document.querySelectorAll('.sol-panel button, .sol-panel a')].map(el => el.textContent?.trim() ?? ''))
+  check('no connect control is offered', !controls.some(label => /connect/i.test(label)), JSON.stringify(controls))
+  check('no wallet download link is offered', !controls.some(label => /get phantom|install/i.test(label)))
+  check('no extension-not-found status is shown', !/NOT FOUND|NOT CONNECTED/i.test(text))
+  const touched = await page.evaluate(() => (window as unknown as { __providerTouched: string[] }).__providerTouched)
+  check('the decoy provider was never touched, so no detection survived', touched.length === 0, JSON.stringify(touched))
+
+  /* --------------------------------------------- the one real wallet */
+  console.log('\nThe browser-held wallet')
+  check('the wallet block is present', text.includes('THIS BROWSER’S WALLET') || text.includes("THIS BROWSER'S WALLET"))
+  check('it names the cluster next to the address', text.toUpperCase().includes(EXPECT === 'live' ? 'MAINNET-BETA' : 'DEVNET'))
+  const first = await shownAddress(page)
+  check('a truncated address is displayed', !!first && first.includes('…'), String(first))
+  check('the panel states the storage ceiling', /anything that can run scripts on this page/i.test(text))
+  check('and states that the game never spends from it', /the game never spends from it/i.test(text))
+
+  check('the account reaches LINKED against the running server', await waitForBody(page, 'LINKED'))
+
+  // Two frames of the panel, because it is taller than the popup: the top,
+  // with the wallet and its linked account, and the bottom, with the payout
+  // notice and the footer. A single screenshot shows neither properly.
+  await page.evaluate(() => document.querySelector('.sol-panel')?.scrollIntoView({ block: 'start' }))
+  await sleep(400)
+  await page.screenshot({ path: `${SHOTS}/${LABEL}-4-panel-top.png` })
+  await page.evaluate(() => document.querySelector('.sol-footer')?.scrollIntoView({ block: 'end' }))
+  await sleep(400)
+  await page.screenshot({ path: `${SHOTS}/${LABEL}-4-panel-bottom.png` })
+  await page.evaluate(() => document.querySelector('.sol-panel')?.scrollIntoView({ block: 'start' }))
+  await sleep(300)
+
+  /* ------------------------------------------------- no key solicited */
   check(
     'no seed phrase or private key input exists anywhere in the panel',
     await page.evaluate(() => {
-      const text = document.body.innerText.toLowerCase()
+      const lower = document.body.innerText.toLowerCase()
       const inputs = [...document.querySelectorAll('input, textarea')]
-      const suspicious = inputs.some(el => /seed|mnemonic|private|secret/i.test(el.outerHTML))
-      return !suspicious && !text.includes('enter your seed') && !text.includes('reveal private')
+      const suspicious = inputs.some(el => /seed|mnemonic/i.test(el.outerHTML))
+      return !suspicious && !lower.includes('enter your seed') && !lower.includes('reveal private')
     }),
   )
-  await page.screenshot({ path: `${SHOTS}/${LABEL}-4-panel-disconnected.png` })
 
-  /* --------------------------------------------------------- connect */
-  console.log('\nWallet panel · connected')
-  await clickText(page, 'Connect Phantom')
-  await page
+  /* ------------------------------------------------------------ export */
+  console.log('\nExport')
+  check('an export control is offered', await waitForText(page, 'Export secret key'))
+  await clickText(page, 'Export secret key')
+  await sleep(300)
+  const warning = await panelText(page)
+  check('it warns before revealing anything', /Anyone who sees it owns this wallet/i.test(warning))
+  check('it says there is no seed phrase for this key', /There is no seed phrase for this wallet/i.test(warning))
+  check('nothing is revealed until the second click', await page.evaluate(() => {
+    const box = document.querySelector('.emb-secret') as HTMLTextAreaElement | null
+    return box === null || box.value.length === 0
+  }))
+  await page.screenshot({ path: `${SHOTS}/${LABEL}-5-export-warning.png` })
+
+  await clickText(page, 'I understand')
+  await sleep(400)
+  // Shape and length only. The value is never returned to Node and never logged.
+  const exported = await page.evaluate(() => {
+    const box = document.querySelector('.emb-secret') as HTMLTextAreaElement | null
+    const value = box?.value ?? ''
+    return { length: value.length, base58: /^[1-9A-HJ-NP-Za-km-z]{86,88}$/.test(value) }
+  })
+  check('a base58 secret key of the right length is shown', exported.base58, `${exported.length} chars`)
+  await clickText(page, 'JSON array')
+  await sleep(250)
+  const asJson = await page.evaluate(() => {
+    const box = document.querySelector('.emb-secret') as HTMLTextAreaElement | null
+    try {
+      const parsed = JSON.parse(box?.value ?? '') as unknown
+      return Array.isArray(parsed) && parsed.length === 64 && parsed.every(v => Number.isInteger(v) && (v as number) >= 0 && (v as number) <= 255)
+    } catch {
+      return false
+    }
+  })
+  check('the JSON form is the 64 bytes the Solana CLI writes', asJson)
+  await clickText(page, 'Hide and close')
+  await sleep(300)
+  check('closing the dialog drops the revealed value', await page.evaluate(() => !document.querySelector('.emb-secret')))
+
+  /* ------------------------------------------------------------ import */
+  console.log('\nImport')
+  // Generated here, used once, never printed. Not a fixture and not a user key.
+  const incoming = Keypair.generate()
+  check('an import control is offered', await waitForText(page, 'Import a key'))
+  await clickText(page, 'Import a key')
+  await sleep(300)
+  await page.evaluate(secret => {
+    const box = document.querySelector('.emb-secret') as HTMLTextAreaElement | null
+    if (!box) return
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+    setter?.call(box, secret)
+    box.dispatchEvent(new Event('input', { bubbles: true }))
+  }, bs58.encode(incoming.secretKey))
+  await sleep(200)
+  await clickText(page, 'Import this key')
+  const wantImported = `${incoming.publicKey.toBase58().slice(0, 6)}…${incoming.publicKey.toBase58().slice(-6)}`
+  const importedShown = await page
     .waitForFunction(
-      m => document.querySelector('[data-funds-mode]')?.getAttribute('data-funds-mode') === m,
-      { timeout: 15_000 },
-      EXPECT_CONNECTED,
+      want => {
+        const rows = [...document.querySelectorAll('.sol-panel .sol-row')]
+        const row = rows.find(r => r.querySelector('span')?.textContent?.trim() === 'Address')
+        return row?.querySelector('code')?.textContent?.trim() === want
+      },
+      { timeout: 10_000 },
+      wantImported,
     )
-    .catch(() => null)
-  check(`badge switches to ${EXPECT_CONNECTED} once connected`, (await fundsMode()) === EXPECT_CONNECTED, String(await badgeText()))
-  const shownAddress = await page.evaluate(() => document.querySelector('.sol-address code')?.textContent ?? null)
-  check('the truncated address is displayed', !!shownAddress && shownAddress.includes('…'), String(shownAddress))
-  check('the full address is never rendered in full', await page.evaluate(a => !document.body.innerText.includes(a), address))
+    .then(() => true, () => false)
+  check('the panel switches to the imported wallet', importedShown, `expected ${wantImported}, saw ${await shownAddress(page)}`)
+  check('and says the key was imported rather than generated', /imported from a key you pasted in/i.test(await panelText(page)))
+  check('the imported wallet links to the account too', await waitForBody(page, 'LINKED'))
+  await page.screenshot({ path: `${SHOTS}/${LABEL}-6-imported.png` })
 
-  await page
-    .waitForFunction(() => {
-      const value = document.querySelector('.sol-balance-main strong')?.textContent
-      return !!value && value !== '—'
-    }, { timeout: 20_000 })
-    .catch(() => null)
-  const balanceText = await page.evaluate(() => document.querySelector('.sol-balance-main strong')?.textContent ?? null)
-  check('a SOL balance was read through the proxy', balanceText !== null && balanceText !== '—', String(balanceText))
-  const lamportLine = await page.evaluate(() => [...document.querySelectorAll('.sol-fine')].map(el => el.textContent).find(t => t?.includes('lamports')) ?? null)
-  check('the integer lamport figure is shown alongside it', !!lamportLine, String(lamportLine))
-  await page.screenshot({ path: `${SHOTS}/${LABEL}-5-panel-connected.png` })
-
-  /* --------------------------------------------------------- sign in */
-  // Only meaningful when the client and the API agree on the cluster: the
-  // client refuses a challenge issued for a different chain, which is itself
-  // correct behaviour but not what we are photographing here.
-  if (EXPECT_CONNECTED === 'test') {
-    console.log('\nWallet panel · signed in')
-    check('a sign-in button is offered', await waitForText(page, 'Sign in with Solana'))
-    await clickText(page, 'Sign in with Solana')
-    check('the server accepted the signature and issued a session', await waitForBody(page, 'SIGNED IN'))
-    check('the character save block appears', await waitForBody(page, 'SAVED TO THIS WALLET'))
-    await page.screenshot({ path: `${SHOTS}/${LABEL}-6-panel-signed-in.png` })
-
-    check('a save button is offered', await waitForText(page, 'Save to wallet'))
-    await clickText(page, 'Save to wallet')
-    check('the save was acknowledged', await waitForBody(page, 'Saved to this wallet'))
-    await page.screenshot({ path: `${SHOTS}/${LABEL}-7-panel-saved.png` })
-  }
+  /* ------------------------------------------------------------ delete */
+  console.log('\nDelete')
+  check('a delete control is offered', await waitForText(page, 'Delete'))
+  await clickText(page, 'Delete')
+  await sleep(300)
+  check('it says the key is gone for good', /gone for good unless you exported it first/i.test(await panelText(page)))
+  await clickText(page, 'Delete and start a new one')
+  const replaced = await page
+    .waitForFunction(
+      gone => {
+        const rows = [...document.querySelectorAll('.sol-panel .sol-row')]
+        const row = rows.find(r => r.querySelector('span')?.textContent?.trim() === 'Address')
+        const shown = row?.querySelector('code')?.textContent?.trim()
+        return !!shown && shown !== gone
+      },
+      { timeout: 10_000 },
+      wantImported,
+    )
+    .then(() => true, () => false)
+  check('a fresh wallet replaces it immediately', replaced, String(await shownAddress(page)))
+  check('the replacement links to the account as well', await waitForBody(page, 'LINKED'))
+  await page.screenshot({ path: `${SHOTS}/${LABEL}-7-after-delete.png` })
 
   /* ---------------------------------------------------------- payout */
   console.log('\nPayout stays disabled')
@@ -324,13 +412,12 @@ async function main() {
       text: panel instanceof HTMLElement ? panel.innerText : '',
       hasButton: !!button,
       disabled: !!button?.disabled,
-      mentionsMint: /WALLY.{0,40}mint|mint address/i.test(panel instanceof HTMLElement ? panel.innerText : ''),
     }
   })
   check('the payout block is present', payout.text.includes('GOLD → TOKEN REWARDS'))
   check('it is labelled unavailable', payout.text.includes('UNAVAILABLE'))
   check('the payout button exists and is disabled', payout.hasButton && payout.disabled)
-  check('it states plainly that no WALLY mint exists', payout.text.includes('No WALLY token mint exists'))
+  check('it states plainly that no WALLY mint exists', /no WALLY token mint exists/i.test(payout.text))
 
   /* ------------------------------------------------- credential check */
   console.log('\nNo credential in the page')
