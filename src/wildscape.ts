@@ -216,7 +216,11 @@ const planting: Record<WildRegion['kind'], Planting> = {
   // Fewer ironbarks than before, proportionally. A fourteen-metre bronze crown
   // is the wood's signature and at seventy per cent of the mix there was only
   // room for two of them in the whole region.
-  brasswood: { spacing: 24, separation: 0.58, mix: [['ironbark', 0.58], ['titanpine', 0.7], ['pine', 0.9], ['scrub', 1]], giants: 9, grass: 34, rock: 70, clearing: 4 },
+  // No scrub in a wood. A thicket is a solid blocker over its whole width, and
+  // the three wooded regions are where the bears are: the one place a player has
+  // to be able to pick a target out at range. The wood floor is dressed with
+  // grass tufts and ferns instead, which are not obstacles and are ankle high.
+  brasswood: { spacing: 24, separation: 0.58, mix: [['ironbark', 0.58], ['titanpine', 0.7], ['pine', 0.9], ['birch', 1]], giants: 9, grass: 34, rock: 70, clearing: 4 },
   grassland: { spacing: 70, separation: 0.8, mix: [['oak', 0.4], ['birch', 0.7], ['scrub', 1]], giants: 1, grass: 18, rock: 300, clearing: 0 },
   meadow: { spacing: 80, separation: 0.8, mix: [['oak', 0.35], ['scrub', 1]], giants: 1, grass: 20, rock: 320, clearing: 0 },
   fields: { spacing: 85, separation: 0.8, mix: [['birch', 0.5], ['scrub', 1]], giants: 0, grass: 22, rock: 400, clearing: 0 },
@@ -233,22 +237,40 @@ const sizeRange: Record<TreeSpeciesId, [number, number]> = {
   elder: [0.92, 1.12],
   birch: [0.8, 1.25],
   ironbark: [0.84, 1.16],
-  // A thicket rather than a tree, and a blocking one: kept small enough that a
-  // hedgerow of them is something a path goes round rather than a fence.
-  scrub: [0.7, 1.1],
+  // A thicket rather than a tree, and a blocking one, so it is the one species
+  // whose size range is capped for SIGHTLINES rather than for looks: 1.0m to
+  // 1.6m planted, which is under the eye at 2.7m from every standing position.
+  scrub: [0.65, 1.05],
 }
 
 /**
  * Metres of leaf-free bole every planted tree keeps above the ground.
  *
- * Sized against the three things that occupy that space: the wayfinder's head
- * at about 1.9m, the FIRST-PERSON eye at 2.7m (the camera sits at the aim point
- * plus 1.1m, see `src/main.tsx`), and the lowest the third-person orbit can put
- * the lens, which is a shade over 2.4m at minimum zoom and full negative pitch.
- * 4.2m clears all three with room to spare, and `plantAt` floors every tree's
- * scale so its own lowest leaf reaches it.
+ * THIRTEEN METRES, and the number comes from what has to fit under it, not from
+ * what fits round a body. The body is 1.9m and the first-person eye is 2.7m, so
+ * 4.2m — where this sat — cleared both and still failed completely, because
+ * clearing a head is not the same as clearing a SIGHTLINE. Foliage beginning a
+ * metre and a half over the eye is a ceiling: it fills the upper two thirds of
+ * the frame at every range, the third-person lens meets it constantly at a 2.4m
+ * to 4m orbit, and an animal thirty metres off is behind leaf rather than in
+ * view. Measured: a horizontal ray at eye height reached 25m from 33% of
+ * standing positions in the wildwood.
+ *
+ * 13m is chosen against three things that are not the player's height:
+ *   - the third-person orbit, which reaches about 8m of lens height at the
+ *     zooms people actually use, so the crown has to start above that;
+ *   - the tallest thing in town, a 5m townhouse, so a wood still towers;
+ *   - real mature woodland, where the first branch of a 25m broadleaf is
+ *     between ten and fifteen metres up and you can see two hundred metres.
+ * Higher than 16m and the crowns stop reading as connected to their trunks from
+ * inside; lower than 12m and the low orbit is back in the leaves.
+ *
+ * Every species in `src/treeArt.ts` is authored with enough BARE BOLE ROWS to
+ * reach this on its own, so `plantAt`'s scale floor barely has to do anything —
+ * which is the point. Translating a crown upward by inflating the tree is how
+ * you get a 60m pine.
  */
-const TRUNK_CORRIDOR = 4.2
+const TRUNK_CORRIDOR = 13
 
 /**
  * How close two trunks may stand, as a fraction of their combined crown radius.
@@ -280,8 +302,21 @@ const GROVE_RADIUS = 9
 /** Square metres of open green that earns a region one grove. */
 const GROVE_AREA = 420
 
-/** Absolute floor, whatever the crowns say: two boles in one square metre is one broken tree. */
-const TRUNK_FLOOR = 2.4
+/**
+ * Absolute floor on trunk-to-trunk distance, whatever the crowns say.
+ *
+ * FIVE METRES. At 2.4m — where this sat — two small trees could stand closer
+ * together than the player is wide, which is the "still too close to each other"
+ * half of the complaint: the crown rule is written in crown radii, so a pair of
+ * birches with 3m crowns satisfied it at under three metres apart and read as
+ * one forked plant rather than two trees. 5m is a gap you walk through without
+ * thinking about it, and with the boles now under a metre through it is 4m of
+ * clear air between bark and bark.
+ *
+ * It is a floor, not the typical spacing: the crown rule still pushes two pines
+ * about 7m apart and two elders about 12m.
+ */
+const TRUNK_FLOOR = 5
 
 export function createWildscape() {
   const root = new THREE.Group()

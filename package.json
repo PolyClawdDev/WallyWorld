@@ -43,6 +43,8 @@
     "verify:heartbeat": "tsx scripts/verify-heartbeat.mjs",
     "verify:combat": "tsx scripts/verify-combat.mjs",
     "verify:camera": "node scripts/verify-camera.mjs",
+    "verify:canopy": "tsx scripts/verify-canopy.ts",
+    "verify:sightlines": "tsx scripts/verify-sightlines.ts",
     "test:policy": "node --import tsx --test src/server/policy/engine.test.ts",
     "test:providers": "node --import tsx --test src/server/providers/x402.test.ts src/server/providers/courier.test.ts",
     "verify:zip316": "tsx --env-file-if-exists=.env scripts/verify-zip316.ts",
