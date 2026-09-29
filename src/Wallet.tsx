@@ -3,9 +3,16 @@ import { createPortal } from 'react-dom'
 import { isWorldReady, npcAtScreen } from './worldBridge'
 
 /* ------------------------------------------------------------------ *
- * Demo pouch. Nothing here custodies, sends, or receives value: the
- * items are local fiction, the SOL and token stacks are labelled demo
- * items, and no wallet, key, or Solana endpoint is involved anywhere.
+ * The pouch. Nothing here custodies, sends, or receives value, and no
+ * wallet, key, or Solana endpoint is involved anywhere.
+ *
+ * It holds two different kinds of thing, which is why the labelling is
+ * per item rather than one badge over the lot. The SOL and shard stacks
+ * are local fiction with no mint behind them. Gold is not: it is real
+ * server-held ledger balance, earned by hunting and escrowed for duels,
+ * so calling it a demo item was wrong. It is still not redeemable, and
+ * `PAYOUTS_ENABLED` in src/server/config.ts is what would change that.
+ *
  * Every amount is an integer of base units (lamports-style) and is only
  * turned into a decimal string at render time.
  * ------------------------------------------------------------------ */
@@ -91,7 +98,7 @@ type ItemDef = {
 }
 
 const items: Record<ItemId, ItemDef> = {
-  gold: { id: 'gold', name: 'Town Gold', symbol: 'GOLD', decimals: 0, art: coinArt, note: 'Hunting loot · simulated', demo: true },
+  gold: { id: 'gold', name: 'Town Gold', symbol: 'GOLD', decimals: 0, art: coinArt, note: 'Hunting loot · held by the server · not redeemable', demo: false },
   sol: { id: 'sol', name: 'Demo SOL Coin', symbol: 'SOL', decimals: 9, art: solArt, note: 'Demo item · not real SOL', demo: true },
   wally: { id: 'wally', name: 'Demo Wally Shard', symbol: 'WALLY', decimals: 6, art: shard('#22383a', '#cdf3f4', '#7bc9ce', '#3f7f86'), note: 'Demo token · no mint exists', demo: true },
   ember: { id: 'ember', name: 'Demo Ember Shard', symbol: 'EMBER', decimals: 4, art: shard('#3a2320', '#ffcfa4', '#e37c42', '#94451f'), note: 'Demo token · no mint exists', demo: true },
@@ -167,7 +174,7 @@ function PixelIcon({ art }: { art: PixelArt }) {
 
 type DragState = { from: number; x: number; y: number; ox: number; oy: number; moved: boolean; target: string | null }
 
-export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection, demo = true }: {
+export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection }: {
   gold: number
   onGoldChange: (next: number) => void
   nearbyNpc: string | null
@@ -178,13 +185,13 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
    * area, above the demo stacks, and this component never reads or writes it.
    */
   connection?: React.ReactNode
-  /**
-   * True while the pouch holds simulated items only. Pass false once real
-   * custody is wired up so the money state plate switches from
-   * "Demo — no real funds" to a live-funds warning instead of the label
-   * being permanent decoration.
+  /*
+   * There was a `demo` prop here, defaulting to true, meant to be switched off
+   * once real custody existed. The one caller never passed it and `.wui-state`
+   * has no `live` rule, so the "LIVE FUNDS — REAL VALUE" branch it guarded was
+   * never reachable or even styled. Labelling now comes from each item's own
+   * `demo` flag, which is the thing that actually differs.
    */
-  demo?: boolean
 }) {
   const initial = useRef(load())
   const [slots, setSlots] = useState<Slots>(initial.current.slots)
@@ -370,8 +377,11 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
         <strong>WAYFINDER'S POUCH</strong>
         <small>{slots.filter(Boolean).length} of {SLOT_COUNT} compartments filled</small>
       </div>
-      <span className={`wui-state ${demo ? 'demo' : 'live'}`}>
-        <i aria-hidden="true" />{demo ? 'DEMO — NO REAL FUNDS' : 'LIVE FUNDS — REAL VALUE'}
+      {/* Scoped to the pouch on purpose. Unqualified this sat directly under
+          the mainnet strip and read as a claim about the wallet, which owns a
+          real mainnet address. It is the items in here that carry no value. */}
+      <span className="wui-state demo">
+        <i aria-hidden="true" />POUCH ITEMS — NOT SPENDABLE
       </span>
     </div>
     {connection && <div className="pouch-connect">{connection}</div>}
@@ -379,7 +389,7 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
       {balances.map(({ def, amount }) => <div key={def.id} className="pouch-bal">
         <PixelIcon art={def.art} />
         <div><strong>{formatUnits(amount, def.decimals)}</strong><small>{def.symbol}</small></div>
-        <em>{demo ? 'DEMO' : 'LIVE'}</em>
+        <em>{def.demo ? 'DEMO' : 'GAME GOLD'}</em>
       </div>)}
     </div>
     <div className="pouch-grid" role="group" aria-label="Pouch inventory grid">
@@ -397,7 +407,7 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
           className={classes.join(' ')}
           onPointerDown={stack ? startDrag(index) : undefined}
           onClick={() => { if (!stack) { setSelected(null); live.current.onToast('Empty slot.') } }}
-          aria-label={def ? `${def.name}, ${formatUnits(amount, def.decimals)} ${def.symbol}, demo item` : `Empty slot ${index + 1}`}
+          aria-label={def ? `${def.name}, ${formatUnits(amount, def.decimals)} ${def.symbol}, ${def.demo ? 'demo item' : 'game item, not redeemable'}` : `Empty slot ${index + 1}`}
           title={def ? `${def.name} · ${def.note}` : 'Empty slot'}
         >
           {def && <PixelIcon art={def.art} />}
@@ -420,9 +430,9 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
         <div><strong>{gift.label} → {gift.npc}</strong><small>{gift.proximity ? 'Offered to the nearest townsperson' : 'Dropped directly on them'} · no real funds moved</small></div>
       </div>)}
     </div>}
-    <p className="pouch-note">{demo
-      ? 'Dropped over open ground a stack goes to whoever you stand beside. Every stack here is simulated: no mint behind the items, no key in this panel, and it will never ask for a seed phrase.'
-      : 'Dropped over open ground a stack goes to whoever you stand beside. Real funds: amounts are held as integer base units and formatted only for display. This panel will never ask for a seed phrase.'}</p>
+    <p className="pouch-note">Dropped over open ground a stack goes to whoever you stand beside. Gold is
+      held by the server and cannot be cashed out; the SOL and shard stacks are game items with no mint
+      behind them. There is no key in this panel, and it will never ask you for a seed phrase.</p>
     {/* the pouch frame is cut out with clip-path, which clips fixed descendants,
         so the carried stack has to hang off the body to follow the cursor */}
     {dragged && createPortal(<>
@@ -453,8 +463,10 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
             there is no way to take it back.
             {pending!.proximity && ' They are simply the townsperson you are standing beside.'}
           </p>
-          <span className={`wui-state ${demo ? 'demo' : 'live'}`}>
-            <i aria-hidden="true" />{demo ? 'DEMO — NO REAL FUNDS' : 'LIVE FUNDS — REAL VALUE'}
+          {/* This one names the stack actually being handed over, since the
+              dialog is about one item rather than the whole pouch. */}
+          <span className="wui-state demo">
+            <i aria-hidden="true" />{pendingStack.def.demo ? 'DEMO ITEM — NO REAL FUNDS' : 'GAME GOLD — NOT REDEEMABLE'}
           </span>
           <div className="give-ask-row">
             <button type="button" className="give-ask-no" onClick={() => setPending(null)}>Keep it</button>
