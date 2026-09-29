@@ -17,6 +17,21 @@
 # application code reads `PORT`, `DATABASE_URL` and `X-Forwarded-*`,
 # which is the same contract every one of those platforms offers.
 #
+# THIS IS A MAINNET DEPLOYMENT
+# SOLANA_CLUSTER and VITE_SOLANA_CLUSTER are both mainnet-beta, chosen
+# deliberately. Consequences, so nobody discovers them later:
+#   - Every player's wallet is a keypair generated in their browser and
+#     stored in localStorage. On mainnet it holds real, spendable value,
+#     and it is readable by any successful XSS on this origin and by
+#     anyone with access to the machine. The client says so in a red
+#     banner; that warning is now load-bearing rather than decorative.
+#   - The "DEMO — NO REAL FUNDS" labelling switches OFF.
+#   - Gold still cannot be redeemed for tokens. That is blocked on a
+#     treasury signing key and a token mint, not on the cluster, so
+#     mainnet does not enable a payout.
+#   - NPC_PAYEE_ADDRESS must be an address you control. The value in the
+#     local .env is a throwaway devnet fixture. Empty keeps payments off.
+#
 # WHAT COSTS MONEY (verified against render.com/pricing, current as of
 # this file's commit — re-check before committing spend):
 #
@@ -28,17 +43,11 @@
 #     disk, and may be restarted at any time.
 #     -> 0.5c-512mb, $7/month. PAID, and not optional for a persistent world.
 #
-#   voxels-worker (background worker)
-#     Background workers have NO free plan at all. The cheapest is
-#     0.5c-512mb.
-#     -> $7/month. PAID, unavoidable if the worker is a separate service.
-#
-#   voxels-db (Render Postgres)
-#     `free` exists and would work for a trial, but a Free database
-#     EXPIRES 30 DAYS AFTER CREATION, is capped at 1 GB, has no backups
-#     and no connection pooling, and only one may exist per workspace.
-#     For anything real: 0.1c-256mb at $6/month, or 0.5c-1g at $19/month.
-#     -> $0 for a 30-day trial, $6+/month for a database that survives.
+#   voxels-data (disk attached to voxels-api)
+#     Holds the two SQLite files so accounts, characters, duel history and
+#     the gold ledger survive a redeploy.
+#     -> 1 GB. Render bills disks per GB per month; a single gigabyte is
+#        cents. Raise sizeGB before it fills, not after.
 #
 #   voxels-web (static site)
 #     -> FREE. Counts against the workspace's bandwidth and build minutes.
@@ -49,9 +58,9 @@
 #        per GB and $5 per 1,000 minutes. Outbound WebSocket messages
 #        count towards bandwidth. Pro is $25/month and is not needed here.
 #
-#   MINIMUM CREDIBLE MONTHLY COST: $14/month (api + worker) with a Free
-#   database that dies after 30 days, or $20/month with the $6 database.
-#   $33/month for the 1 GB database tier. Plus bandwidth over 5 GB.
+#   TOTAL: $7/month plus a gigabyte of disk. No Postgres and no worker in
+#   this Blueprint — see the notes at each of those sections for why, and
+#   for what to restore once the ledger moves off synchronous SQLite.
 #
 # SECRETS
 # Every secret below is `sync: false`, which means Render prompts for it
@@ -70,10 +79,12 @@
 # which is a runtime dependency for that reason.
 #
 # After syncing this Blueprint, set by hand in the dashboard:
-#   voxels-api    SOLANA_RPC_URL_DEVNET  (or _MAINNET_BETA)
-#   voxels-worker SOLANA_RPC_URL_DEVNET  (or _MAINNET_BETA)
-# and update WALLY_PUBLIC_ORIGIN / VITE_API_BASE_URL once Render has
-# assigned the real hostnames.
+#   voxels-api  SOLANA_RPC_URL_MAINNET_BETA  (required — the app refuses to
+#               boot on mainnet against the rate-limited public endpoint)
+#   voxels-api  NPC_PAYEE_ADDRESS            (optional; empty = payments off)
+# and update WALLY_PUBLIC_ORIGIN, WALLY_ALLOWED_ORIGINS and
+# VITE_API_BASE_URL once Render has assigned the real hostnames, then
+# redeploy the static site so the new API URL is compiled into the bundle.
 # ------------------------------------------------------------------
 
 services:
@@ -128,30 +139,34 @@ services:
       # origins, so this list is the whole policy.
       - key: WALLY_ALLOWED_ORIGINS
         value: https://voxels-web.onrender.com
-      # BLOCKED: this process refuses to boot with this value today, on
-      # purpose. src/server/store/ is still synchronous SQLite, so Postgres
-      # would be reported healthy while accounts, gold and receipts went to a
-      # file that no deploy survives. See the guard in src/server/config.ts.
-      # Either convert store/ to the async driver in src/server/sql/, or switch
-      # this to `sqlite` and attach a persistent disk — noting that a disk
-      # cannot be shared between voxels-api and voxels-worker, and both need
-      # the finance database.
+      # SQLite on the attached disk, not Postgres.
+      #
+      # Postgres is the right long-term answer and this service is wired for
+      # it, but src/server/store/ is still synchronous better-sqlite3 — about
+      # 100 prepared statements across 11 modules, read by a 50ms world tick —
+      # so selecting `postgres` today makes the process refuse to boot rather
+      # than report a healthy database while writing money to a doomed file.
+      # See the guard in src/server/config.ts. The disk below is what makes
+      # SQLite durable enough to launch on in the meantime.
       - key: WALLY_DB_DRIVER
-        value: postgres
-      - key: WALLY_DB_SSL
-        value: true
-      - key: DATABASE_URL
-        fromDatabase:
-          name: voxels-db
-          property: connectionString
+        value: sqlite
+      # Both databases live on the disk: the finance path is derived from this
+      # one, so wally.db and wally-finance.db sit side by side under /var/data.
+      - key: WALLY_DB_PATH
+        value: /var/data/wally.db
       # One world, one process. Published on /api/health so the number is
       # a promise rather than a hope; raise it with the compute plan.
       - key: WALLY_ROOM_CAPACITY
         value: 64
       - key: WALLY_SHUTDOWN_GRACE_MS
         value: 25000
+      # MAINNET. Real funds. The client shows a red MAINNET — REAL FUNDS
+      # banner, the demo labelling switches off, and the browser-held key in
+      # localStorage is holding value that can actually be spent.
+      # SOLANA_RPC_URL_MAINNET_BETA below is required: the app refuses to boot
+      # on mainnet against the rate-limited public endpoint.
       - key: SOLANA_CLUSTER
-        value: devnet
+        value: mainnet-beta
       # CREDENTIAL. The QuickNode/Helius access token is in the URL path.
       # Prompted for in the dashboard, never written here, never sent to
       # the browser, never logged — see src/server/redact.ts.
@@ -159,55 +174,40 @@ services:
         sync: false
       - key: SOLANA_RPC_URL_MAINNET_BETA
         sync: false
-      # Public key only. Payments stay off while it is empty.
+      # Public key only. Payments stay off while it is empty, which is the
+      # right setting for launch. Do NOT paste the value from the local .env:
+      # that is a throwaway devnet fixture keypair, and this deployment is
+      # mainnet. A real payee address has to be one you control.
       - key: NPC_PAYEE_ADDRESS
         sync: false
+    # Durable storage for the two SQLite files. Without this, a container
+    # filesystem is wiped on every deploy and every restart, so accounts,
+    # characters, duel history and the gold ledger would not survive a single
+    # redeploy. A disk also pins the service to one instance, which this world
+    # already requires, and rules out zero-downtime deploys: expect a few
+    # seconds of downtime while the new instance takes the disk.
+    disk:
+      name: voxels-data
+      mountPath: /var/data
+      sizeGB: 1
 
-  # ------------------------------------------------------------- worker
-  # Jobs that can afford to be slow: payment reconciliation against the
-  # chain, session sweeps, and whatever the job queue grows into.
+  # ------------------------------------------------------- worker (none)
+  # There is deliberately no separate worker service in this Blueprint.
   #
-  # Separate from the game service on purpose. The world runs a 50ms tick
-  # and a single blocking RPC call in the same process would stutter every
-  # duel in progress. A Render `worker` also cannot receive inbound
-  # traffic at all, so nothing here is reachable from the internet.
-  - type: worker
-    name: voxels-worker
-    runtime: node
-    plan: 0.5c-512mb # PAID $7/mo. Background workers have no free plan.
-    region: oregon # Same region as the database: private networking, no egress cost.
-    buildCommand: npm ci --include=dev && npm run build:server
-    startCommand: npm run start:worker
-    envVars:
-      - key: NODE_ENV
-        value: production
-      # BLOCKED: this process refuses to boot with this value today, on
-      # purpose. src/server/store/ is still synchronous SQLite, so Postgres
-      # would be reported healthy while accounts, gold and receipts went to a
-      # file that no deploy survives. See the guard in src/server/config.ts.
-      # Either convert store/ to the async driver in src/server/sql/, or switch
-      # this to `sqlite` and attach a persistent disk — noting that a disk
-      # cannot be shared between voxels-api and voxels-worker, and both need
-      # the finance database.
-      - key: WALLY_DB_DRIVER
-        value: postgres
-      - key: WALLY_DB_SSL
-        value: true
-      - key: DATABASE_URL
-        fromDatabase:
-          name: voxels-db
-          property: connectionString
-      # A worker holds far fewer connections than the web service. Keeping
-      # it small matters on the smaller Postgres plans, which cap at 100
-      # connections in total across everything that connects.
-      - key: WALLY_DB_POOL_MAX
-        value: 4
-      - key: SOLANA_CLUSTER
-        value: devnet
-      - key: SOLANA_RPC_URL_DEVNET
-        sync: false
-      - key: SOLANA_RPC_URL_MAINNET_BETA
-        sync: false
+  # A Render disk cannot be shared between two services, and the worker needs
+  # the same finance database as the API, so while persistence is SQLite-on-a-
+  # disk a second service simply cannot reach the data.
+  #
+  # Nothing is lost today. The API already recovers stranded job leases every
+  # 60 seconds and sweeps expired sessions itself — see the interval timers and
+  # the comment about `npm run worker` being a process an operator can forget
+  # to start, in src/server/index.ts. Payment reconciliation is the job class
+  # that really wants a worker, and payments are off while NPC_PAYEE_ADDRESS
+  # is empty.
+  #
+  # Restore the worker when src/server/store/ moves to Postgres. At that point
+  # both services can reach one database and the 50ms world tick stops sharing
+  # a process with blocking RPC calls.
 
   # ---------------------------------------------------------------- web
   # The built client. FREE — static sites have no compute plan.
@@ -227,8 +227,10 @@ services:
       # `npm run audit:bundle` fails the build if one does.
       - key: VITE_API_BASE_URL
         value: https://voxels-api.onrender.com
+      # Must match SOLANA_CLUSTER on the API, which the server cross-checks
+      # against the endpoint's genesis hash and reports on /api/health.
       - key: VITE_SOLANA_CLUSTER
-        value: devnet
+        value: mainnet-beta
     routes:
       # A single-page app: every path that is not a file is the app.
       - type: rewrite
@@ -246,19 +248,20 @@ services:
         value: SAMEORIGIN
 
 # ---------------------------------------------------------------- data
-databases:
-  # Managed Postgres. The reason this exists: a container filesystem is
-  # ephemeral, so the SQLite file that is correct on a laptop is silently
-  # deleted on every redeploy in production. Accounts, duel history and
-  # the gold ledger have to outlive the instance that wrote them.
-  #
-  # `free` is available and expires 30 days after creation, with no
-  # backups. `0.1c-256mb` is $6/month and does not expire.
-  - name: voxels-db
-    databaseName: voxels
-    plan: 0.1c-256mb # PAID $6/mo. Use `free` only for a 30-day trial.
-    region: oregon
-    # Empty list: no connection from outside Render's private network.
-    # The web service and the worker reach it over private networking,
-    # and nothing else has any business doing so.
-    ipAllowList: []
+# No managed Postgres in this Blueprint, on purpose.
+#
+# Provisioning one today would bill $6/month for a database the application
+# cannot use: src/server/config.ts refuses to boot when WALLY_DB_DRIVER is
+# postgres, because the ledger is still synchronous SQLite and the alternative
+# is a green health check over money written to a file no deploy survives.
+#
+# Durability comes from the disk attached to voxels-api instead. When
+# src/server/store/ is converted to the async driver in src/server/sql/, add
+# the database back and restore the worker with it:
+#
+# databases:
+#   - name: voxels-db
+#     databaseName: voxels
+#     plan: 0.1c-256mb # $6/mo. `free` expires 30 days after creation.
+#     region: oregon
+#     ipAllowList: [] # Private network only.
