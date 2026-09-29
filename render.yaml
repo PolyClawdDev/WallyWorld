@@ -83,12 +83,12 @@
 #               boot on mainnet against the rate-limited public endpoint)
 #   voxels-api  NPC_PAYEE_ADDRESS            (optional; empty = payments off)
 #
-# The hostnames below are the real assigned ones. The custom domain
-# www.voxels.fun must also be added to voxels-web under Settings ->
-# Custom Domains, and its DNS moved at Namecheap: it currently points at
-# Vercel, which serves the game files but has no API, so the client falls
-# back to asking its own origin and gets Vercel's 404 instead of a health
-# record. That is the whole reason the domain looked broken.
+# The hostnames below are the real assigned ones, and voxels.fun is live
+# on voxels-web with a certificate. The domain spent a while pointing at a
+# second, Vercel-hosted copy of the client that had no API behind it and
+# was built without VITE_API_BASE_URL, so the client asked its own origin
+# for /api and got Vercel's 404 instead of a health record. If the domain
+# ever 404s again with an x-vercel-error header, that is DNS, not the app.
 # ------------------------------------------------------------------
 
 services:
@@ -138,8 +138,12 @@ services:
         value: 1
       # The origin players type. Must be https: a ws:// upgrade to Render
       # is answered with a 301 that most WebSocket clients cannot follow.
+      # The apex, not www: Render made voxels.fun canonical and redirects
+      # www to it, so the apex is the origin browsers actually send. This
+      # value also drives SIWS domain binding, which should name the host
+      # players really sit on rather than one that only redirects there.
       - key: WALLY_PUBLIC_ORIGIN
-        value: https://www.voxels.fun
+        value: https://voxels.fun
       # The static site is a different origin from the API, so it has to
       # be named. In production the app does NOT auto-trust private/LAN
       # origins, so this list is the whole policy — and it is also where
@@ -277,3 +281,4 @@ services:
 #     plan: 0.1c-256mb # $6/mo. `free` expires 30 days after creation.
 #     region: oregon
 #     ipAllowList: [] # Private network only.
+Q
