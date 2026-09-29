@@ -45,6 +45,7 @@ import { refreshPvpIdentity, send, startPvp, stopPvp } from './pvp/net'
 import { isDuelLocked, pvpState } from './pvp/store'
 import { applyDuelPose, disposePvpWorld, inspectRemote, listRemotes, pickRemote, updatePvpWorld } from './pvp/world'
 import { createCharacterNameplate, displayNameFor } from './nameplate'
+import { PixelWordmark } from './PixelWordmark'
 import { API_BASE_URL, API_ORIGIN } from './solana/cluster'
 import { embeddedWallet, ensureEmbeddedWallet } from './solana/embeddedWallet'
 import { claimAccountWithEmbeddedWallet, embeddedClaimState } from './solana/embeddedIdentity'
@@ -1298,12 +1299,13 @@ function App() {
   if (!entered && tab === 'select') return (
     <main className="entry">
       <div className="entry-copy">
-        <div className="eyebrow">SINGLE-PLAYER DEMO</div>
-        <h1>Voxels</h1>
+        <div className="eyebrow">MULTIPLAYER DEMO · SAME NETWORK</div>
+        <PixelWordmark />
         <p>Voxels is a playable wallet: walk a voxel town with the mouse, and the pouch holds your gold and tokens. Agents live there as a guide, shops, and services — useful, not flavor. You can hand items and gold to people in the world. Private transfers are the longer-term idea, not a live feature here.</p>
         <button className="primary" onClick={() => setEntered(true)}>Enter world <span>→</span></button>
         <div className="entry-foot">
-          <span>No real funds</span>
+          {/* FundsBadge already says "no real funds"; a second label beside it
+              printed the same warning twice. */}
           <FundsBadge variant="foot" />
         </div>
       </div>

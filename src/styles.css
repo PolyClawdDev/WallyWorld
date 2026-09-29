@@ -89,3 +89,66 @@
   }
   .entry h1 { font-size: clamp(40px, 14vw, 64px); }
 }
+
+/* ------------------------------------------------------------------ *
+ * The pixel VOXELS wordmark.
+ *
+ * Sized from one custom property so the blocks stay square and land on
+ * whole pixels at every viewport: everything else is derived from --vx-cell.
+ * ------------------------------------------------------------------ */
+.pixel-wordmark {
+  /* Stepped at whole pixels rather than sized in vw. A fractional cell puts
+     the blocks on fractional offsets, which shows up as hairline seams
+     between neighbours — the one artefact pixel art cannot carry. */
+  --vx-cell: 13px;
+  /* Depth of the extruded face. A third of a cell reads as solid without
+     thickening the letters enough to close the counters in O and S. */
+  --vx-depth: calc(var(--vx-cell) / 3);
+  margin: 26px 0 30px;
+  /* The grid carries the height; a line box here would add stray leading. */
+  line-height: 0;
+}
+.pixel-wordmark-label {
+  /* Present for screen readers and find-in-page, absent to the eye. */
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.pixel-wordmark-grid {
+  display: grid;
+  grid-template-columns: repeat(var(--vx-cols), var(--vx-cell));
+  grid-template-rows: repeat(var(--vx-rows), var(--vx-cell));
+  width: max-content;
+}
+.pixel-wordmark-grid i {
+  background: #e5ddc8;
+  /* One shadow is the extruded side in shadow, the second is the brass edge
+     that catches the same warm light as the moon in the scene behind. */
+  box-shadow:
+    var(--vx-depth) var(--vx-depth) 0 #6b5a33,
+    calc(var(--vx-depth) * -0.34) calc(var(--vx-depth) * -0.34) 0 #f5eeda;
+}
+/* The brass accent falls on whole trailing letters, matching the accent the
+   old italic `em` carried. Which letters is decided in the component. */
+.pixel-wordmark-grid i.vx-accent {
+  background: #d5a64b;
+  box-shadow:
+    var(--vx-depth) var(--vx-depth) 0 #5d4420,
+    calc(var(--vx-depth) * -0.34) calc(var(--vx-depth) * -0.34) 0 #e8c479;
+}
+/* Each step keeps 35 columns inside the copy column's padding at that width. */
+@media (max-width: 1100px) {
+  .pixel-wordmark { --vx-cell: 11px; }
+}
+@media (max-width: 800px) {
+  .pixel-wordmark { --vx-cell: 9px; margin: 18px 0 22px; }
+}
+@media (max-width: 560px) {
+  .pixel-wordmark { --vx-cell: 7px; }
+}
+@media (max-width: 380px) {
+  .pixel-wordmark { --vx-cell: 6px; }
+}
