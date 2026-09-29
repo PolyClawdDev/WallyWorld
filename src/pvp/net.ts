@@ -46,6 +46,7 @@ import {
   type S2C,
 } from '../shared/pvp'
 import type { PublicLoadout } from '../shared/pvp'
+import { pushChatLine } from '../chat/store'
 import { forgetPresenceAuth, presenceAuthProblem, presenceTokenSync, resolvePresenceAuth } from './guest'
 import { pingPvp, pvpState } from './store'
 
@@ -191,6 +192,12 @@ function apply(msg: S2C) {
       break
     case 'card':
       pvpState.inspect = msg.card
+      break
+    // Chat keeps its own log rather than living in `pvpState`, because the
+    // whole PvP overlay re-renders on every presence tick and a chat backlog
+    // does not want to be rebuilt twelve times a second.
+    case 'chat':
+      pushChatLine(msg.msg)
       break
     case 'invite':
       if (msg.invite.youAreChallenger) pvpState.outgoing = msg.invite

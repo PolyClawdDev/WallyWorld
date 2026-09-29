@@ -16,10 +16,12 @@ import { spans } from './voxelBuild'
  *
  * ---- The Zcash mark ------------------------------------------------
  *
- * `ZCASH` below is a third-party trademark, drawn at 15x15 as the gold
- * disc with the Ⓩ counter knocked out of it. It is here for one reason
- * only: to label WHICH external network the shielded-transfer desk would
- * talk to. It is deliberately kept in Zcash's own gold rather than being
+ * `ZCASH` below is a third-party trademark, drawn at 23x23 by
+ * `zcashMark()` from the official mark's own measured proportions: black
+ * rim, light ring, gold disc, and the struck-through Ⓩ. It is here for
+ * one reason only: to label WHICH external network the shielded-transfer
+ * desk would talk to. It is deliberately kept in Zcash's own gold and
+ * its own ring structure rather than being
  * recoloured into this project's palette, because restyling somebody
  * else's mark into your own brand is exactly what makes it read as an
  * endorsement. It is hung as a separate "integrates with" plate beside
@@ -58,11 +60,68 @@ const WARM: Surface = { color: '#e8c079', glow: 0.55, roughness: 0.5, noShadow: 
 /** Zcash's own gold. Held apart from the project palette on purpose. */
 const ZCASH_GOLD: Surface = { color: '#f4b728', roughness: 0.4, metalness: 0.2 }
 const ZCASH_COUNTER: Surface = { color: '#1b1b1b', roughness: 0.9 }
+/** The mark's outer rim, and the light ring between rim and disc. */
+const ZCASH_RIM: Surface = { color: '#101010', roughness: 0.85 }
+const ZCASH_LIGHT: Surface = { color: '#f4f2ec', roughness: 0.7 }
 
 export type Emblem = { rows: string[]; palette: Record<string, Surface | undefined>; width: number }
 
 function emblem(width: number, rows: Array<Array<[number, number, string]>>, palette: Record<string, Surface | undefined>): Emblem {
   return { rows: spans(width, rows), palette, width }
+}
+
+/**
+ * The Zcash mark: black rim, light ring, gold disc, struck-through Ⓩ.
+ *
+ * Generated rather than typed. Measured off the official mark at 280px: the
+ * gold disc reaches 0.78 of the outer radius, the light ring 0.83, and the rim
+ * the edge; the glyph is 97x172px inside a 213px disc, so it is tall and
+ * narrow, with a short vertical stroke above the top bar and another below the
+ * bottom bar in the way a currency symbol is struck through. Two concentric
+ * circles do not survive being hand-typed as spans — one wrong cell in a ring
+ * is visible from across the plaza — so the body comes from those radii and
+ * only the glyph is authored by hand.
+ *
+ * 23 cells across, and it needs to be about that: the rim wants two cells to
+ * read as a rim, the light ring one, and the Ⓩ nine across to carry two bars,
+ * a three-cell diagonal and both strokes. Odd, so the glyph keeps the centre
+ * column and the disc stays concentric.
+ *
+ * One deliberate infidelity: the light ring is 0.087 of the radius where the
+ * real mark's is 0.048. At this resolution that ring is one cell or none, and
+ * none loses the ring altogether.
+ */
+function zcashMark(): Emblem {
+  const size = 23
+  const centre = (size - 1) / 2
+  const DISC = 8.5
+  const LIGHT = 9.5
+  const RIM = 11.5
+  const grid: string[][] = Array.from({ length: size }, (_, y) =>
+    Array.from({ length: size }, (_, x) => {
+      const radius = Math.hypot(x - centre, y - centre)
+      return radius <= DISC ? 'Z' : radius <= LIGHT ? 'W' : radius <= RIM ? 'K' : '.'
+    }),
+  )
+  /* The Ⓩ, as [row, from, to] runs so each one can be counted against the
+   * mark: the stroke above, two nine-cell bars, a three-cell diagonal stepping
+   * one cell a row from the right end of the top bar to the left end of the
+   * bottom one, then the stroke below. */
+  const glyph: Array<[number, number, number]> = [
+    [4, 10, 12], [5, 10, 12],
+    [6, 7, 15], [7, 7, 15],
+    [8, 13, 15], [9, 12, 14], [10, 11, 13], [11, 10, 12], [12, 9, 11], [13, 8, 10], [14, 7, 9],
+    [15, 7, 15], [16, 7, 15],
+    [17, 10, 12], [18, 10, 12],
+  ]
+  for (const [y, from, to] of glyph) {
+    for (let x = from; x <= to; x++) grid[y][x] = 'i'
+  }
+  return {
+    rows: grid.map(row => row.join('')),
+    palette: { Z: ZCASH_GOLD, i: ZCASH_COUNTER, K: ZCASH_RIM, W: ZCASH_LIGHT },
+    width: size,
+  }
 }
 
 export type EmblemId =
@@ -396,38 +455,32 @@ export const emblems: Record<EmblemId, Emblem> = {
   ], { T: LEATHER, S: LEATHER_DARK, A: RED, G: GREEN }),
 
   /**
-   * The Zcash mark. Third-party trademark, drawn here as pixel art: the gold
-   * disc with the Ⓩ counter cut out of it, including the short strokes above
-   * and below the bars that distinguish the glyph from a plain letter Z.
-   *
-   * Fifteen cells across rather than thirteen, because the disc needs an odd
-   * radius large enough for the counter to stay open. At thirteen the bars and
-   * the diagonal touch and it reads as a blob.
+   * The Zcash mark. Third-party trademark, the only emblem here that is not
+   * this project's own device, and the only one generated rather than typed —
+   * see `zcashMark()` above for the measurements it is built from and for why
+   * a bare gold disc was wrong.
    */
-  ZCASH: emblem(15, [
-    [[5, 9, 'Z']],
-    [[3, 11, 'Z']],
-    [[2, 12, 'Z'], [6, 8, 'k']],
-    [[1, 13, 'Z'], [4, 10, 'k']],
-    [[1, 13, 'Z'], [4, 10, 'k']],
-    [[0, 14, 'Z'], [8, 10, 'k']],
-    [[0, 14, 'Z'], [7, 9, 'k']],
-    [[0, 14, 'Z'], [6, 8, 'k']],
-    [[0, 14, 'Z'], [5, 7, 'k']],
-    [[0, 14, 'Z'], [4, 6, 'k']],
-    [[1, 13, 'Z'], [4, 10, 'k']],
-    [[1, 13, 'Z'], [4, 10, 'k']],
-    [[2, 12, 'Z'], [6, 8, 'k']],
-    [[3, 11, 'Z']],
-    [[5, 9, 'Z']],
-  ], { Z: ZCASH_GOLD, k: ZCASH_COUNTER }),
+  ZCASH: zcashMark(),
 }
 
-/** A hanging board's emblem, sized to the board it goes on. */
+/**
+ * A hanging board's emblem, sized to the board it goes on.
+ *
+ * The rows are REVERSED on the way out, and that is not a style choice.
+ * `Batch.plate()` puts grid column 0 at the plate's local −x and then turns the
+ * plate to face the street; a player standing in front of that face is looking
+ * back down the plate's own +x, so column 0 lands on their RIGHT and the art
+ * arrives back to front. Every emblem here is authored to be read left to
+ * right, so the flip belongs at this seam rather than in each caller.
+ *
+ * It is worth a paragraph because the emblem it matters most for is the Zcash
+ * mark: a mirrored Ⓩ reads as an S, which is a mangled trademark rather than a
+ * label, and the mangling is invisible to anyone checking the pixel grid.
+ */
 export function emblemPlate(id: EmblemId, at: [number, number, number], cell: number, options?: { faceYaw?: number; depth?: number; tiltX?: number }): PlatePlan {
   const art = emblems[id]
   return {
-    rows: art.rows,
+    rows: art.rows.map(row => [...row].reverse().join('')),
     palette: art.palette,
     cell,
     depth: options?.depth ?? 1,
@@ -442,5 +495,15 @@ export function emblemSize(id: EmblemId, cell: number) {
   const art = emblems[id]
   return { width: art.width * cell, height: art.rows.length * cell }
 }
+
+/**
+ * Whether a string names an emblem drawn in this file.
+ *
+ * src/townData.ts carries its emblem and `integrates` ids as plain strings, so
+ * that it stays free of any dependency on how they are drawn. Both the world
+ * and the map narrow them through here rather than each keeping its own guess
+ * at what is drawable.
+ */
+export const isEmblemId = (id: string): id is EmblemId => id in emblems
 
 export { INK as EMBLEM_INK, BONE as EMBLEM_BONE, BRASS as EMBLEM_BRASS, EMBER as EMBLEM_EMBER, WARM as EMBLEM_WARM }

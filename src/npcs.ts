@@ -1,4 +1,10 @@
 import * as THREE from 'three'
+import { createBatch, disposeMaterial } from './voxelBuild'
+import type { Batch, Surface } from './voxelBuild'
+import { emblemPlate, emblems, emblemSize, isEmblemId } from './emblems'
+import type { EmblemId } from './emblems'
+import { SHIELDED_NOTICE, buildingSpecs, serviceNpcs } from './townData'
+import type { BuildingSpec, ServiceNpc } from './townData'
 
 /* ------------------------------------------------------------------ *
  * Townsfolk.
@@ -878,4 +884,415 @@ export function placeNpcLabel(npc: THREE.Object3D, label: THREE.Object3D) {
   label.scale.set(LABEL_WIDTH / groupScale, (LABEL_WIDTH * LABEL_ASPECT) / groupScale, 1)
   label.position.set(0, (height + LABEL_GAP) / groupScale, 0)
   npc.add(label)
+}
+
+/* ------------------------------------------------------------------ *
+ * Trade emblems, on the premises.
+ *
+ * Every emblem in src/emblems.ts was authored and then had nowhere to
+ * hang, because the module that was going to mount them never exported
+ * anything. This section mounts them, off the same townData rows the
+ * world map already draws, so a player walking up to a building can see
+ * what is sold there before anyone speaks:
+ *
+ *   - a framed board on the premises each service NPC works from, on
+ *     whichever wall faces that NPC, centred on that wall and sat just
+ *     above the door head so it reads from across the street; and
+ *   - a standard planted beside the NPC, which is the close read at
+ *     walking height.
+ *
+ * Buildings are 13–52m tall, so a badge tucked under the eaves is a
+ * badge nobody looks at. Both mounts are therefore held down at the
+ * height of the person standing next to them, and sized in metres
+ * rather than as a fraction of the wall: the board is the same 2.8m
+ * whether it hangs on the Post Office or the Observatory.
+ *
+ * Everything here is welded through one Batch, so the whole set — eight
+ * boards, eight standards, every frame, batten and pole — is a handful
+ * of draw calls rather than one per box.
+ *
+ * ---- the third-party mark -----------------------------------------
+ *
+ * A service carrying an `integrates` id in src/townData.ts gets a
+ * SECOND, separately framed panel on the same board, holding that
+ * external network's mark, captioned with SHIELDED_NOTICE.markCaption,
+ * over the service's own `status` lines along the foot of the board.
+ *
+ * That layout is the point, not decoration. The mark names WHICH network
+ * the desk would talk to. It is not a claim that the desk works, and
+ * Sable's does not: nothing in this project can sign a Zcash
+ * transaction, so no shielded transfer can be sent. So the mark never
+ * travels alone — it is never merged into the shop's own badge, it is
+ * kept off the standard beside her, and it cannot be hung without the
+ * status lines under it, because one function draws both from one
+ * record. Take the notice away and the mark loses its frame with it.
+ * ------------------------------------------------------------------ */
+
+const BOARD_TIMBER: Surface = { color: '#4b4037', roughness: 0.92 }
+const BOARD_BATTEN: Surface = { color: '#6b5544', roughness: 0.9 }
+const BOARD_RECESS: Surface = { color: '#20252d', roughness: 0.9 }
+const BOARD_IRON: Surface = { color: '#272b30', roughness: 0.6, metalness: 0.35 }
+const BOARD_STONE: Surface = { color: '#4a5257', roughness: 0.94 }
+const BOARD_STONE_PALE: Surface = { color: '#68777b', roughness: 0.92 }
+
+/** Bottom of every premises board. Clear of the 2.86m door head under it. */
+const BOARD_FOOT = 3.2
+
+/** A wall to mount on: which way it looks, how wide it is, and where its face is. */
+type Mount = {
+  yaw: number
+  /** Outward normal in world x/z. */
+  nx: number
+  nz: number
+  /** Width of this wall, so a board can be kept inside it. */
+  span: number
+  /** Board-local (sideways, absolute height, outward) to world. */
+  at: (along: number, up: number, out: number) => [number, number, number]
+}
+
+/**
+ * The wall of `spec` that looks at (`towardX`, `towardZ`).
+ *
+ * Service NPCs stand off a corner of their premises — seven of the eight are
+ * at a dead 7m diagonal — so the two candidate walls are usually within a
+ * metre of each other. Ties go to the z wall, which is the axis createBuilding
+ * puts the door, the sign and the window band on.
+ */
+function wallMount(spec: BuildingSpec, towardX: number, towardZ: number): Mount {
+  const dx = towardX - spec.x
+  const dz = towardZ - spec.z
+  const onZ = Math.abs(dz) + 1 >= Math.abs(dx)
+  const nx = onZ ? 0 : Math.sign(dx) || 1
+  const nz = onZ ? Math.sign(dz) || -1 : 0
+  // faceYaw 0 faces −z, so the plate normal is (−sin yaw, −cos yaw).
+  const yaw = Math.atan2(-nx, -nz)
+  const cos = Math.cos(yaw)
+  const sin = Math.sin(yaw)
+  const ox = spec.x + nx * (spec.width / 2)
+  const oz = spec.z + nz * (spec.depth / 2)
+  return {
+    yaw,
+    nx,
+    nz,
+    span: nx === 0 ? spec.width : spec.depth,
+    at: (along, up, out) => [ox + along * cos + nx * out, up, oz - along * sin + nz * out],
+  }
+}
+
+/**
+ * How high a board may reach on a given wall before it fouls something.
+ *
+ * createBuilding hangs a pair of posts on the front wall centred at
+ * height*0.55, and an awning and a shelf above those. The other three walls
+ * are blank brick to the eaves, so a board there only has to stay off the roof.
+ */
+function wallCeiling(spec: BuildingSpec, mount: Mount) {
+  return mount.nz < 0 ? spec.height * 0.55 - 1.15 : spec.height * 0.86
+}
+
+/**
+ * Sign copy, drawn to a canvas and hung flat on a board.
+ *
+ * The emblems are cubes, but prose is not: a status notice spelled out in
+ * voxels needs a glyph set this project does not have, and at the size it
+ * would have to be to stay legible it would swamp the mark it qualifies. So
+ * the words are a texture — the same trick makeLabel() already uses for the
+ * building signs — on an unlit material, so a notice stays readable at dusk.
+ *
+ * The caller owns the result and must dispose it; disposeMaterial() frees the
+ * canvas texture with the material, which is the half this project has
+ * forgotten three times.
+ */
+function signText(
+  lines: string[],
+  size: [number, number],
+  options: { accent: string; leadRows?: number },
+) {
+  const [worldWidth, worldHeight] = size
+  const px = Math.max(96, Math.min(1024, Math.round(worldWidth * 240)))
+  const py = Math.max(32, Math.round((px * worldHeight) / worldWidth))
+  const canvas = document.createElement('canvas')
+  canvas.width = px
+  canvas.height = py
+  const ctx = canvas.getContext('2d')!
+  ctx.fillStyle = '#101923f2'
+  ctx.fillRect(0, 0, px, py)
+  const stroke = Math.max(2, Math.round(py * 0.05))
+  ctx.strokeStyle = options.accent
+  ctx.lineWidth = stroke
+  ctx.strokeRect(stroke / 2, stroke / 2, px - stroke, py - stroke)
+  // Fit to the longest line as measured, not to a guess at monospace advance:
+  // one over-long status line silently clipped is how a notice stops being one.
+  const rowPx = py / lines.length
+  ctx.font = '700 100px monospace'
+  const widest = Math.max(...lines.map(line => ctx.measureText(line).width))
+  const fontPx = Math.floor(Math.min(rowPx * 0.62, (100 * (px - stroke * 4)) / widest))
+  ctx.font = `700 ${fontPx}px monospace`
+  ctx.textAlign = 'center'
+  ctx.textBaseline = 'middle'
+  const leadRows = options.leadRows ?? 0
+  lines.forEach((line, index) => {
+    ctx.fillStyle = index < leadRows ? options.accent : '#e5ddc8'
+    ctx.fillText(line, px / 2, rowPx * (index + 0.5))
+  })
+  const texture = new THREE.CanvasTexture(canvas)
+  texture.colorSpace = THREE.SRGBColorSpace
+  const mesh = new THREE.Mesh(
+    new THREE.PlaneGeometry(worldWidth, worldHeight),
+    new THREE.MeshBasicMaterial({ map: texture, transparent: true }),
+  )
+  mesh.name = 'sign-text'
+  return mesh
+}
+
+type BoardPlan = {
+  trade: EmblemId
+  tradeCaption: string
+  accent: string
+  /** An external network's mark, and the words that have to travel with it. */
+  mark?: { emblem: EmblemId; caption: string; status: string[] }
+}
+
+/* Board layout, in metres, before it is scaled to fit its wall. Two shapes:
+ * a plain trade board, and a wider one with a second framed panel for a
+ * third-party mark and a status strip along the foot. */
+const PAD = 0.26
+const GAP = 0.14
+const CAPTION = 0.32
+const TRADE_ART = 1.7
+/**
+ * The third-party mark is sized larger than the trade badge because most of it
+ * is coin: rim and ring take three of its eleven-and-a-half cell radius, so at
+ * 2.2m the Ⓩ inside comes out about 1.43m — a shade under the 1.5m trade badge
+ * beside it. The devices read as equals, which is the point. Sizing the two
+ * discs equal instead would leave somebody else's mark shouting over the
+ * shop's own.
+ */
+const MARK_ART = 2.2
+const MULLION = 0.22
+const STATUS = 0.95
+
+/** A framed board on a wall, carrying one trade emblem and maybe one mark. */
+function premisesBoard(batch: Batch, mount: Mount, ceiling: number, plan: BoardPlan) {
+  const texts: THREE.Mesh[] = []
+  const tradeCell = (plan.mark ? 1.5 : TRADE_ART) / emblems[plan.trade].rows.length
+  const trade = emblemSize(plan.trade, tradeCell)
+  const mark = plan.mark ? emblemSize(plan.mark.emblem, MARK_ART / emblems[plan.mark.emblem].rows.length) : null
+  const markCell = plan.mark ? MARK_ART / emblems[plan.mark.emblem].rows.length : 0
+
+  // Height first, because the wall decides whether any of this fits.
+  const tradeColumn = trade.height + GAP + CAPTION
+  const rowHeight = mark ? Math.max(CAPTION + GAP + mark.height, tradeColumn) : tradeColumn
+  const boardHeight = mark
+    ? PAD + rowHeight + GAP + STATUS + PAD
+    : PAD + rowHeight + PAD
+  const tradePanel = trade.width + 0.5
+  const markPanel = mark ? mark.width + 0.5 : 0
+  const boardWidth = mark
+    ? PAD * 2 + tradePanel + MULLION + markPanel
+    : trade.width + 0.7
+
+  // One scale for the whole board, so a tight wall shrinks the art rather than
+  // cropping it. Every premises in townData clears this at 1.
+  const fit = Math.min(1, (ceiling - BOARD_FOOT) / boardHeight, (mount.span - 1.6) / boardWidth)
+  const centreY = BOARD_FOOT + (boardHeight * fit) / 2
+  const at = (along: number, up: number, out: number) => mount.at(along * fit, centreY + up * fit, out * fit)
+  const box = (size: [number, number, number], along: number, up: number, out: number, surface: Surface) =>
+    batch.box([size[0] * fit, size[1] * fit, size[2] * fit], at(along, up, out), surface, { rotY: mount.yaw })
+
+  // Plank flush to the wall, then battens round it and a recess per panel, so
+  // the badge sits in shadow instead of floating on a brown rectangle.
+  box([boardWidth, boardHeight, 0.16], 0, 0, 0.08, BOARD_TIMBER)
+  for (const side of [-1, 1]) {
+    box([boardWidth + 0.16, 0.16, 0.26], 0, (side * boardHeight) / 2, 0.13, BOARD_BATTEN)
+    box([0.16, boardHeight + 0.16, 0.26], (side * boardWidth) / 2, 0, 0.13, BOARD_BATTEN)
+  }
+
+  const top = boardHeight / 2 - PAD
+  const rowMid = top - rowHeight / 2
+  const plate = (id: EmblemId, cell: number, along: number, up: number) =>
+    batch.plate(emblemPlate(id, at(along, up, 0.23 + cell), cell * fit, { faceYaw: mount.yaw, depth: 2 }))
+  const text = (lines: string[], width: number, height: number, along: number, up: number, accent: string, leadRows?: number) => {
+    const mesh = signText(lines, [width * fit, height * fit], { accent, leadRows })
+    mesh.position.set(...at(along, up, 0.24))
+    mesh.rotation.y = Math.atan2(mount.nx, mount.nz)
+    texts.push(mesh)
+    return mesh
+  }
+
+  if (!mark || !plan.mark) {
+    box([trade.width + 0.44, rowHeight, 0.07], 0, rowMid, 0.195, BOARD_RECESS)
+    plate(plan.trade, tradeCell, 0, top - trade.height / 2)
+    text([plan.tradeCaption], trade.width + 0.24, CAPTION, 0, top - trade.height - GAP - CAPTION / 2, plan.accent)
+    return { texts, width: boardWidth * fit, height: boardHeight * fit, top: BOARD_FOOT + boardHeight * fit }
+  }
+
+  // Two panels, divided by a mullion: the shop's own badge and, beside it and
+  // never inside the same frame, the external mark it would talk to.
+  const left = -boardWidth / 2 + PAD
+  const tradeX = left + tradePanel / 2
+  const markX = left + tradePanel + MULLION + markPanel / 2
+  box([tradePanel - 0.12, rowHeight, 0.07], tradeX, rowMid, 0.195, BOARD_RECESS)
+  box([markPanel - 0.12, rowHeight, 0.07], markX, rowMid, 0.195, BOARD_RECESS)
+  box([MULLION, rowHeight + 0.12, 0.26], left + tradePanel + MULLION / 2, rowMid, 0.13, BOARD_BATTEN)
+
+  const tradeTop = rowMid + tradeColumn / 2
+  plate(plan.trade, tradeCell, tradeX, tradeTop - trade.height / 2)
+  text([plan.tradeCaption], tradePanel - 0.3, CAPTION, tradeX, tradeTop - trade.height - GAP - CAPTION / 2, plan.accent)
+
+  // Caption above the mark, status below the board: the mark is bracketed by
+  // what it means and where the service actually stands.
+  text([plan.mark.caption], markPanel - 0.3, CAPTION, markX, top - CAPTION / 2, '#d5a64b')
+  plate(plan.mark.emblem, markCell, markX, top - CAPTION - GAP - mark.height / 2)
+  text(
+    ['SERVICE STATUS', ...plan.mark.status],
+    boardWidth - PAD * 2,
+    STATUS,
+    0,
+    top - rowHeight - GAP - STATUS / 2,
+    '#e37c42',
+    1,
+  )
+  return { texts, width: boardWidth * fit, height: boardHeight * fit, top: BOARD_FOOT + boardHeight * fit }
+}
+
+/**
+ * A standard planted beside a service NPC: a stone foot, a pole, a crossbar
+ * and the trade emblem on a board at head height. Harvested from the unbuilt
+ * helper in src/townArt.ts, which nothing has ever imported.
+ *
+ * The pole is 0.2m and is deliberately not a navigation obstacle, for the same
+ * reason the NPCs themselves are not: a body-width post on the plaza that
+ * click-to-move has to route around would make the fountain kerb a maze.
+ */
+function npcStandard(batch: Batch, at: [number, number], yaw: number, emblem: EmblemId, accent: Surface) {
+  const [x, z] = at
+  const height = 3.4
+  const cell = 0.14
+  const { width, height: artHeight } = emblemSize(emblem, cell)
+  batch.box([0.5, 0.3, 0.5], [x, 0.15, z], BOARD_STONE)
+  batch.box([0.34, 0.24, 0.34], [x, 0.36, z], BOARD_STONE_PALE)
+  batch.box([0.2, height, 0.2], [x, height / 2 + 0.3, z], BOARD_IRON)
+  batch.box([width + 0.9, 0.16, 0.16], [x, height + 0.26, z], BOARD_IRON, { rotY: yaw })
+  batch.box([0.42, 0.42, 0.42], [x, height + 0.55, z], accent, { rotY: 0.78, rotZ: 0.62 })
+  for (const side of [-1, 1]) {
+    const along = side * width * 0.34
+    batch.box([0.1, 0.42, 0.1], [x + Math.cos(yaw) * along, height + 0.02, z - Math.sin(yaw) * along], BOARD_IRON)
+  }
+  // The board rides 0.06 forward of the pole rather than centred on it: at
+  // equal depth the 0.2m pole shows through the gaps between emblem cells.
+  const boardY = height - artHeight / 2 - 0.34
+  const out = (distance: number): [number, number, number] => [
+    x - Math.sin(yaw) * distance,
+    boardY,
+    z - Math.cos(yaw) * distance,
+  ]
+  batch.box([width + 0.4, artHeight + 0.4, 0.18], out(0.06), BOARD_TIMBER, { rotY: yaw })
+  batch.plate(emblemPlate(emblem, out(0.2), cell, { faceYaw: yaw, depth: 2 }))
+}
+
+/** How far a service NPC may stand from the premises it works out of. */
+const PREMISES_REACH = 14
+
+/**
+ * Which building a service NPC works from, by proximity.
+ *
+ * Deliberately derived rather than declared: seven of the eight stand exactly
+ * 9.9m off a corner of their own shop, and the nearest building is the one the
+ * map already implies. Mira is the eighth — she works the fountain, not a shop,
+ * and the nearest roof is 17m away, so she gets a standard and no board.
+ */
+function premisesFor(npc: ServiceNpc) {
+  let best: BuildingSpec | null = null
+  let bestDistance = PREMISES_REACH * PREMISES_REACH
+  for (const spec of buildingSpecs) {
+    const distance = (spec.x - npc.x) ** 2 + (spec.z - npc.z) ** 2
+    if (distance < bestDistance) {
+      best = spec
+      bestDistance = distance
+    }
+  }
+  return best
+}
+
+/**
+ * Every service emblem in the town, as one welded body.
+ *
+ * Add the returned group to the scene; it frees its own geometry, materials and
+ * sign textures when it is removed from the graph, and `userData.dispose` is
+ * the same teardown for a caller that would rather run it by hand.
+ */
+export function createServiceEmblems() {
+  const group = new THREE.Group()
+  group.name = 'service-emblems'
+  const batch = createBatch()
+  const texts: THREE.Mesh[] = []
+
+  for (const npc of serviceNpcs) {
+    if (!isEmblemId(npc.emblem)) {
+      console.error(`service npc "${npc.name}" has no emblem named ${npc.emblem}`)
+      continue
+    }
+    const trade = npc.emblem
+    const premises = premisesFor(npc)
+    // The standard looks the same way the board does, so whoever can read one
+    // can read the other. Mira has no premises, so hers faces +z, which is the
+    // way every named NPC is built to stand.
+    const mount = premises ? wallMount(premises, npc.x, npc.z) : null
+    const facing = mount ? { nx: mount.nx, nz: mount.nz } : { nx: 0, nz: 1 }
+
+    if (premises && mount) {
+      const markId = npc.integrates
+      const mark =
+        markId && isEmblemId(markId) && npc.status?.length
+          ? { emblem: markId, caption: SHIELDED_NOTICE.markCaption, status: [...npc.status] }
+          : undefined
+      if (markId && !mark) {
+        // A mark with nothing qualifying it would read as an endorsement, so it
+        // does not get hung at all. See the header above.
+        console.error(`service npc "${npc.name}" names ${markId} with no status lines; mark withheld`)
+      }
+      const board = premisesBoard(batch, mount, wallCeiling(premises, mount), {
+        trade,
+        tradeCaption: npc.trade,
+        accent: premises.accent ?? npc.color,
+        mark,
+      })
+      texts.push(...board.texts)
+    }
+
+    // Beside the person, offset along the wall they face so it never lands in
+    // front of them or inside the shop. 2.8m, not less: the boards are 2.2m
+    // wide and the wider designs carry a prop a metre and a half out, so a
+    // closer standard grows through somebody's vial rack. The trade emblem
+    // only — the external mark stays on the board that carries the status.
+    npcStandard(
+      batch,
+      [npc.x - facing.nz * 2.8, npc.z + facing.nx * 2.8],
+      Math.atan2(-facing.nx, -facing.nz),
+      trade,
+      { color: npc.color, roughness: 0.5, metalness: 0.3 },
+    )
+  }
+
+  const built = batch.build(group)
+  for (const mesh of texts) group.add(mesh)
+
+  let disposed = false
+  const dispose = () => {
+    if (disposed) return
+    disposed = true
+    built.dispose()
+    for (const mesh of texts) {
+      mesh.geometry.dispose()
+      disposeMaterial(mesh.material as THREE.Material)
+    }
+  }
+  group.userData.dispose = dispose
+  group.userData.boxes = built.boxes
+  // Removal from the graph is the one teardown signal this module gets, and it
+  // covers the case that actually leaks: the world remounting on a wardrobe
+  // change and building a second town over the first one's GPU buffers.
+  group.addEventListener('removed', dispose)
+  return group
 }

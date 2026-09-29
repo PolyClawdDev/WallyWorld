@@ -343,10 +343,12 @@ async function main() {
     const cardJson = JSON.stringify(card ?? {})
     check('card has game gold', /goldAvailable|goldTotal/.test(cardJson))
     check('card has no wallet', !cardJson.includes(walletB) && !cardJson.includes('account_id'))
-    // Was `includes('Demo')`. The gold stopped being a demo — it is
-    // server-authoritative and duel stakes really move — so the card now has
-    // to carry the claim that is still true rather than the one that is not.
-    check('card carries the not-redeemable notice', /not redeemable/i.test(cardJson))
+    // Was `includes('Demo')`, then `/not redeemable/i`. The gold stopped being
+    // a demo — it is server-authoritative and duel stakes really move — and
+    // leading with "not redeemable" made the real thing read as the fake one,
+    // so the notice now leads with what the gold is. What must never be
+    // droppable is the claim about cash, so that is what this asserts.
+    check('card carries the no-cash-value notice', /no cash value/i.test(cardJson))
 
     a.send({ t: 'challenge', playerId: accB.player_id, stake: 12 })
     const invite = await b.wait('invite', 4000)

@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isWorldReady, npcAtScreen } from './worldBridge'
+import { embeddedWallet, subscribeEmbeddedWallet } from './solana/embeddedWallet'
+import { fetchSolLamports } from './solana/rpc'
 
 /* ------------------------------------------------------------------ *
  * The pouch. Nothing here custodies, sends, or receives value, and no
@@ -66,25 +68,15 @@ const solArt = disc(
   litFace('h', 'd', 's'),
 )
 
-/* One faceted shard, recoloured per token so the tokens stay siblings. */
-const shardGrid = [
-  '....oooo....',
-  '...olltdo...',
-  '..olltttdo..',
-  '.olltttttdo.',
-  'olltttttttdo',
-  'oltttttttddo',
-  'oltttttttddo',
-  '.olttttttdo.',
-  '..olttttdo..',
-  '...olttdo...',
-  '....oddo....',
-  '.....oo.....',
-]
+/*
+ * The Wally and Ember shard art lived here. Both were invented tokens with no
+ * mint behind them, handed out as starting stacks, so the pouch opened full of
+ * things that could never mean anything. They are gone, along with the shard
+ * grid that drew them.
+ */
 
-const shard = (o: string, l: string, t: string, d: string): PixelArt => ({ palette: { o, l, t, d }, grid: shardGrid })
-
-type ItemId = 'gold' | 'sol' | 'wally' | 'ember'
+/** Gold is the only thing that can sit in a slot. SOL is read, never carried. */
+type ItemId = 'gold'
 
 type ItemDef = {
   id: ItemId
@@ -94,15 +86,14 @@ type ItemDef = {
   decimals: number
   art: PixelArt
   note: string
-  demo: boolean
 }
 
 const items: Record<ItemId, ItemDef> = {
-  gold: { id: 'gold', name: 'Town Gold', symbol: 'GOLD', decimals: 0, art: coinArt, note: 'Hunting loot · held by the server · not redeemable', demo: false },
-  sol: { id: 'sol', name: 'Demo SOL Coin', symbol: 'SOL', decimals: 9, art: solArt, note: 'Demo item · not real SOL', demo: true },
-  wally: { id: 'wally', name: 'Demo Wally Shard', symbol: 'WALLY', decimals: 6, art: shard('#22383a', '#cdf3f4', '#7bc9ce', '#3f7f86'), note: 'Demo token · no mint exists', demo: true },
-  ember: { id: 'ember', name: 'Demo Ember Shard', symbol: 'EMBER', decimals: 4, art: shard('#3a2320', '#ffcfa4', '#e37c42', '#94451f'), note: 'Demo token · no mint exists', demo: true },
+  gold: { id: 'gold', name: 'Town Gold', symbol: 'GOLD', decimals: 0, art: coinArt, note: 'Earned by hunting · held by the server' },
 }
+
+/** Lamports per SOL. Display divisor only; the balance stays an integer. */
+const LAMPORTS_PER_SOL = 1_000_000_000n
 
 const SLOT_COUNT = 20
 const STORE_KEY = 'wally-pouch-v1'
@@ -113,21 +104,19 @@ type Gift = { npc: string; label: string; at: number; proximity: boolean }
 
 const emptySlots = (): Slots => Array.from({ length: SLOT_COUNT }, () => null)
 
-/** Starting demo stacks. Gold is injected from the world's loot counter. */
-function startingSlots(): Slots {
-  const slots = emptySlots()
-  slots[1] = { def: 'sol', amount: 250_000_000n }
-  slots[2] = { def: 'wally', amount: 1_250_000_000n }
-  slots[3] = { def: 'ember', amount: 420_000n }
-  return slots
-}
+/*
+ * A new pouch starts empty. It used to open with 0.25 invented SOL and two
+ * invented shards already in it, which made the first thing a player saw a set
+ * of holdings they had not earned and could not use. Gold arrives from the
+ * world's loot counter as they hunt.
+ */
 
 type Saved = { slots: Array<{ def: string; amount: string } | null>; gifts?: Gift[] }
 
 function load(): { slots: Slots; gifts: Gift[] } {
   try {
     const raw = localStorage.getItem(STORE_KEY)
-    if (!raw) return { slots: startingSlots(), gifts: [] }
+    if (!raw) return { slots: emptySlots(), gifts: [] }
     const parsed = JSON.parse(raw) as Saved
     const slots = emptySlots()
     parsed.slots?.slice(0, SLOT_COUNT).forEach((entry, index) => {
@@ -135,7 +124,7 @@ function load(): { slots: Slots; gifts: Gift[] } {
     })
     return { slots, gifts: Array.isArray(parsed.gifts) ? parsed.gifts.slice(0, 8) : [] }
   } catch {
-    return { slots: startingSlots(), gifts: [] }
+    return { slots: emptySlots(), gifts: [] }
   }
 }
 
@@ -223,16 +212,48 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
 
   const amountOf = (stack: Stack) => (stack.def === 'gold' ? BigInt(Math.max(0, Math.trunc(live.current.gold))) : stack.amount)
 
-  const balances = useMemo(() => {
-    const totals = new Map<ItemId, bigint>()
-    slots.forEach(stack => {
-      if (!stack) return
-      const amount = stack.def === 'gold' ? BigInt(Math.max(0, Math.trunc(gold))) : stack.amount
-      totals.set(stack.def, (totals.get(stack.def) ?? 0n) + amount)
-    })
-    return (['sol', 'wally', 'ember', 'gold'] as ItemId[])
-      .map(id => ({ def: items[id], amount: totals.get(id) ?? 0n }))
-  }, [slots, gold])
+  const goldHeld = useMemo(
+    () => slots.reduce((sum, stack) => (stack?.def === 'gold' ? sum + BigInt(Math.max(0, Math.trunc(gold))) : sum), 0n),
+    [slots, gold],
+  )
+
+  /*
+   * The real balance of the wallet in this browser, read through the RPC proxy.
+   * A fresh wallet reads 0 and goes up when someone deposits to that address,
+   * which is the whole point: the address is a genuine mainnet address.
+   *
+   * Read-only by construction. There is no transaction signer in this app, so
+   * nothing here can move the balance; the only way it leaves is the player
+   * importing the key into a wallet of their own.
+   *
+   * `null` is "not known", not zero. An unreachable RPC and an empty wallet are
+   * different facts, and rendering the first as 0 would be telling the player
+   * something false about their own money.
+   */
+  const [solLamports, setSolLamports] = useState<bigint | null>(null)
+  const [solAddress, setSolAddress] = useState<string | null>(() => embeddedWallet()?.address ?? null)
+
+  useEffect(() => subscribeEmbeddedWallet(() => setSolAddress(embeddedWallet()?.address ?? null)), [])
+
+  useEffect(() => {
+    if (!solAddress) { setSolLamports(null); return }
+    let cancelled = false
+    const read = async () => {
+      try {
+        const lamports = await fetchSolLamports(solAddress)
+        if (!cancelled) setSolLamports(lamports)
+      } catch {
+        // Swallowed on purpose: a failed read must not clear a balance we
+        // already showed, and it must not be reported as zero either.
+        if (!cancelled) setSolLamports(current => current)
+      }
+    }
+    void read()
+    // Polled because a deposit happens outside this app entirely. There is no
+    // event here to subscribe to.
+    const timer = window.setInterval(() => { void read() }, 20_000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [solAddress])
 
   const setDragState = (next: DragState | null) => { dragRef.current = next; setDrag(next) }
 
@@ -378,19 +399,24 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
         <small>{slots.filter(Boolean).length} of {SLOT_COUNT} compartments filled</small>
       </div>
       {/* Scoped to the pouch on purpose. Unqualified this sat directly under
-          the mainnet strip and read as a claim about the wallet, which owns a
-          real mainnet address. It is the items in here that carry no value. */}
+          the mainnet strip and read as a claim about the wallet, whose SOL
+          balance below is real. It is the carried gold that stays in the game. */}
       <span className="wui-state demo">
-        <i aria-hidden="true" />POUCH ITEMS — NOT SPENDABLE
+        <i aria-hidden="true" />GOLD STAYS IN THE GAME
       </span>
     </div>
     {connection && <div className="pouch-connect">{connection}</div>}
     <div className="pouch-balances">
-      {balances.map(({ def, amount }) => <div key={def.id} className="pouch-bal">
-        <PixelIcon art={def.art} />
-        <div><strong>{formatUnits(amount, def.decimals)}</strong><small>{def.symbol}</small></div>
-        <em>{def.demo ? 'DEMO' : 'GAME GOLD'}</em>
-      </div>)}
+      <div className="pouch-bal">
+        <PixelIcon art={items.gold.art} />
+        <div><strong>{formatUnits(goldHeld, items.gold.decimals)}</strong><small>GOLD</small></div>
+        <em>EARNED</em>
+      </div>
+      <div className="pouch-bal">
+        <PixelIcon art={solArt} />
+        <div><strong>{solLamports === null ? '—' : formatUnits(solLamports, 9)}</strong><small>SOL</small></div>
+        <em>{solLamports === null ? (solAddress ? 'READING' : 'NO WALLET') : 'ON CHAIN'}</em>
+      </div>
     </div>
     <div className="pouch-grid" role="group" aria-label="Pouch inventory grid">
       {slots.map((stack, index) => {
@@ -407,7 +433,7 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
           className={classes.join(' ')}
           onPointerDown={stack ? startDrag(index) : undefined}
           onClick={() => { if (!stack) { setSelected(null); live.current.onToast('Empty slot.') } }}
-          aria-label={def ? `${def.name}, ${formatUnits(amount, def.decimals)} ${def.symbol}, ${def.demo ? 'demo item' : 'game item, not redeemable'}` : `Empty slot ${index + 1}`}
+          aria-label={def ? `${def.name}, ${formatUnits(amount, def.decimals)} ${def.symbol}` : `Empty slot ${index + 1}`}
           title={def ? `${def.name} · ${def.note}` : 'Empty slot'}
         >
           {def && <PixelIcon art={def.art} />}
@@ -430,9 +456,10 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
         <div><strong>{gift.label} → {gift.npc}</strong><small>{gift.proximity ? 'Offered to the nearest townsperson' : 'Dropped directly on them'} · no real funds moved</small></div>
       </div>)}
     </div>}
-    <p className="pouch-note">Dropped over open ground a stack goes to whoever you stand beside. Gold is
-      held by the server and cannot be cashed out; the SOL and shard stacks are game items with no mint
-      behind them. There is no key in this panel, and it will never ask you for a seed phrase.</p>
+    <p className="pouch-note">Dropped over open ground a stack goes to whoever you stand beside. Gold is held
+      by the server and stays in the game. The SOL figure is the real balance of your wallet's address, read
+      from the chain — send SOL to that address and it appears here. This app cannot spend it: there is no
+      transaction signer in it at all, and it will never ask you for a seed phrase.</p>
     {/* the pouch frame is cut out with clip-path, which clips fixed descendants,
         so the carried stack has to hang off the body to follow the cursor */}
     {dragged && createPortal(<>
@@ -463,10 +490,8 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
             there is no way to take it back.
             {pending!.proximity && ' They are simply the townsperson you are standing beside.'}
           </p>
-          {/* This one names the stack actually being handed over, since the
-              dialog is about one item rather than the whole pouch. */}
           <span className="wui-state demo">
-            <i aria-hidden="true" />{pendingStack.def.demo ? 'DEMO ITEM — NO REAL FUNDS' : 'GAME GOLD — NOT REDEEMABLE'}
+            <i aria-hidden="true" />GOLD STAYS IN THE GAME
           </span>
           <div className="give-ask-row">
             <button type="button" className="give-ask-no" onClick={() => setPending(null)}>Keep it</button>

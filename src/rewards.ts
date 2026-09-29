@@ -41,7 +41,7 @@ export const PAYOUT_STATUS = 'UNAVAILABLE · NO VERIFIED ADAPTER CONFIGURED'
  * the half the string keeps. Nothing here converts to a token or to money,
  * and there is no code in this repository that could make it.
  */
-export const GOLD_NOTICE = 'Game gold — not redeemable, no cash value.'
+export const GOLD_NOTICE = 'Real in-game gold · no cash value.'
 
 /** Percentage of carried gold dropped on death. Integer, so the math stays exact. */
 export const DEATH_LOSS_PERCENT = 40

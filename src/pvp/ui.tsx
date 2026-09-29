@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import { ChatBox } from '../chat/ChatBox'
 import { wizards } from '../characters'
 import { DEMO_GOLD_NOTICE, type PublicCard, type PublicPresence } from '../shared/pvp'
 import { wayOutOfTown } from './leaveTown'
@@ -24,9 +25,14 @@ export function PvpOverlay() {
     <div className="pvp-layer" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
       {s.superseded && <SupersededCard />}
       {!s.connected && !s.superseded && <JoinChip link={s.link} />}
-      {s.signedIn && s.connected && (
+      {/* Only while gold is actually staked. This used to sit in the corner for
+          the whole session restating a balance the pouch already shows, with a
+          "NOT REDEEMABLE" line the pouch and the PVP ledger both state anyway.
+          Escrow is the one thing a player cannot see anywhere else and must not
+          miss, so that is what is left. */}
+      {s.signedIn && s.connected && s.gold.reserved > 0 && (
         <div className="pvp-chip pvp-gold-chip">
-          ✦ {s.gold.available} GAME GOLD<small>{s.gold.reserved ? ` · ${s.gold.reserved} in escrow` : ''} · NOT REDEEMABLE</small>
+          ✦ {s.gold.reserved} GOLD<small> · staked in a duel</small>
         </div>
       )}
       {s.error && <div className="pvp-error" onClick={() => { pvpState.error = null; pingPvp() }}>{s.error}</div>}
@@ -35,6 +41,15 @@ export function PvpOverlay() {
       {s.invite && <InviteCard />}
       {s.duel && <DuelHud />}
       {s.result && <ResultCard />}
+      {/* Chat lives here rather than in `main.tsx` because this overlay is
+          already mounted in the HUD, already a child of `.pvp-layer` (which
+          is what gives it pointer events while the rest of the layer stays
+          transparent to the world), and already the place the shared-world
+          connection's UI lives — which is what chat is. It is rendered
+          unconditionally: a chat box that appears and disappears with the
+          connection is a chat box nobody learns the position of, and it has
+          something useful to say while offline. */}
+      <ChatBox />
     </div>
   )
 }
@@ -348,7 +363,7 @@ export function PvpJournal() {
   useEffect(() => { void fetchPvpJournal() }, [])
   return (
     <div className="pvp-journal">
-      <div className="jr-ledger-head"><span>PVP LEDGER</span><b>GAME GOLD · NOT REDEEMABLE</b></div>
+      <div className="jr-ledger-head"><span>PVP LEDGER</span><b>REAL IN-GAME GOLD</b></div>
       <p className="pvp-demo">{DEMO_GOLD_NOTICE} W / L / D · {s.gold.wins} / {s.gold.losses} / {s.gold.draws} · available {s.gold.available}</p>
       <label className="st-toggle" style={{ margin: '8px 0' }}>
         <input

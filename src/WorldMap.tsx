@@ -1,5 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { ambientNpcs, buildingSpecs, districtAt, districts, huntingRegions, perimeterTrees, serviceNpcs, townLayout } from './townData'
+import { SHIELDED_NOTICE, ambientNpcs, buildingSpecs, districtAt, districts, huntingRegions, perimeterTrees, serviceNpcs, townLayout } from './townData'
+import { emblems, isEmblemId } from './emblems'
+import type { EmblemId } from './emblems'
 import { SAFE_ZONE, huntTrails, speciesSpecs, wildRegions, wildlifeMarkers } from './wildlife'
 import { playerPose } from './worldBridge'
 import type { PlayerPose } from './worldBridge'
@@ -47,10 +49,58 @@ function Swatch({ kind, color }: { kind: string; color: string }) {
     {kind === 'tree' && <rect x="2" y="2" width="8" height="8" fill="#7d8a5e" stroke="#4a3826" strokeWidth="0.8" />}
     {kind === 'plaza' && <polygon points={polygon(6, 6, 5)} fill="#cdb689" stroke="#8a6c43" strokeWidth="0.8" />}
     {kind === 'region' && <polygon points={polygon(6, 6, 5, 14)} fill={`${color}33`} stroke={color} strokeWidth="1" strokeDasharray="2 2" />}
+    {kind === 'mark' && <><polygon points={polygon(6, 6, 5.4, 12)} fill="none" stroke={color} strokeWidth="1.1" strokeDasharray="1.8 1.4" /><polygon points="6,3 9,6 6,9 3,6" fill="#7bc9ce" stroke="#3a2b1c" strokeWidth="0.8" /></>}
     {kind === 'trail' && <><rect x="0" y="5" width="12" height="2.4" fill="#7a5c33" /><rect x="1" y="5.7" width="3" height="1" fill="#e0cda2" /><rect x="7" y="5.7" width="3" height="1" fill="#e0cda2" /></>}
     {kind === 'animal' && <rect x="3" y="3" width="6" height="6" fill={color} stroke="#3a2b1c" strokeWidth="1" />}
   </svg>
 }
+
+/** Zcash's own gold, and the ink the chart warns in. Kept apart from the parchment palette. */
+const MARK_GOLD = '#b8860b'
+const MARK_WARN = '#8a3a1e'
+
+/**
+ * A trade emblem, drawn from the same pixel grid src/emblems.ts extrudes into
+ * cubes for the boards in the world.
+ *
+ * The point of reusing the grid rather than picking map icons is that the badge
+ * a player reads off a shop wall is the badge the map lists beside that
+ * person's name, with no second opinion about who does what.
+ *
+ * Cells are coalesced into horizontal runs first. The Zcash mark alone is 421
+ * filled cells, and eight of these in a sidebar is not the place to spend two
+ * thousand DOM nodes on detail that is three pixels wide.
+ */
+function EmblemMark({ id, size = 17 }: { id: EmblemId; size?: number }) {
+  const art = emblems[id]
+  const runs = useMemo(() => {
+    const out: Array<{ x: number; y: number; width: number; color: string }> = []
+    art.rows.forEach((row, y) => {
+      let start = 0
+      while (start < row.length) {
+        const color = art.palette[row[start]]?.color
+        let end = start + 1
+        while (end < row.length && art.palette[row[end]]?.color === color) end += 1
+        if (color) out.push({ x: start, y, width: end - start, color })
+        start = end
+      }
+    })
+    return out
+  }, [art])
+  return <svg
+    className="mp-emblem"
+    viewBox={`0 0 ${art.width} ${art.rows.length}`}
+    width={size}
+    height={size}
+    shapeRendering="crispEdges"
+    aria-hidden="true"
+  >
+    {runs.map((run, index) => <rect key={index} x={run.x} y={run.y} width={run.width} height="1" fill={run.color} />)}
+  </svg>
+}
+
+/** The emblem a service NPC's trade is drawn with, if it is one this build draws. */
+const emblemOf = (id: string | undefined) => (id && isEmblemId(id) ? id : null)
 
 export function WorldMap() {
   const svg = useRef<SVGSVGElement>(null)
@@ -192,11 +242,29 @@ export function WorldMap() {
         {/* residents */}
         {ambientNpcs.map((npc, index) => <rect className="mp-resident" key={index} x={npc.x - 1.3} y={npc.z - 1.3} width="2.6" height="2.6" fill="#9a9a86" stroke="#3a2b1c" strokeWidth="0.6" />)}
 
-        {/* named service NPCs */}
+        {/* named service NPCs.
+            The diamond says where somebody is standing; the line under the name
+            says what they do, which is the whole reason for finding them. Anyone
+            whose desk names an external network gets a gold ring as well, and
+            the standing of that desk written under it — the ring marks WHICH
+            network, and the line says the desk is shut. Neither is allowed to
+            travel without the other, the same rule as the board in the world. */}
         {serviceNpcs.map(npc => <g key={npc.name}>
+          {npc.integrates && <polygon
+            points={polygon(npc.x, npc.z, 5.4, 12)}
+            fill="none"
+            stroke={MARK_GOLD}
+            strokeWidth="1.2"
+            strokeDasharray="3 2.2"
+          />}
           <polygon points={polygon(npc.x, npc.z, 2.9, 4)} fill={npc.color} stroke="#3a2b1c" strokeWidth="0.9" />
           <rect x={npc.x - 0.6} y={npc.z - 0.6} width="1.2" height="1.2" fill="#3a2b1c" />
-          <text className="mp-npc" x={npc.x + 4} y={npc.z + 1.1} fill="#3a2b1c">{npc.name.split('·')[0].trim()}</text>
+          <text className="mp-npc" x={npc.x + 4.4} y={npc.z + 0.2} fill="#3a2b1c">{npc.name.split('·')[0].trim()}</text>
+          <text className="mp-trade" x={npc.x + 4.4} y={npc.z + 3.4} fill="#6b5233">{npc.trade}</text>
+          {npc.integrates && <>
+            <text className="mp-mark-name" x={npc.x} y={npc.z + 9} fill={MARK_GOLD} textAnchor="middle">{npc.integrates}</text>
+            <text className="mp-mark-state" x={npc.x} y={npc.z + 12.4} fill={MARK_WARN} textAnchor="middle">{SHIELDED_NOTICE.headline}</text>
+          </>}
         </g>)}
 
         {/* district tags, keyed to the ground their own buildings occupy */}
@@ -240,7 +308,14 @@ export function WorldMap() {
         <div className="task-head"><span>LEGEND</span><b>{buildingSpecs.length} BUILDINGS</b></div>
         <ul>
           <li><Swatch kind="player" color="#d5a64b" />You · live position and facing</li>
-          <li><Swatch kind="service" color="#7bc9ce" />Service townsfolk ({serviceNpcs.length})</li>
+          <li><Swatch kind="service" color="#7bc9ce" />Service townsfolk ({serviceNpcs.length}) · trade named under each</li>
+          {serviceNpcs.some(npc => npc.integrates) && <li className="mp-legend-mark">
+            <Swatch kind="mark" color={MARK_GOLD} />
+            <span>Gold ring · this desk names an <b>external network</b>, drawn with that
+            network&rsquo;s own mark. It is a label, not a working service: Zcash
+            shielded transfer is <b>unavailable here</b> and nothing in this build can
+            send ZEC.</span>
+          </li>}
           <li><Swatch kind="resident" color="#849394" />Residents ({ambientNpcs.length})</li>
           <li><Swatch kind="building" color="#795c50" />Building · gold notch is the door</li>
           <li><Swatch kind="plaza" color="#65706a" />Fountain plaza</li>
@@ -278,10 +353,31 @@ export function WorldMap() {
         </ul>
       </div>)}
 
+      {/* Who does what, with the badge each one actually hangs on their premises,
+          so the list and the world cannot drift apart. The external mark sits in
+          its own block under the row that owns it, carrying the same caption and
+          the same status lines as the board in the world — it is never shown as
+          a bare logo beside a name. */}
       <div className="mp-places">
         <div className="task-head"><span>TOWNSFOLK</span><b>{serviceNpcs.length}</b></div>
         <ul>
-          {serviceNpcs.map(npc => <li key={npc.name}><i style={{ background: npc.color }} />{npc.name}<em>{metres(npc.x)} {metres(npc.z)}</em></li>)}
+          {serviceNpcs.map(npc => {
+            const trade = emblemOf(npc.emblem)
+            const mark = emblemOf(npc.integrates)
+            return <li key={npc.name} className="mp-folk">
+              {trade ? <EmblemMark id={trade} /> : <i style={{ background: npc.color }} />}
+              <strong>{npc.name}</strong>
+              <em>{metres(npc.x)} {metres(npc.z)}</em>
+              <span>{npc.trade}</span>
+              {mark && npc.status?.length && <div className="mp-folk-mark">
+                <EmblemMark id={mark} size={30} />
+                <div>
+                  <b>{SHIELDED_NOTICE.markCaption} {npc.integrates}</b>
+                  {npc.status.map(line => <small key={line}>{line}</small>)}
+                </div>
+              </div>}
+            </li>
+          })}
         </ul>
       </div>
       <small className="mp-seam">Single-player demo. The map reads the running scene for your position only; it changes nothing in the world.</small>

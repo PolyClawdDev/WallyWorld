@@ -829,12 +829,56 @@ const FIN_005_WITHDRAWALS: readonly string[] = [
   `create index if not exists treasury_reservations_status on treasury_reservations(status)`,
 ]
 
+/* ------------------------------------------------------------------ *
+ * An NPC service purchase, paid for in game gold.
+ *
+ * One row per order, and the row is the receipt. It records the price the
+ * server charged (never a price the client named), the two ledger transfers
+ * that moved the gold, and the artifact that was handed over — so a receipt
+ * can be re-derived from the gold ledger rather than asserted beside it.
+ *
+ * `state` is the whole safety story: an order is `reserved` (gold in escrow,
+ * nothing delivered), `delivered` (gold spent, artifact readable) or
+ * `refunded` (gold back, nothing delivered). The artifact is only ever
+ * readable in `delivered`, and the charge only ever happens on the way into
+ * it, so there is no state in which one exists without the other.
+ *
+ * `(owner_user_id, idempotency_key)` is unique, which is what stops two
+ * concurrent clicks becoming two charges for one artifact.
+ * ------------------------------------------------------------------ */
+const FIN_006_SERVICE_ORDERS: readonly string[] = [
+  `create table if not exists service_orders (
+     order_id            text primary key,
+     owner_user_id       text not null,
+     service_id          text not null,
+     price               text not null,
+     state               text not null,
+     idempotency_key     text not null,
+     request_json        text not null,
+     reserve_transfer_id text,
+     settle_transfer_id  text,
+     artifact_id         text,
+     artifact_kind       text,
+     artifact_title      text,
+     artifact_text       text,
+     artifact_sha256     text,
+     failure             text,
+     created_at_ms       integer not null,
+     updated_at_ms       integer not null,
+     delivered_at_ms     integer
+   )`,
+  `create unique index if not exists service_orders_idem on service_orders(owner_user_id, idempotency_key)`,
+  `create index if not exists service_orders_owner on service_orders(owner_user_id, created_at_ms desc)`,
+  `create index if not exists service_orders_state on service_orders(state, updated_at_ms)`,
+]
+
 export const FINANCE_MIGRATIONS: readonly Migration[] = [
   { id: 1, name: 'ledger', sql: FIN_001_LEDGER, dialectSql: { sqlite: FIN_001_TRIGGERS } },
   { id: 2, name: 'authorization_model', sql: FIN_002_AUTHORIZATION, dialectSql: { sqlite: FIN_002_TRIGGERS } },
   { id: 3, name: 'job_queue', sql: FIN_003_JOBS },
   { id: 4, name: 'payments_and_receipts', sql: FIN_004_PAYMENTS },
   { id: 5, name: 'withdrawals', sql: FIN_005_WITHDRAWALS },
+  { id: 6, name: 'service_orders', sql: FIN_006_SERVICE_ORDERS },
 ]
 
 export const MIGRATIONS: Record<DatabaseName, readonly Migration[]> = {

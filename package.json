@@ -22,6 +22,7 @@
     "test:leave-town": "tsx scripts/test-leave-town.ts",
     "test:migrations": "tsx scripts/test-migrations.ts",
     "test:ledger": "tsx scripts/test-ledger.ts",
+    "test:services": "tsx scripts/test-services.ts",
     "test:concurrency": "tsx scripts/test-concurrency.ts",
     "test:identity": "tsx scripts/test-identity.ts",
     "test:names": "tsx scripts/test-names.ts",
@@ -49,7 +50,8 @@
     "probe:providers": "tsx --env-file-if-exists=.env scripts/probe-providers.ts",
     "operator:console": "tsx --env-file-if-exists=.env scripts/operator-console.ts",
     "test:courier": "node --import tsx --test src/server/providers/courier.test.ts",
-    "verify:zec-delivery": "tsx --env-file-if-exists=.env scripts/verify-zec-delivery.ts"
+    "verify:zec-delivery": "tsx --env-file-if-exists=.env scripts/verify-zec-delivery.ts",
+    "test:chat": "tsx scripts/test-chat.ts"
   },
   "dependencies": {
     "@defuse-protocol/one-click-sdk-typescript": "0.1.26",

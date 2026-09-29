@@ -1,0 +1,222 @@
+/* ------------------------------------------------------------------ *
+ * The chat box.
+ *
+ * Bottom-left, stacked directly above the Map/Journal/Wallet/Settings nav
+ * rather than on top of it.
+ *
+ * The corner itself is not free. Measured in the running game at 1440×900:
+ * the nav occupies 20–136 × 750–882 and the ability bar occupies 404–1037 ×
+ * 805–884, which leaves the column above the nav and left of the bar. The
+ * `bottom` offset below is that measurement — 150 px of nav plus a gap —
+ * and it is why the box is not simply at `bottom: 16px`, where it covered
+ * all four nav buttons.
+ *
+ * THE FADE
+ *   Two states, one transition, driven by a single class. Idle it sits at
+ *   low opacity and slightly desaturated so it reads as furniture; engaged
+ *   it comes up to full and gains its border. The transition is asymmetric
+ *   on purpose — 140 ms to wake, 900 ms to recede — because waking has to
+ *   feel like a response to something the player just did, and receding has
+ *   to be slow enough that it does not look like the panel broke.
+ *
+ *   Faded is NOT hidden and NOT inert: the text stays legible enough to
+ *   glance at, and pointer events stay on, because hovering is how the box
+ *   is woken without taking the keyboard away from the world.
+ * ------------------------------------------------------------------ */
+
+.ch-box {
+  position: absolute;
+  left: 16px;
+  bottom: 158px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  width: min(392px, calc(100vw - 32px));
+  max-height: min(34vh, 280px);
+  padding: 8px 10px 9px;
+  background-color: #241a12;
+  background-image: repeating-linear-gradient(45deg, #00000014 0 3px, transparent 3px 6px);
+  box-shadow: inset 0 3px 0 #ffffff14, inset 0 -4px 0 #00000091, inset 0 0 0 3px #8a5a1e59, 0 5px 0 #00000073;
+  clip-path: var(--vx-clip-sm, none);
+  /* Idle. The engaged rules below override every one of these. */
+  opacity: 0.3;
+  filter: saturate(0.6);
+  transition: opacity 900ms ease 400ms, filter 900ms ease 400ms;
+}
+
+.ch-box.ch-engaged {
+  opacity: 1;
+  filter: none;
+  transition: opacity 140ms ease, filter 140ms ease;
+}
+
+/* Belt and braces: hovering the box wakes it even if React has not yet
+   re-rendered with the engaged class. A panel that needs a round trip
+   through state before it responds to a pointer feels broken. */
+.ch-box:hover,
+.ch-box:focus-within {
+  opacity: 1;
+  filter: none;
+  transition: opacity 140ms ease, filter 140ms ease;
+}
+
+.ch-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 6px;
+}
+
+.ch-etch {
+  font: 700 9px 'DM Mono', ui-monospace, monospace;
+  letter-spacing: 0.16em;
+  color: #c08a3e;
+}
+
+.ch-tab {
+  padding: 2px 7px 3px;
+  font: 600 10px 'DM Mono', ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  color: #9a8767;
+  background: #1a120c;
+  box-shadow: inset 0 0 0 2px #00000055;
+}
+
+.ch-tab.on {
+  color: #f0c274;
+  background: #33230f;
+  box-shadow: inset 0 0 0 2px #8a5a1e88;
+}
+
+.ch-unread {
+  margin-left: auto;
+  padding: 2px 6px 3px;
+  font: 700 9px 'DM Mono', ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  color: #241a12;
+  background: #e0a94b;
+}
+
+.ch-log {
+  flex: 1;
+  min-height: 54px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 4px;
+  overscroll-behavior: contain;
+}
+
+.ch-empty {
+  margin: 0;
+  color: #8a7a5e;
+  font: 11px/1.5 'DM Mono', ui-monospace, monospace;
+}
+
+.ch-line {
+  margin: 0 0 3px;
+  font: 11px/1.45 'DM Mono', ui-monospace, monospace;
+  color: #ddd0b4;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.ch-chan {
+  margin-right: 5px;
+  color: #8a7a5e;
+}
+
+.ch-name {
+  margin-right: 5px;
+  font-weight: 700;
+  color: #e0b464;
+}
+
+.ch-name::after {
+  content: ':';
+  color: #8a7a5e;
+}
+
+/*
+ * `pre-wrap` so the newlines in `/help` render as newlines. It changes
+ * nothing about safety: the content is still a text node, and a text node
+ * with `white-space: pre-wrap` is text with its whitespace respected — not
+ * markup, not HTML, and not parsed.
+ */
+.ch-text {
+  white-space: pre-wrap;
+}
+
+.ch-all .ch-chan { color: #8fb8c0; }
+.ch-whisper { color: #d7b6e4; }
+.ch-whisper .ch-chan { color: #a884bb; }
+.ch-whisper .ch-name { color: #cfa0e2; }
+
+/* The server talking. No sender, and visibly not a player. */
+.ch-system {
+  color: #c4a678;
+  font-style: italic;
+}
+
+.ch-mine .ch-name { color: #f0d79a; }
+
+.ch-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 7px;
+  padding-top: 7px;
+  border-top: 2px dotted #6b5233;
+}
+
+.ch-prompt {
+  flex: none;
+  font: 700 10px 'DM Mono', ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  color: #c08a3e;
+}
+
+.ch-input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 7px;
+  color: #efe4c8;
+  font: 11px 'DM Mono', ui-monospace, monospace;
+  background: #14100b;
+  border: 0;
+  box-shadow: inset 0 0 0 2px #00000066;
+  outline: none;
+}
+
+.ch-input:focus {
+  box-shadow: inset 0 0 0 2px #c08a3e99;
+}
+
+.ch-input::placeholder {
+  color: #7c6c52;
+}
+
+.ch-send {
+  flex: none;
+  padding: 5px 9px 6px;
+  font: 700 10px 'DM Mono', ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  color: #f0c274;
+  background: #33230f;
+  box-shadow: inset 0 0 0 2px #8a5a1e88;
+}
+
+.ch-send:disabled {
+  color: #7c6c52;
+  background: #1a120c;
+  box-shadow: inset 0 0 0 2px #00000055;
+}
+
+@media (max-width: 800px) {
+  .ch-box {
+    left: 12px;
+    right: 12px;
+    bottom: 172px;
+    width: auto;
+    max-height: 26vh;
+  }
+}

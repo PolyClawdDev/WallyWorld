@@ -78,7 +78,13 @@ export const MAX_STAKE = 1_000_000_000
  * The constant's *name* is deliberately unchanged: it is imported across the
  * server, and renaming it would be a wide edit for no reader's benefit.
  */
-export const DEMO_GOLD_NOTICE = 'Game gold — not redeemable, no cash value' as const
+/*
+ * Reworded again because it was still being read as fake money. Duel gold is
+ * server-authoritative and escrowed atomically: staking it can genuinely lose
+ * it. Leading with "not redeemable" made the real half sound like the demo
+ * half, so the order is reversed. The legal half is kept, just second.
+ */
+export const DEMO_GOLD_NOTICE = 'Real in-game gold · no cash value' as const
 export const GOLD_KIND = 'game-gold' as const
 
 /* ------------------------------------------------------------------ *
@@ -126,6 +132,90 @@ export const STALE_CONNECTION_MS = 21_000
 /** Reconnect backoff: doubles from the base, capped, with jitter applied by the client. */
 export const RECONNECT_BASE_MS = 500
 export const RECONNECT_MAX_MS = 30_000
+
+/* ------------------------------------------------------------------ *
+ * Chat.
+ *
+ * Chat rides the presence socket. It is not a second connection and not a
+ * second service: one small instance, one hub, one set of heartbeats.
+ *
+ * THE TWO PROPERTIES EVERYTHING HERE EXISTS TO HOLD
+ *   `fromName` is the SERVER's name for the sender, read through
+ *   `server/pvp/ids.ts` like every other name in the protocol. A client may
+ *   put whatever it likes in the frame it sends; there is no name field in
+ *   `C2S` for it to put it in.
+ *
+ *   `text` is TEXT. It is rendered as a DOM text node and nothing else —
+ *   no markup, no parsing, no link embedding — and it can never authorise
+ *   anything. There is no chat command that moves gold, accepts a duel, or
+ *   changes any state: the channel carries words between players and that
+ *   is the whole of its power.
+ * ------------------------------------------------------------------ */
+
+/**
+ * `system` is the server talking to one player — a refusal, or `/help`. It
+ * is never relayed and never carries another player's text, so it is the one
+ * channel a client can trust the wording of.
+ */
+export type ChatChannel = 'all' | 'say' | 'whisper' | 'system'
+
+/** What a player may address. `system` is server-only, so it is not in here. */
+export type ChatTarget = Exclude<ChatChannel, 'system'>
+
+/**
+ * The cap, in UTF-16 code units of the frame as sent.
+ *
+ * Over the cap is REFUSED, not trimmed. Truncating would publish half a
+ * sentence under the sender's name and leave them believing the rest
+ * arrived, which is a worse failure than being told to be brief.
+ */
+export const CHAT_MAX_LEN = 240
+
+/**
+ * How far `/say` carries, in metres.
+ *
+ * Deliberately wider than `INTERACT_RANGE` (18) — you should be able to
+ * answer someone you can see across the plaza, not only someone close
+ * enough to duel — and well short of the world, or `/say` would be `/all`
+ * with extra steps.
+ */
+export const CHAT_SAY_RADIUS = 40
+
+/**
+ * Messages per window, per player, enforced on the server.
+ *
+ * Sized for conversation and not for a scroller: a person types a few lines
+ * in ten seconds, a flood script types hundreds. It is also what bounds
+ * `/w` guessing, since a whisper costs the same budget as anything else.
+ */
+export const CHAT_RATE = { windowMs: 10_000, max: 8 } as const
+
+/** How many lines the client keeps. Old lines are dropped, never persisted. */
+export const CHAT_LOG_LIMIT = 80
+
+/**
+ * How long a new line holds the box at full opacity before it recedes.
+ *
+ * The box is furniture for most of a session, so it dims out of the way of
+ * the world and comes back on a new message or when the player engages it.
+ */
+export const CHAT_FADE_MS = 7_000
+
+export type ChatMessage = {
+  id: string
+  channel: ChatChannel
+  /** Null for `system`, which has no sender. */
+  fromId: PlayerId | null
+  /** The server's name for the sender. Never the one the client sent. */
+  fromName: string
+  /** Set only on the sender's own copy of a whisper, so they can see who they told. */
+  toName?: string
+  /** Untrusted player input on every channel but `system`. Render as text. */
+  text: string
+  atMs: number
+  /** Why a `system` line was emitted. For the client's styling and the tests. */
+  code?: string
+}
 
 export type PublicLoadout = {
   character: WizardId
@@ -302,6 +392,13 @@ export type C2S =
    * `src/server/pvp/respawn.ts`.
    */
   | { t: 'respawn' }
+  /**
+   * Note what is NOT here: a sender name. The hub reads the name from the
+   * accounts table on every broadcast, so there is nothing for a client to
+   * spoof. `to` is a display name because that is the only handle a player
+   * has for someone they can see; resolving it is the server's job.
+   */
+  | { t: 'chat'; channel: ChatTarget; text: string; to?: string }
   | { t: 'ping'; at: number }
 
 export type CombatInputKind = 'move' | 'stop' | 'attack' | 'attackMove' | 'cast' | 'cancel'
@@ -318,6 +415,12 @@ export type S2C =
   | { t: 'result'; result: DuelResultView }
   | { t: 'journal'; entries: JournalEntry[] }
   | { t: 'error'; code: string; detail: string }
+  /**
+   * One frame for every channel, including the server's own refusals. A
+   * refusal is a line in the same log the player is already reading, which
+   * is where they are looking when it arrives.
+   */
+  | { t: 'chat'; msg: ChatMessage }
   | { t: 'pong'; at: number }
   /**
    * This character is now being played somewhere else.

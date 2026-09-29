@@ -26,6 +26,8 @@ import { importLegacyDemoGold } from '../money/legacyImport'
 import { PROVENANCES, REDEEMABLE_PROVENANCES, PROVENANCE_NOTES } from '../money/provenance'
 import { enqueueJob, listArtifactsForOwner, listJobsForOwner, readArtifactForOwner, readJobForOwner } from '../jobs/queue'
 import { handlerFor, handlerKinds } from '../jobs/handlers'
+import { catalogueView } from '../npc/catalogue'
+import { listOrdersForOwner, purchaseService, readArtifactTextForOwner, readOrderForOwner } from '../npc/orders'
 import { originContext } from '../origin'
 import { ensureAccount } from '../pvp/ids'
 import { WITHDRAWAL_CONFIG_KEYS, TREASURY_SIGNER } from '../treasury/config'
@@ -55,7 +57,7 @@ export type RouteContext = {
 }
 
 /** Prefixes this module owns. Checked before any work so the router stays cheap. */
-const PREFIXES = ['/api/account', '/api/gold', '/api/hunt', '/api/jobs', '/api/artifacts', '/api/withdrawals', '/api/ledger']
+const PREFIXES = ['/api/account', '/api/gold', '/api/hunt', '/api/jobs', '/api/artifacts', '/api/withdrawals', '/api/ledger', '/api/services']
 
 const body = (parsed: unknown) => (parsed ?? {}) as Record<string, unknown>
 
@@ -425,6 +427,75 @@ export async function handleAccountHttp(context: RouteContext): Promise<boolean>
       return true
     }
     send(res, 200, { artifact })
+    return true
+  }
+
+  /* ---- npc services ----------------------------------------------------- */
+
+  if (method === 'GET' && path === '/api/services') {
+    const gold = goldSnapshot(userId)
+    send(res, 200, {
+      services: catalogueView(),
+      orders: listOrdersForOwner(userId),
+      gold: { available: gold.available.toString(), reserved: gold.reserved.toString(), total: gold.total.toString() },
+      currency: 'gold',
+      notice:
+        'Services are paid for in game gold out of the one server-owned balance. Prices are set here, not by the caller. An unavailable service cannot be bought and moves nothing.',
+    })
+    return true
+  }
+
+  if (method === 'POST' && path === '/api/services/purchase') {
+    const parsed = await readBody()
+    if (!parsed.ok) {
+      fail(res, parsed.status, 'bad_request', parsed.reason)
+      return true
+    }
+    const input = body(parsed.body)
+    // The price is never read from the body. It comes from the server catalogue,
+    // keyed by service id, and nothing here looks at a balance the caller sent.
+    const outcome = purchaseService({
+      userId,
+      playerId: account.player_id,
+      displayName: account.display_name,
+      serviceId: input.serviceId,
+      request: (input.request ?? {}) as Record<string, unknown>,
+      idempotencyKey: input.idempotencyKey,
+    })
+    if (!outcome.ok) {
+      const status =
+        outcome.code === 'unknown_service' ? 404
+        : outcome.code === 'service_unavailable' ? 501
+        : outcome.code === 'insufficient_gold' ? 402
+        : outcome.code === 'contention' ? 409
+        : outcome.code === 'bad_request' ? 400
+        : 422
+      send(res, status, {
+        error: outcome.code,
+        detail: outcome.reason,
+        options: outcome.options,
+        order: outcome.order,
+        gold: outcome.balance === undefined ? undefined : { available: outcome.balance },
+      })
+      return true
+    }
+    send(res, outcome.replayed ? 200 : 201, {
+      order: outcome.order,
+      artifact: outcome.artifact,
+      replayed: outcome.replayed,
+      gold: { available: outcome.balance },
+    })
+    return true
+  }
+
+  const serviceOrder = /^\/api\/services\/orders\/(so_[0-9a-f]{32})$/.exec(path)
+  if (method === 'GET' && serviceOrder) {
+    const order = readOrderForOwner(serviceOrder[1], userId)
+    if (!order) {
+      fail(res, 404, 'not_found')
+      return true
+    }
+    send(res, 200, { order, artifact: readArtifactTextForOwner(serviceOrder[1], userId) })
     return true
   }
 

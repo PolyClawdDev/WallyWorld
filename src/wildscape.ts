@@ -98,6 +98,15 @@ type Crown = {
 }
 
 /**
+ * How the spring arm got the lens out of the wood, cheapest first.
+ *
+ * `clear` is the request honoured untouched, `over` is the last-resort climb
+ * straight up above every crown — it is counted rather than trusted, because if
+ * it ever happens in play the price list below is wrong.
+ */
+type ArmMode = 'clear' | 'lift' | 'duck' | 'slide' | 'short' | 'over'
+
+/**
  * Scatter `count` points across a region's open green, lobe by lobe in
  * proportion to area, so a lopsided region gets planted lopsidedly instead of
  * piling everything into the middle of its biggest blob.
@@ -898,7 +907,609 @@ export function createWildscape() {
     return eye.copy(anchor)
   }
 
-  root.userData.canopy = { corridor: TRUNK_CORRIDOR, crowns, inWood, clearOfWood }
+  /* ------------------------------------------------------------------- *
+   * The spring arm.
+   *
+   * `clearOfWood` above only ever slides the lens ALONG the boom, which is one
+   * axis of the three it could use: in a wood that drags the camera onto the
+   * player's back (measured: 13.7% of vantage points, median 38% shorter, worst
+   * 96%, and 2.1m of boom standing beside a titan pine). A boom that short is
+   * not a camera, it is the inside of a head.
+   *
+   * So the arm searches the whole neighbourhood of the requested pose instead —
+   * elevation up (over the crowns), elevation down (into the leaf-free trunk
+   * corridor every tree keeps), yaw either way (round a bole) and only then
+   * length — and picks the cheapest clear pose under a fixed price list:
+   *
+   *   lifting  0.85 / rad     ducking  1.00 / rad
+   *   sliding  1.15 / rad     SHORTENING 7.00 per unit of boom lost
+   *
+   * Shortening is priced an order of magnitude above the angles on purpose, so
+   * it is what happens when nothing else works rather than what happens first.
+   * Below `BOOM_FLOOR` it cannot happen at all.
+   * ------------------------------------------------------------------- */
+
+  /** Never below the street, and never inside the wayfinder's own hat. */
+  const EYE_FLOOR = 1.4
+  /**
+   * The boom may never be shortened below this, whatever the wood does.
+   *
+   * The 2.1m collapse is impossible by construction rather than by luck because
+   * of this line. A request SHORTER than the floor is honoured as-is — minimum
+   * zoom asks for 3.8m and that is a framing, not a failure — it simply cannot
+   * then be shortened at all, and has to escape sideways.
+   */
+  const BOOM_FLOOR = 6.5
+  const LIFT_COST = 0.85
+  const DUCK_COST = 1
+  /**
+   * A surcharge on the square of the duck, so a small one stays cheap.
+   *
+   * Dipping the lens under the edge of a crown is the best move the arm has:
+   * every tree keeps a leaf-free corridor, so a duck of a few degrees very
+   * often finds clear air at full boom. Diving from a 21m overhead request all
+   * the way to the corridor is the same move taken too far — it is a 16m
+   * reframe, and when the wood closes over that position the lens has to cut
+   * back up through the crowns. Measured: two such cuts in a 22s walk with this
+   * term at 0, none with it at 1.6.
+   */
+  const DIVE_COST = 1.6
+  const SLIDE_COST = 1.15
+  const SHORTEN_COST = 7
+  /**
+   * Price of the player being hidden behind wood, per unit of the boom that is
+   * inside a tree. Only ever paid when the requested pose is already blocked:
+   * a clear request is returned untouched, so nothing in the open moves.
+   *
+   * Without it the arm happily ducks a 35m boom to eye level in a wood, which
+   * is clear of leaves and a view of eleven trunks.
+   */
+  const OCCLUDE_COST = 3
+  /**
+   * How much wood may stand between the lens and the wayfinder before the arm
+   * treats a pose as needing work, even though the lens itself is in clear air.
+   *
+   * Without this the arm only ever answers "is the lens inside a tree", and
+   * beside a titan pine the honest answer is yes, the lens is fine — it is
+   * three metres off the bark of a two-metre bole, looking at a wall of it.
+   * Measured off a plate: 60% of the frame was trunk. A quarter of the boom is
+   * about where a trunk stops being scenery and starts being the view.
+   */
+  const OCCLUDE_TOLERANCE = 0.25
+  /**
+   * A surcharge on ending up steep, whatever the lift that got there cost.
+   *
+   * The price list above is scale-free on purpose, but one thing about a lift is
+   * not: the same 0.9rad on a 35m boom is a climb over the treetops, and at
+   * minimum zoom — where the orbit already sits at 0.55rad — it is the camera
+   * ending up directly over the wayfinder's hat looking down at it. Measured off
+   * a plate beside a titan pine: the arm preferred straight up to sliding round
+   * the bole, and straight up at 5m of boom is not a camera angle.
+   *
+   * Fades out entirely as the boom grows, because at 35m a steep lens is not a
+   * surprise — it is the framing the game's own maximum zoom asks for, and the
+   * long boom's answer to a wood should stay the climb over the crowns. Applied
+   * at full strength everywhere it pushed the long booms into deep dives
+   * instead: the worst single-frame cut on a max-zoom walk went from 1.9m to
+   * 12m, and the lens spent the walk at head height looking through trunks.
+   */
+  const STEEP_FROM = 1
+  const STEEP_COST = 4
+  const STEEP_NEAR = 5
+  const STEEP_FAR = 15
+  /**
+   * Price of MOVING the lens away from the pose the arm chose last frame.
+   *
+   * Priced in the same units as everything above — fractions of the requested
+   * boom, which is what makes the list scale-free — so on a 24m boom this is
+   * about 1.4 per boom-length of travel.
+   *
+   * This is the hysteresis, and it is not a nicety. Ducking into the corridor
+   * and lifting over the crowns are both cheap, and at a long boom they are
+   * thirty metres apart: without a price on the trip between them the search
+   * swaps one for the other as the player walks and the lens teleports. With
+   * it, whichever was chosen first is kept until it stops being clear.
+   */
+  const MOVE_COST = 1.4
+  /**
+   * How fast the hysteresis lets go when the player changes the framing.
+   *
+   * The price of travel is there to stop the arm re-deciding because the WORLD
+   * moved — the wayfinder took a step and the pose the lens is in stopped being
+   * clear. It is not there to stop it re-deciding when the PLAYER moves: a zoom
+   * from 5m of boom to 35m is a different question, and the answer that was
+   * right at 5m (duck into the corridor) is wrong at 35m (climb over the
+   * crowns). Without this the arm held the duck all the way out and the live
+   * max-zoom plate came out as a wall of trunks at head height with the
+   * wayfinder invisible behind them, while the same vantage point solved from
+   * cold chose a clean overhead.
+   *
+   * So: the more the request changed since last frame, the cheaper it is to
+   * move. Walking does not change the request at all, so walking keeps the
+   * whole of the hysteresis.
+   */
+  const CHURN_RELEASE = 8
+
+  type ArmCandidate = { lift: number; slide: number; keep: number; cost: number }
+  const LIFTS = [0, 0.12, 0.26, 0.42, 0.6, 0.8, 1.02]
+  const DUCKS = [-0.16, -0.34, -0.56, -0.82, -1.1]
+  const SLIDES = [0, 0.14, -0.14, 0.3, -0.3, 0.5, -0.5, 0.74, -0.74, 1, -1]
+  const KEEPS = [1, 0.86, 0.72, 0.58, 0.44, 0.3]
+  /**
+   * Every pose the arm will consider, cheapest first, built once.
+   *
+   * Sorted so the search can stop at the first clear pose whose price is below
+   * the next candidate's: occlusion and the cost of travel are both
+   * non-negative, so nothing further down the list can beat what is in hand.
+   * That bound is what keeps this cheap — 6.5 poses tested per solve over the
+   * whole world — so the list is kept whole rather than truncated. Truncating
+   * it to the cheapest 220 sorted the deepest ducks off the end and sent 142
+   * vantage points to the last-resort climb instead.
+   */
+  /** What a pose costs, in fractions of the requested boom. */
+  const armCost = (lift: number, slide: number, keep: number) =>
+    (lift > 0 ? lift * LIFT_COST : -lift * DUCK_COST + lift * lift * DIVE_COST) +
+    Math.abs(slide) * SLIDE_COST +
+    Math.max(0, 1 - keep) * SHORTEN_COST
+  const armCandidates: ArmCandidate[] = []
+  for (const keep of KEEPS) {
+    for (const slide of SLIDES) {
+      for (const lift of [...LIFTS, ...DUCKS]) {
+        armCandidates.push({ lift, slide, keep, cost: armCost(lift, slide, keep) })
+      }
+    }
+  }
+  armCandidates.sort((a, b) => a.cost - b.cost)
+
+  /** How high the leaves reach over this ground, 0 where there is no tree. */
+  const canopyTopAt = (x: number, z: number) => {
+    const list = buckets.get(bucketKey(Math.floor(x / CROWN_BUCKET), Math.floor(z / CROWN_BUCKET)))
+    let top = 0
+    if (!list) return top
+    for (const crown of list) {
+      if (Math.hypot(x - crown.x, z - crown.z) / crown.squash > crown.reach) continue
+      if (crown.top > top) top = crown.top
+    }
+    return top
+  }
+
+  /**
+   * Radius of the ball around the lens that has to be clear, not just the point.
+   *
+   * A point test accepts poses that are clear by a centimetre, and it is what a
+   * spring arm is not: the lens has a near plane and the player has a stride.
+   */
+  const LENS_BALL = 0.45
+  /**
+   * And the ball the arm would LIKE to have, priced rather than required.
+   *
+   * This is the second half of the anti-flicker story, and it is about time
+   * rather than space: a pose clear by 5cm is enclosed by the wood one stride
+   * later, and then the lens has to cut to wherever is clear now. Preferring
+   * poses with a metre of air around them buys about a third of a second of
+   * walking before the same decision has to be taken again.
+   */
+  const ROOM_BALL = 1.3
+  const TIGHT_COST = 0.55
+
+  /**
+   * Is a lens here clear? The ball around it, and a point 0.7m along the line of
+   * sight, because a lens whose centre is clear but whose near plane is buried
+   * still fills the screen with leaf.
+   */
+  const lensClear = (x: number, y: number, z: number, ax: number, ay: number, az: number) => {
+    if (y < EYE_FLOOR) return false
+    if (inWood(x, y, z)) return false
+    if (inWood(x + LENS_BALL, y, z) || inWood(x - LENS_BALL, y, z)) return false
+    if (inWood(x, y, z + LENS_BALL) || inWood(x, y, z - LENS_BALL)) return false
+    if (inWood(x, y + LENS_BALL, z) || inWood(x, y - LENS_BALL, z)) return false
+    const dx = ax - x
+    const dy = ay - y
+    const dz = az - z
+    const span = Math.hypot(dx, dy, dz)
+    if (span < 1e-4) return true
+    const lead = Math.min(0.7 / span, 0.4)
+    return !inWood(x + dx * lead, y + dy * lead, z + dz * lead)
+  }
+
+  /** Is there room to spare around the lens, or is it wedged in a gap? */
+  const lensRoomy = (x: number, y: number, z: number) =>
+    !inWood(x + ROOM_BALL, y, z) && !inWood(x - ROOM_BALL, y, z) &&
+    !inWood(x, y, z + ROOM_BALL) && !inWood(x, y, z - ROOM_BALL) &&
+    !inWood(x, y + ROOM_BALL, z) && !inWood(x, y - ROOM_BALL, z)
+
+  /**
+   * Fraction of the line from lens to aim point that is inside wood.
+   *
+   * Sampled every 1.2m rather than a fixed number of times along the line. A
+   * fixed count is a trap here: eight samples on a 32m boom is one every four
+   * metres, which walks straight past the metre-wide boles it is looking for, so
+   * a lens ducked to head height 32m away through a wood measured as 13%
+   * occluded when the plate was most of the wayfinder behind trunks. The arm
+   * then thought ducking was cheap.
+   */
+  const OCCLUDE_STEP = 1.2
+  const occlusionOf = (x: number, y: number, z: number, ax: number, ay: number, az: number) => {
+    const span = Math.hypot(ax - x, ay - y, az - z)
+    const samples = Math.max(6, Math.min(28, Math.round(span / OCCLUDE_STEP)))
+    let hits = 0
+    for (let i = 1; i <= samples; i++) {
+      const t = i / (samples + 1)
+      if (inWood(x + (ax - x) * t, y + (ay - y) * t, z + (az - z) * t)) hits += 1
+    }
+    return hits / samples
+  }
+
+  /**
+   * Where the arm wants the lens, and the scratch it is worked out in. Both are
+   * reused rather than allocated: this runs twice a frame over a few hundred
+   * candidate poses, and a Vector3 per candidate is 60,000 a second of garbage.
+   */
+  const armPlace = { x: 0, y: 0, z: 0, yaw: 0, elevation: 0, boom: 0 }
+  const armResult = { yaw: 0, elevation: 0, boom: 0, mode: 'clear' as ArmMode, cost: 0 }
+  /** Cheap instrumentation, read by scripts/verify-springarm.ts. */
+  const armCounters = { calls: 0, candidates: 0, over: 0 }
+
+  /**
+   * Solve the arm: the cheapest clear pose near the requested one.
+   *
+   * `prev` is last frame's answer, which is tried first and priced at a
+   * discount. That is the whole of the anti-flicker story on the search side —
+   * two poses of near-equal price stop trading places frame to frame — and the
+   * slew limiter in `springArm` is the other half.
+   */
+  const solveArm = (
+    ax: number,
+    ay: number,
+    az: number,
+    yaw: number,
+    elevation: number,
+    boom: number,
+    prev?: { lift: number; slide: number; keep: number },
+    stick = 1,
+  ) => {
+    armCounters.calls += 1
+    const floor = Math.min(boom, BOOM_FLOOR)
+    const at = (lift: number, slide: number, length: number) => {
+      const el = THREE.MathUtils.clamp(elevation + lift, -1, 1.45)
+      const flat = Math.cos(el) * length
+      armPlace.yaw = yaw + slide
+      armPlace.elevation = el
+      armPlace.boom = length
+      armPlace.x = ax + Math.sin(armPlace.yaw) * flat
+      armPlace.y = ay + Math.sin(el) * length
+      armPlace.z = az + Math.cos(armPlace.yaw) * flat
+      return armPlace
+    }
+    /* The overwhelmingly common case, and it must stay cheap: a clear request
+     * with a clear view down it is returned exactly as asked, so open ground
+     * never moves. */
+    armCounters.candidates += 1
+    let pose = at(0, 0, boom)
+    if (lensClear(pose.x, pose.y, pose.z, ax, ay, az)) {
+      if (occlusionOf(pose.x, pose.y, pose.z, ax, ay, az) <= OCCLUDE_TOLERANCE) {
+        armResult.yaw = yaw
+        armResult.elevation = elevation
+        armResult.boom = boom
+        armResult.mode = 'clear'
+        armResult.cost = 0
+        return armResult
+      }
+    }
+    /** What it costs to get from last frame's pose to this one. Zero with no
+     * memory, which is what the sweep in the harness measures. */
+    const moved = (lift: number, slide: number, keep: number) =>
+      prev
+        ? MOVE_COST * stick * (Math.abs(lift - prev.lift) + Math.abs(slide - prev.slide) + 2 * Math.abs(keep - prev.keep))
+        : 0
+    /** What ending up at this elevation costs on top of getting there. */
+    const steepRate =
+      STEEP_COST * THREE.MathUtils.clamp((STEEP_FAR - boom) / (STEEP_FAR - STEEP_NEAR), 0, 1)
+    const steep = (lift: number) => {
+      const el = THREE.MathUtils.clamp(elevation + lift, -1, 1.45)
+      return el > STEEP_FROM ? (el - STEEP_FROM) * steepRate : 0
+    }
+    let best: ArmCandidate | null = null
+    let bestCost = Infinity
+    const bestPose = { yaw: 0, elevation: 0, boom: 0 }
+    if (prev && (prev.lift !== 0 || prev.slide !== 0 || prev.keep !== 1)) {
+      armCounters.candidates += 1
+      pose = at(prev.lift, prev.slide, Math.max(floor, boom * prev.keep))
+      if (lensClear(pose.x, pose.y, pose.z, ax, ay, az)) {
+        const raw = armCost(prev.lift, prev.slide, prev.keep) + steep(prev.lift)
+        bestCost =
+          raw +
+          OCCLUDE_COST * occlusionOf(pose.x, pose.y, pose.z, ax, ay, az) +
+          (lensRoomy(pose.x, pose.y, pose.z) ? 0 : TIGHT_COST)
+        best = { ...prev, cost: raw }
+        bestPose.yaw = pose.yaw
+        bestPose.elevation = pose.elevation
+        bestPose.boom = pose.boom
+      }
+    }
+    let lastLength = -1
+    for (const candidate of armCandidates) {
+      /* Admissible: occlusion and the cost of moving are both non-negative, so
+       * nothing further down a list sorted by the pose's own price can beat
+       * what is already in hand. */
+      if (candidate.cost >= bestCost) break
+      const length = Math.max(floor, boom * candidate.keep)
+      // Below the floor every `keep` lands on the same length; test it once.
+      if (candidate.slide === 0 && candidate.lift === 0 && length === lastLength) continue
+      lastLength = length
+      const total = candidate.cost + moved(candidate.lift, candidate.slide, candidate.keep) + steep(candidate.lift)
+      if (total >= bestCost) continue
+      armCounters.candidates += 1
+      pose = at(candidate.lift, candidate.slide, length)
+      if (!lensClear(pose.x, pose.y, pose.z, ax, ay, az)) continue
+      const priced =
+        total +
+        OCCLUDE_COST * occlusionOf(pose.x, pose.y, pose.z, ax, ay, az) +
+        (lensRoomy(pose.x, pose.y, pose.z) ? 0 : TIGHT_COST)
+      if (priced >= bestCost) continue
+      bestCost = priced
+      best = candidate
+      bestPose.yaw = pose.yaw
+      bestPose.elevation = pose.elevation
+      bestPose.boom = pose.boom
+    }
+    if (best) {
+      armResult.yaw = bestPose.yaw
+      armResult.elevation = bestPose.elevation
+      armResult.boom = bestPose.boom
+      armResult.mode =
+        best.keep === 1 && best.lift === 0 && best.slide === 0
+          ? 'clear'
+          : best.keep < 1
+            ? 'short'
+            : best.lift > 0
+              ? 'lift'
+              : best.lift < 0
+                ? 'duck'
+                : 'slide'
+      armResult.cost = best.cost
+      return armResult
+    }
+    /* Nothing in 220 poses was clear. Straight up over the crowns is clear by
+     * construction — `inWood` is false above every crown's top — so the hard
+     * guarantee never rests on the search finding something. If this fires in
+     * play the price list is wrong; the harness counts it for that reason. */
+    armCounters.over += 1
+    armResult.yaw = yaw
+    armResult.elevation = Math.PI / 2
+    armResult.boom = Math.max(floor, canopyTopAt(ax, az) + 1.2 - ay)
+    armResult.mode = 'over'
+    armResult.cost = Infinity
+    return armResult
+  }
+
+  /* ---- the damper ----
+   *
+   * A lens that pops over the treetops every few steps is worse than a short
+   * boom, so the arm's answer is slewed rather than applied. Two rules:
+   *
+   *   - a solved pose is reached at 2.6 rad/s, not instantly, and any eased
+   *     position is re-tested: if the ease passes through leaf the solved pose
+   *     is taken whole that frame. So the guarantee is never traded for smooth.
+   *   - coming BACK is the flickery direction, so it waits RELEASE_S after the
+   *     request first comes clear and then unwinds at 1.1 rad/s. Walking a wood
+   *     edge cannot therefore lift and drop the lens once a step.
+   */
+  const RELEASE_S = 0.35
+  const GRAB_RATE = 2.6
+  const RELAX_RATE = 1.1
+  /**
+   * Metres a second the lens may travel, which at a given boom is a limit on
+   * radians a second — the same angular rate is a stroll at 4m of boom and a
+   * lurch at 35m, so the cap has to be expressed where the player sees it.
+   */
+  const TRAVEL_CAP = 7
+  const RETURN_CAP = 4.5
+  /** `live` is where the lens is being eased to; `chosen` is the last solve. */
+  const live = { lift: 0, slide: 0, keep: 1 }
+  const chosen = { lift: 0, slide: 0, keep: 1 }
+  /** Last frame's request, to tell a zoom or a drag from a walk. */
+  const asked = { yaw: 0, elevation: 0, boom: 0, seen: false }
+  let clearFor = 0
+  const slew = (from: number, to: number, rate: number, cap: number, dt: number) => {
+    const eased = from + (to - from) * (1 - Math.exp(-dt * rate))
+    const limit = cap * dt
+    return THREE.MathUtils.clamp(eased, from - limit, from + limit)
+  }
+  const resetArm = () => {
+    live.lift = 0
+    live.slide = 0
+    live.keep = 1
+    chosen.lift = 0
+    chosen.slide = 0
+    chosen.keep = 1
+    asked.seen = false
+    clearFor = 0
+    armCounters.calls = 0
+    armCounters.candidates = 0
+    armCounters.over = 0
+  }
+
+  /**
+   * Move `eye` to a clear vantage point near the one it is asking for, damped
+   * across frames. Same contract as `clearOfWood` — it writes `eye` and returns
+   * it — so the camera rig in `src/main.tsx` reads the same.
+   */
+  const springArm = (eye: THREE.Vector3, anchor: THREE.Vector3, dt: number) => {
+    const dx = eye.x - anchor.x
+    const dy = eye.y - anchor.y
+    const dz = eye.z - anchor.z
+    const boom = Math.hypot(dx, dy, dz)
+    if (boom < 1e-4) return eye
+    const yaw = Math.atan2(dx, dz)
+    const elevation = Math.asin(THREE.MathUtils.clamp(dy / boom, -1, 1))
+    /* The pose that is priced at a discount is the last one SOLVED, not the
+     * eased one the lens is currently at: mid-ease the lens is between two
+     * poses and may be in leaf, which would fail the test and let the search
+     * re-decide from scratch every frame — the flicker this is here to stop. */
+    const held = chosen.lift !== 0 || chosen.slide !== 0 || chosen.keep !== 1
+    /* How much of the change since last frame is the player's doing. Yaw is
+     * compared the long way round so the ±pi seam is not a drag. */
+    const churn = asked.seen
+      ? Math.abs(boom - asked.boom) / Math.max(boom, 1) +
+        Math.abs(elevation - asked.elevation) +
+        Math.abs(Math.atan2(Math.sin(yaw - asked.yaw), Math.cos(yaw - asked.yaw)))
+      : 1
+    asked.yaw = yaw
+    asked.elevation = elevation
+    asked.boom = boom
+    asked.seen = true
+    const arm = solveArm(
+      anchor.x, anchor.y, anchor.z, yaw, elevation, boom,
+      held ? chosen : undefined,
+      THREE.MathUtils.clamp(1 - churn * CHURN_RELEASE, 0, 1),
+    )
+    const want = {
+      lift: arm.elevation - elevation,
+      slide: arm.yaw - yaw,
+      keep: arm.boom / boom,
+    }
+    if (arm.mode !== 'clear') {
+      chosen.lift = want.lift
+      chosen.slide = want.slide
+      chosen.keep = want.keep
+    }
+    if (arm.mode === 'clear') {
+      clearFor += dt
+      // Hold what we have while the dwell runs, then unwind it slowly.
+      if (clearFor < RELEASE_S && held) {
+        want.lift = chosen.lift
+        want.slide = chosen.slide
+        want.keep = chosen.keep
+      }
+      live.lift = slew(live.lift, want.lift, RELAX_RATE, RETURN_CAP / boom, dt)
+      live.slide = slew(live.slide, want.slide, RELAX_RATE, RETURN_CAP / boom, dt)
+      live.keep = slew(live.keep, want.keep, RELAX_RATE, RETURN_CAP / boom, dt)
+      // Fully unwound: forget the held pose so it cannot be revived later.
+      if (Math.abs(live.lift) < 1e-3 && Math.abs(live.slide) < 1e-3 && Math.abs(live.keep - 1) < 1e-3) {
+        chosen.lift = 0
+        chosen.slide = 0
+        chosen.keep = 1
+      }
+    }
+    else {
+      clearFor = 0
+      live.lift = slew(live.lift, want.lift, GRAB_RATE, TRAVEL_CAP / boom, dt)
+      live.slide = slew(live.slide, want.slide, GRAB_RATE, TRAVEL_CAP / boom, dt)
+      live.keep = slew(live.keep, want.keep, GRAB_RATE, TRAVEL_CAP / boom, dt)
+    }
+    /* The eased pose, and if the ease is passing through wood, the smallest
+     * step from it towards the solved pose that comes clear. The last step is
+     * the solved pose exactly, which the search has already proved clear, so
+     * this always terminates and the guarantee is never traded for smoothness.
+     * Stepping rather than snapping matters: a snap moves the lens up to twelve
+     * metres in a frame, and the render loop's lerp then trails it through the
+     * crown it was escaping. */
+    /* Fine on purpose. At eight steps the smallest clear step off a blocked
+     * ease was an eleven-metre move on a 24m boom, which the render loop's lerp
+     * then trailed through the crown; at twenty-four it is a third of that, and
+     * the extra tests are only paid on the frames where the ease is blocked. */
+    const SETTLE_STEPS = 24
+    for (let step = 0; step <= SETTLE_STEPS; step++) {
+      const u = step / SETTLE_STEPS
+      const lift = live.lift + (want.lift - live.lift) * u
+      const slide = live.slide + (want.slide - live.slide) * u
+      const keep = live.keep + (want.keep - live.keep) * u
+      const el = THREE.MathUtils.clamp(elevation + lift, -1, 1.45)
+      const length = Math.max(Math.min(boom, BOOM_FLOOR), boom * keep)
+      const flat = Math.cos(el) * length
+      const x = anchor.x + Math.sin(yaw + slide) * flat
+      const y = anchor.y + Math.sin(el) * length
+      const z = anchor.z + Math.cos(yaw + slide) * flat
+      if (step < SETTLE_STEPS && !lensClear(x, y, z, anchor.x, anchor.y, anchor.z)) continue
+      live.lift = lift
+      live.slide = slide
+      live.keep = keep
+      return eye.set(x, y, z)
+    }
+    return eye
+  }
+
+  /**
+   * Unit directions the lens may be nudged in to get out of a leaf, as a flat
+   * x,y,z triple list: straight up first, then down, then eight compass
+   * bearings, then the eight raised and the eight lowered ones.
+   */
+  const SETTLE_DIRS: number[] = [0, 1, 0, 0, -1, 0]
+  for (const rise of [0, 0.7, -0.7]) {
+    for (let step = 0; step < 8; step++) {
+      const bearing = (step / 8) * Math.PI * 2
+      const length = Math.hypot(1, rise)
+      SETTLE_DIRS.push(Math.sin(bearing) / length, rise / length, Math.cos(bearing) / length)
+    }
+  }
+
+  /**
+   * The lens where it ACTUALLY ended up, after the render loop's own lerp.
+   *
+   * The lerp eases from wherever the camera was toward `goal`, which the arm has
+   * already cleared, and that straight line can still clip a crown on the way.
+   * So this walks the remainder of that same line — towards a point known to be
+   * clear — and stops at the first clear metre.
+   *
+   * It deliberately does NOT re-run the search. A free solve here moves the lens
+   * to the cheapest pose near where the lerp happened to be, which is a
+   * different pose every frame: measured over a walk into the wildwood that was
+   * 678m/s of vertical lens speed against 12m/s for this. Resolving along the
+   * direction the camera is already travelling can only ever shorten the ease.
+   */
+  const settle = (eye: THREE.Vector3, goal: THREE.Vector3, anchor: THREE.Vector3) => {
+    if (lensClear(eye.x, eye.y, eye.z, anchor.x, anchor.y, anchor.z)) return eye
+    const dx = goal.x - eye.x
+    const dy = goal.y - eye.y
+    const dz = goal.z - eye.z
+    const span = Math.hypot(dx, dy, dz)
+    if (span < 1e-4) return eye.copy(goal)
+    /* How far along the ease the lens has to go to come clear. This always
+     * finds something — the goal itself is clear — but it can be several
+     * metres, and several metres in one frame is a cut. */
+    let reach = span
+    const steps = Math.max(4, Math.min(48, Math.round(span / 0.3)))
+    for (let step = 1; step <= steps; step++) {
+      const t = step / steps
+      if (!lensClear(eye.x + dx * t, eye.y + dy * t, eye.z + dz * t, anchor.x, anchor.y, anchor.z)) continue
+      reach = span * t
+      break
+    }
+    /* So look for somewhere nearer first, straight out of the leaf in any
+     * direction. Sliding 40cm sideways off a crown as the player walks past it
+     * is not a cut; finishing a four-metre ease in one frame is. */
+    /* A nudge must not do what the whole exercise is about stopping: the lens
+     * may leave the leaf in any direction except towards the wayfinder's head,
+     * and never past the boom floor. */
+    const keepOut = Math.min(BOOM_FLOOR, span + eye.distanceTo(anchor), eye.distanceTo(anchor))
+    for (const radius of [0.4, 0.8, 1.3, 2, 3]) {
+      if (radius >= reach) break
+      for (let ring = 0; ring < SETTLE_DIRS.length; ring += 3) {
+        const x = eye.x + SETTLE_DIRS[ring] * radius
+        const y = eye.y + SETTLE_DIRS[ring + 1] * radius
+        const z = eye.z + SETTLE_DIRS[ring + 2] * radius
+        if (Math.hypot(x - anchor.x, y - anchor.y, z - anchor.z) < keepOut) continue
+        if (lensClear(x, y, z, anchor.x, anchor.y, anchor.z)) return eye.set(x, y, z)
+      }
+    }
+    const t = reach / span
+    return eye.set(eye.x + dx * t, eye.y + dy * t, eye.z + dz * t)
+  }
+
+  root.userData.canopy = {
+    corridor: TRUNK_CORRIDOR,
+    crowns,
+    inWood,
+    clearOfWood,
+    canopyTopAt,
+    springArm,
+    settle,
+    solveArm,
+    resetArm,
+    armCounters,
+    boomFloor: BOOM_FLOOR,
+  }
 
   root.userData.stats = {
     propMeshes: welded.meshes.length,

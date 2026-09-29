@@ -6,7 +6,7 @@ import { createRoot } from 'react-dom/client'
 import * as THREE from 'three'
 import { animateCharacter, createWizard, cycleStyle, defaultMothStyle, styleLabel, styleSlots, wizards } from './characters'
 import type { MothStyle, WizardId } from './characters'
-import { createTownsfolk, npcAccent, placeNpcLabel } from './npcs'
+import { createServiceEmblems, createTownsfolk, npcAccent, placeNpcLabel } from './npcs'
 import { Popup } from './Popup'
 import { WalletPouch } from './Wallet'
 import { WorldMap } from './WorldMap'
@@ -224,6 +224,9 @@ function createTown() {
   for (let i = 0; i < stalls.count; i++) voxel(root, [1.8, 0.2, 0.7], [stalls.x + i * stalls.step, 0.3, stalls.z], '#896746')
   for (let i = 0; i < 5; i++) voxel(root, [1.8, 0.2, 0.7], [-15 + i * 4, 0.5 + i * 0.18, 31 + i * 0.4], '#70736a')
   buildingSpecs.forEach(spec => createBuilding(root, spec))
+  // Trade emblems on the premises and beside the townsfolk. Frees itself when
+  // removed from the graph, so it rides along with whatever removes the town.
+  root.add(createServiceEmblems())
   // perimeter vegetation and hand-placed story props
   for (const { x, z, alt } of perimeterTrees()) {
     voxel(root, [0.45, 2.4, 0.45], [x, 1.2, z], '#4d3d35')
@@ -611,7 +614,10 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
      * forest is scattered from one RNG sequence and a second pass would produce a
      * different wood. See the canopy section of src/wildscape.ts. */
     const canopy = wildscape.userData.canopy as
-      | { clearOfWood: (eye: THREE.Vector3, anchor: THREE.Vector3) => THREE.Vector3 }
+      | {
+          springArm: (eye: THREE.Vector3, anchor: THREE.Vector3, dt: number) => THREE.Vector3
+          settle: (eye: THREE.Vector3, goal: THREE.Vector3, anchor: THREE.Vector3) => THREE.Vector3
+        }
       | undefined
     // Lets the pouch raycast drops onto NPCs and the map read the player's pose.
     const unregisterWorld = registerWorld({ scene, camera, canvas: renderer.domElement, player })
@@ -1103,8 +1109,11 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
          * head height, so the low orbit is safe by construction, but a boom
          * tilted up climbs twenty metres into the crowns — and that is a wood,
          * there is nothing to be done about it from the planting side. So the
-         * boom shortens until the lens is out of the leaves. */
-        canopy?.clearOfWood(desired, target)
+         * arm looks for a clear pose around this one: over the crowns, down into
+         * the corridor, or round the bole, and only shortens as a last resort
+         * and never below its floor. Damped across frames, so a wood edge does
+         * not lift and drop the lens once a step. See src/wildscape.ts. */
+        canopy?.springArm(desired, target, dt)
         /* Looking ahead of the wayfinder is what makes the default framing read
          * as a street view, but it makes no sense from overhead: fade the lead
          * out, and raise the look point onto the wayfinder, as the camera
@@ -1115,8 +1124,10 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         camera.position.lerp(desired, chase(12))
         camera.position.y = Math.max(camera.position.y, 1.4)
         // The ease toward a clear vantage point can still pass through a crown on
-        // the way, so the lens is checked where it actually ended up as well.
-        canopy?.clearOfWood(camera.position, target)
+        // the way, so the lens is checked where it actually ended up as well —
+        // and resolved by finishing the ease early, towards the vantage point the
+        // arm already cleared, rather than by searching again from here.
+        canopy?.settle(camera.position, desired, target)
         camera.lookAt(streetLook)
       }
       // Backwards, because a collected coin leaves the list. It used to be only
@@ -1284,8 +1295,6 @@ function App() {
   const [style, setStyle] = useState<MothStyle>(defaultMothStyle)
   const [panel, setPanel] = useState<Panel>(null)
   const [npc, setNpc] = useState<string | null>(null)
-  const [task, setTask] = useState<'idle' | 'queued' | 'running' | 'delivered'>('idle')
-  const [receipt, setReceipt] = useState(false)
   const [toast, setToast] = useState('')
   const [gold, setGold] = useState(0)
   const [tab, setTab] = useState<'select' | 'preview' | 'world'>('select')
@@ -1328,7 +1337,6 @@ function App() {
     window.addEventListener('keydown', onShortcut)
     return () => window.removeEventListener('keydown', onShortcut)
   }, [entered])
-  useEffect(() => { if (localStorage.getItem('wally-receipt')) setReceipt(true) }, [])
   const cycleWizard = (step: number) => {
     const ids = Object.keys(wizards) as WizardId[]
     const index = ids.indexOf(wizard)
@@ -1338,11 +1346,11 @@ function App() {
   // character rather than hard-coded to HAT / ROBE / FAMILIAR / ACCESSORY.
   const cycle = (key: ReturnType<typeof styleSlots>[number]['key'], step: number) =>
     setStyle(current => cycleStyle(wizard, current, key, step))
-  const doTask = () => {
-    setTask('queued'); setToast('Budget reserved · 2 demo credits')
-    window.setTimeout(() => setTask('running'), 900)
-    window.setTimeout(() => { setTask('delivered'); setReceipt(true); localStorage.setItem('wally-receipt', 'true'); setToast('Report delivered · receipt saved to your journal') }, 2500)
-  }
+  // The journal's service desk used to be driven from here: three setTimeouts
+  // that walked a fake task through "queued", "running" and "delivered" and
+  // charged two "demo credits", a currency that existed nowhere else. The desk
+  // now buys from the server for real gold and owns its own state, so there is
+  // nothing left for this component to pretend on its behalf.
   if (!entered && tab === 'select') return (
     <main className="entry">
       <div className="entry-copy">
@@ -1368,9 +1376,10 @@ function App() {
   if (entered && tab === 'select') return <main className="select"><header><div className="brand">VOXELS</div><FundsBadge variant="dot" /></header><div className="select-layout"><section className="menu-panel"><div className="eyebrow">CREATE YOUR WAYFINDER</div><h2>Name your<br />character.</h2><p className="muted">Start with {wizards[wizard].name}, the selected wayfinder. Shape the details,<br />then carry your look into the town.</p><label className="name-label" htmlFor="wayfinder-name">NAME YOUR CHARACTER:</label><input id="wayfinder-name" className="name-input" value={playerName} onChange={event => setPlayerName(event.target.value.slice(0, 24))} placeholder="Write any name" autoComplete="off" /><div className="arrow-options"><div className="arrow-choice character-choice"><label>CHARACTER</label><button onClick={() => cycleWizard(-1)} aria-label="Previous character">←</button><div><strong>{wizards[wizard].name}</strong><small>{wizards[wizard].role}</small></div><button onClick={() => cycleWizard(1)} aria-label="Next character">→</button></div>{styleSlots(wizard).map(slot => <div className="arrow-choice" key={slot.key}><label>{slot.label}</label><button onClick={() => cycle(slot.key, -1)} aria-label={`Previous ${slot.key}`}>←</button><div><strong>{styleLabel(wizard, style, slot.key).label}</strong><small>{styleLabel(wizard, style, slot.key).note}</small></div><button onClick={() => cycle(slot.key, 1)} aria-label={`Next ${slot.key}`}>→</button></div>)}</div><button className="primary" onClick={() => setTab('preview')}>Continue with {playerName || wizards[wizard].name} <span>→</span></button></section><section className="selection-art"><div className="selection-grid" /><CharacterPreview wizard={wizard} style={style} /><div className="art-caption"><span>WAYFINDER {Object.keys(wizards).indexOf(wizard) + 1} / 4</span><strong>{playerName || wizards[wizard].name}</strong><small>{wizards[wizard].name} · {wizards[wizard].role}</small></div></section></div></main>
   if (entered && tab === 'preview') return <main className="preview"><div className="preview-left"><button className="back" onClick={() => setTab('select')}>← Back to archetypes</button><div className="eyebrow">WAYFINDER SELECTED</div><h2>{playerName || wizards[wizard].name}</h2><p>{wizards[wizard].name} · {wizards[wizard].desc}</p><div className="preview-facts"><span><b>01</b> Equal permissions</span><span><b>02</b> Cosmetic identity</span><span><b>03</b> Demo-ready</span></div><button className="primary" onClick={() => { setEntered(true); setTab('world') }}>Enter Voxels <span>→</span></button></div><div className="preview-stage"><div className="stage-stars" /><CharacterPreview wizard={wizard} style={style} /><div className="preview-label"><span>ARCHETYPE {Object.keys(wizards).indexOf(wizard) + 1} / 4</span><strong>{wizards[wizard].role}</strong></div></div></main>
   if (!entered) return null
-  const action = (target: string) => { if (target.startsWith('ANIMAL:')) { setToast('Click the animal to attack it · loot drops on the ground for anyone') } else if (target.startsWith('LYRA')) setPanel('journal'); else setToast(`${target} is preparing a demo service.`) }
+  const action = (target: string) => { if (target.startsWith('ANIMAL:')) { setToast('Click the animal to attack it · loot drops on the ground for anyone') } else setPanel('journal') }
   const talkable = npc && !npc.startsWith('ANIMAL:') ? npc : null
-  return <main className="game"><WorldCanvas wizard={wizard} style={style} playerName={playerName} paused={panel !== null} onNear={setNpc} onGold={amount => setGold(value => Math.max(0, value + amount))} onAction={action} /><HuntHud wizard={wizard} /><CombatHud wizard={wizard} style={style} /><PvpOverlay /><div className="hud"><div className="topbar"><div className="avatar-chip"><span style={{ background: wizards[wizard].accent }} />{playerName || wizards[wizard].name}<small>{wizards[wizard].name} WAYFINDER</small></div><div className="gold-chip">✦ {gold} GOLD <small>GAME GOLD</small></div><FundsBadge variant="chip" /><div className="fps-chip">WORLD 01 <span>●</span></div></div><div className="minimap"><div className="map-ring"><i /><b /><em /></div><small>OLD TOWN LOOP</small></div><div className="bottom-nav">{[['map','Map'],['journal','Journal'],['wallet','Wallet'],['settings','Settings']].map(([id, label]) => <button key={id} onClick={() => setPanel(id as Panel)}><span>{id === 'map' ? '⌖' : id === 'journal' ? '▤' : id === 'wallet' ? '◇' : '⚙'}</span>{label}</button>)}</div>{talkable && <button className="interact" onClick={() => { if (talkable.startsWith('LYRA')) setPanel('journal'); else setToast(`${talkable} is preparing a demo service.`) }}>F <span>Talk to</span> {talkable}</button>}{panel === 'wallet' && <Popup variant="pouch" eyebrow="THE HEARTH · PRIVATE" title="Your pouch" onClose={() => setPanel(null)}><WalletPouch gold={gold} onGoldChange={setGold} nearbyNpc={npc} onToast={setToast} /><WalletSolanaPanel /></Popup>}{panel === 'map' && <Popup variant="chart" size="wide" eyebrow="VOXELS · DISTRICT 01" title="Old Town Loop" note={`${townLayout.ground}m × ${townLayout.ground}m · one grid square is 8m · surveyed from the live town layout`} onClose={() => setPanel(null)}><WorldMap /></Popup>}{panel === 'journal' && <Popup variant="book" eyebrow="THE ARCHIVE · LYRA" title="Your journal" onClose={() => setPanel(null)}><JournalPanel task={task} receipt={receipt} onApprove={doTask} /></Popup>}{panel === 'settings' && <Popup variant="plate" eyebrow="PREFERENCES" title="Control plate" onClose={() => setPanel(null)}><SettingsPanel /></Popup>}{toast && <div className="toast" onClick={() => setToast('')}>{toast}</div>}</div></main>
+  return <main className="game"><WorldCanvas wizard={wizard} style={style} playerName={playerName} paused={panel !== null} onNear={setNpc} onGold={amount => setGold(value => Math.max(0, value + amount))} onAction={action} /><HuntHud wizard={wizard} /><CombatHud wizard={wizard} style={style} /><PvpOverlay /><div className="hud"><div className="topbar"><div className="avatar-chip"><span style={{ background: wizards[wizard].accent }} />{playerName || wizards[wizard].name}<small>{wizards[wizard].name} WAYFINDER</small></div>{/* The gold chip lived here. It restated a number the pouch already shows,
+    permanently, in the corner of everyone's screen. */}<FundsBadge variant="chip" /><div className="fps-chip">WORLD 01 <span>●</span></div></div><div className="minimap"><div className="map-ring"><i /><b /><em /></div><small>OLD TOWN LOOP</small></div><div className="bottom-nav">{[['map','Map'],['journal','Journal'],['wallet','Wallet'],['settings','Settings']].map(([id, label]) => <button key={id} onClick={() => setPanel(id as Panel)}><span>{id === 'map' ? '⌖' : id === 'journal' ? '▤' : id === 'wallet' ? '◇' : '⚙'}</span>{label}</button>)}</div>{talkable && <button className="interact" onClick={() => setPanel('journal')}>F <span>Talk to</span> {talkable}</button>}{panel === 'wallet' && <Popup variant="pouch" eyebrow="THE HEARTH · PRIVATE" title="Your pouch" onClose={() => setPanel(null)}><WalletPouch gold={gold} onGoldChange={setGold} nearbyNpc={npc} onToast={setToast} /><WalletSolanaPanel /></Popup>}{panel === 'map' && <Popup variant="chart" size="wide" eyebrow="VOXELS · DISTRICT 01" title="Old Town Loop" note={`${townLayout.ground}m × ${townLayout.ground}m · one grid square is 8m · surveyed from the live town layout`} onClose={() => setPanel(null)}><WorldMap /></Popup>}{panel === 'journal' && <Popup variant="book" eyebrow="THE ARCHIVE · LYRA" title="Your journal" onClose={() => setPanel(null)}><JournalPanel /></Popup>}{panel === 'settings' && <Popup variant="plate" eyebrow="PREFERENCES" title="Control plate" onClose={() => setPanel(null)}><SettingsPanel /></Popup>}{toast && <div className="toast" onClick={() => setToast('')}>{toast}</div>}</div></main>
 }
 
 createRoot(document.getElementById('root')!).render(<App />)

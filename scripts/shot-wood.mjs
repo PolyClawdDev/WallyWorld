@@ -34,12 +34,11 @@ const PLATES = [
   // --- a wood at a player's eye height ------------------------------------
   { name: 'eye-wildwood', pos: [-57, 1.7, -59], look: [-44, 7, -45], fov: 70 },
   { name: 'eye-wildwood-west', pos: [-60, 1.7, -61], look: [-74, 6, -50], fov: 70 },
-  { name: 'eye-brasswood', pos: [63, 1.7, -72], look: [79, 8, -85], fov: 70 },
-
-  /* Straight up from a standing position in the thickest part of the wildwood:
-   * canopy overhead, seen from UNDER it, with sky between the crowns. */
-  { name: 'trunk-lookup', pos: [-57, 1.7, -59], look: [-51, 17, -53], fov: 76 },
-  { name: 'trunk-lone-elder', pos: [91.3, 1.7, -11.5], look: [86.8, 12, -11.5], fov: 68 },
+  /* The Brasswood is a small region under very large trees, so an eye-height lens
+   * inside it has a crown three metres in front of it whichever way it faces.
+   * This one looks back out along the trail instead, which is the only framing in
+   * there that reads. */
+  { name: 'eye-brasswood-trail', pos: [65, 1.7, -72], look: [50, 6, -62], fov: 70 },
 
   // --- open ground with trees on it ---------------------------------------
   { name: 'country-scatter', pos: [-4, 38, 94], look: [-54, 2, 36], fov: 58, noFog: true },
@@ -63,9 +62,6 @@ const PLATES = [
  */
 const WALKS = [
   { name: 'walk-wildwood-deep', at: [-57, -59], zoomOut: 5 },
-  /* Beside a 38m titan pine, with the orbit swung round so the bole is off to one
-   * side of the frame instead of filling it. Yaw is 0.12 radians per press. */
-  { name: 'walk-beside-titanpine', at: [-31.7, -62.8], zoomOut: 6, yawLeft: 12 },
   /* Asking for maximum zoom from inside the wildwood: the boom shortens because
    * there is genuinely nowhere out there that is not canopy. */
   { name: 'walk-wildwood-maxzoom', at: [-57, -59], zoomOut: 22 },
@@ -200,7 +196,7 @@ await page.evaluate(() => {
       const dy = look[1] - pos[1]
       const dz = look[2] - pos[2]
       const span = Math.hypot(dx, dy, dz) || 1
-      for (const ahead of [0.8, 1.6, 2.4]) {
+      for (const ahead of [0.8, 1.6, 2.4, 3.2, 4]) {
         const t = ahead / span
         if (canopy.inWood(pos[0] + dx * t, pos[1] + dy * t, pos[2] + dz * t)) return `WOOD ${ahead}m IN FRONT OF THE LENS`
       }
@@ -226,8 +222,8 @@ await page.evaluate(() => {
 const report = []
 for (const plate of PLATES) {
   if (FILTER && !plate.name.includes(FILTER)) continue
-  const complaint = await page.evaluate(pos => window.__plate.check(pos), plate.pos)
-  if (complaint === 'LENS INSIDE WOOD') {
+  const complaint = await page.evaluate((pos, look) => window.__plate.check(pos, look), plate.pos, plate.look)
+  if (complaint) {
     console.log(`${plate.name.padEnd(22)} SKIPPED — ${complaint}`)
     report.push({ name: plate.name, skipped: complaint })
     continue

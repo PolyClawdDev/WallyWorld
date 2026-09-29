@@ -604,6 +604,13 @@ body.pouch-dragging .popup { filter: drop-shadow(0 10px 0 #00000059); opacity: 0
 
 .mp-label { font: 600 3.1px 'DM Mono', ui-monospace, monospace; letter-spacing: 0.02em; paint-order: stroke; stroke: #f0e2bf; stroke-width: 1.1px; stroke-linejoin: round; }
 .mp-npc { font: 700 3.3px 'DM Mono', ui-monospace, monospace; paint-order: stroke; stroke: #f0e2bf; stroke-width: 1.3px; stroke-linejoin: round; }
+/* The trade under a name, and the external-mark pair under the diamond. Smaller
+ * than the name on purpose: these have to add a fact without crowding the
+ * chart, so they are read second. Same cream halo, or they vanish over a
+ * hatched roof or the canal. */
+.mp-trade { font: 600 2.4px 'DM Mono', ui-monospace, monospace; letter-spacing: 0.04em; paint-order: stroke; stroke: #f0e2bf; stroke-width: 1.1px; stroke-linejoin: round; }
+.mp-mark-name { font: 700 2.9px 'DM Mono', ui-monospace, monospace; letter-spacing: 0.12em; paint-order: stroke; stroke: #f0e2bf; stroke-width: 1.3px; stroke-linejoin: round; }
+.mp-mark-state { font: 700 2.2px 'DM Mono', ui-monospace, monospace; letter-spacing: 0.04em; paint-order: stroke; stroke: #f0e2bf; stroke-width: 1.2px; stroke-linejoin: round; }
 .mp-region { font: 700 3.4px 'DM Mono', ui-monospace, monospace; letter-spacing: 0.3px; paint-order: stroke; stroke: #f0e2bf; stroke-width: 1.3px; stroke-linejoin: round; }
 .mp-district {
   font: 700 5px Georgia, 'Iowan Old Style', serif;
@@ -666,6 +673,23 @@ body.pouch-dragging .popup { filter: drop-shadow(0 10px 0 #00000059); opacity: 0
 .mp-places i { width: 8px; height: 8px; flex: none; box-shadow: inset 0 0 0 1px #00000040; }
 .mp-places em { margin-left: auto; font: 9px 'DM Mono', ui-monospace, monospace; font-style: normal; color: #7a6344; white-space: nowrap; }
 .mp-seam { display: block; margin-top: 10px; font: 9px/1.7 'DM Mono', ui-monospace, monospace; color: #7a6344; }
+/* A townsfolk row: emblem, name, coordinates, then the trade on its own line.
+ * The emblem is the same pixel grid the shop board carries, so it is given a
+ * plate of its own rather than being tinted to match the parchment. */
+.mp-places li.mp-folk { display: grid; grid-template-columns: auto 1fr auto; gap: 2px 8px; align-items: center; padding: 7px 0; border-top: 2px dotted #b59a6a; }
+.mp-places li.mp-folk:first-child { border-top: 0; padding-top: 0; }
+.mp-folk strong { font: 700 10px 'DM Mono', ui-monospace, monospace; letter-spacing: 0.06em; color: #46331f; }
+.mp-folk > em { margin: 0; justify-self: end; }
+.mp-folk > span { grid-column: 2 / -1; font: 9px 'DM Mono', ui-monospace, monospace; letter-spacing: 0.1em; color: #7a6344; }
+.mp-emblem { display: block; flex: none; image-rendering: pixelated; background: #2a2118; padding: 1px; box-shadow: inset 0 0 0 1px #00000059, 0 1px 0 #ffffff33; }
+/* The external mark. Boxed, captioned and carrying its status lines, because a
+ * third-party logo loose in a list reads as an endorsement. */
+.mp-folk-mark { grid-column: 1 / -1; display: flex; gap: 9px; align-items: flex-start; margin-top: 6px; padding: 7px 8px; background: #d8c194; box-shadow: inset 0 0 0 2px #b8860b, inset 0 2px 0 2px #ffffff40; }
+.mp-folk-mark b { display: block; font: 700 9px 'DM Mono', ui-monospace, monospace; letter-spacing: 0.12em; color: #6b4a08; }
+.mp-folk-mark small { display: block; margin-top: 2px; font: 9px/1.5 'DM Mono', ui-monospace, monospace; color: #8a3a1e; }
+.mp-legend-mark { align-items: flex-start !important; }
+.mp-legend-mark span { line-height: 1.55; }
+.mp-legend-mark b { color: #6b4a08; }
 .mp-region-row { display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; padding: 8px 0; border-top: 2px dotted #b59a6a; }
 .mp-region-row strong { font: 700 10px 'DM Mono', ui-monospace, monospace; letter-spacing: 0.08em; color: #46331f; }
 .mp-region-row small { grid-column: 1 / -1; font-size: 10px; line-height: 1.5; color: #6b5233; }

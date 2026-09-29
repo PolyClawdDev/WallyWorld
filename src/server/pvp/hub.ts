@@ -6,6 +6,7 @@
 
 import { setInterval } from 'node:timers'
 import {
+  CHAT_SAY_RADIUS,
   COMBAT_TICK_MS,
   DEMO_GOLD_NOTICE,
   GOLD_KIND,
@@ -13,6 +14,7 @@ import {
   PREPARE_TIMEOUT_MS,
   STALE_CONNECTION_MS,
   type C2S,
+  type ChatMessage,
   type CombatEvent,
   type DuelOutcomeKind,
   type DuelResultView,
@@ -25,6 +27,7 @@ import {
 import { isInTown, ringById, ringStarts, TOWN_RESPAWN } from '../../shared/zones'
 import { ROOM_CAPACITY } from '../config'
 import { walletFromAuthHeader } from '../auth'
+import { newChatId, systemLine, vetChat } from '../chat/chat'
 import { publicDisplayName } from '../moderation/names'
 import { CharacterClaims } from './claims'
 import { rememberPosition, resolveMove, resumePosition, sweepPositions } from './presence'
@@ -496,6 +499,8 @@ function handle(live: Live, msg: C2S) {
       broadcastPresence()
       return
     }
+    case 'chat':
+      return onChat(live, msg)
     case 'block':
       setBlock(live.playerId, msg.playerId, msg.on)
       return
@@ -523,6 +528,124 @@ function placeLive(live: Live, at: { x: number; z: number }, now: number) {
   live.lastMoveAtMs = now
   live.awaitingSeed = false
   rememberPosition(live.playerId, live, now)
+}
+
+/* ------------------------------------------------------------------ *
+ * Chat delivery.
+ *
+ * `chat/chat.ts` decided whether the message may exist. This decides who
+ * hears it, which is the half that needs the hub's private state: `lives`
+ * for who is connected, their poses for `/say`, and the block table.
+ * ------------------------------------------------------------------ */
+
+/**
+ * Whether `listener` has chosen not to hear from `speaker`.
+ *
+ * The same `youBlocked` row the duel system uses, read in the same
+ * direction: blocking somebody stops their challenges AND their words. A
+ * block that silenced one but not the other would be a block in name only,
+ * since the abuse just moves to whichever half still works.
+ */
+const deafTo = (listener: PlayerId, speaker: PlayerId) =>
+  listener !== speaker && youBlocked(listener, speaker)
+
+/**
+ * The one online player going by this name, or null.
+ *
+ * Names are not unique in this world, so an ambiguous name resolves to
+ * nobody rather than to a guess — delivering a private message to the wrong
+ * person because two players picked the same label is the one outcome a
+ * whisper must never have.
+ *
+ * Read through `accountByPlayer`, so the name being matched is the SCREENED
+ * name every other player can see. A player whose stored name was
+ * neutralised is reachable as "Wayfinder" and not as what they typed, which
+ * is the only answer consistent with the rest of the protocol.
+ */
+function whisperTarget(name: string): PlayerId | null {
+  const wanted = name.trim().toLowerCase()
+  if (!wanted) return null
+  let found: PlayerId | null = null
+  for (const id of lives.keys()) {
+    if (accountByPlayer(id)?.display_name.toLowerCase() !== wanted) continue
+    if (found) return null
+    found = id
+  }
+  return found
+}
+
+function onChat(live: Live, frame: Extract<C2S, { t: 'chat' }>) {
+  const now = Date.now()
+  const verdict = vetChat({ playerId: live.playerId, channel: frame.channel, text: frame.text, to: frame.to, now })
+  if (!verdict.ok) {
+    // To the sender, and only the sender. A refusal is not an event in the
+    // world and nobody else has any business knowing it happened.
+    return send(live, { t: 'chat', msg: systemLine(verdict.code, verdict.detail, now) })
+  }
+
+  const account = accountByPlayer(live.playerId)
+  if (!account) return
+  // THE name. Read from the accounts table through the screening accessor in
+  // `ids.ts`, not from the frame — which has no name field to read.
+  const fromName = account.display_name
+
+  const line: ChatMessage = {
+    id: newChatId(),
+    channel: verdict.channel,
+    fromId: live.playerId,
+    fromName,
+    text: verdict.text,
+    atMs: now,
+  }
+
+  if (verdict.channel === 'whisper') {
+    const targetId = whisperTarget(verdict.to ?? '')
+    if (!targetId) {
+      /*
+       * One wording for every way a whisper can fail to find someone:
+       * nobody online has that name, two players share it, or they logged
+       * out a second ago. The sender cannot tell which, so the refusal is
+       * not a probe for who is in the world.
+       *
+       * And the set it could probe is one the server already publishes:
+       * every online display name is in the presence broadcast that draws
+       * the other players, so there is nothing here to enumerate that a
+       * player cannot simply read. What the limit is really for is cost —
+       * a whisper spends the same rate budget as any other message.
+       */
+      return send(live, {
+        t: 'chat',
+        msg: systemLine('no_target', 'Nobody is listening for that name right now. Nothing was sent.', now),
+      })
+    }
+    const targetName = accountByPlayer(targetId)?.display_name ?? fromName
+    // The sender's echo carries the target's name so they can see who they
+    // told; the recipient's copy does not, because it would be their own.
+    send(live, { t: 'chat', msg: { ...line, toName: targetName } })
+    /*
+     * A blocked whisper stops here, and the sender's echo above already
+     * looked like success. That asymmetry is deliberate and it is the only
+     * place in chat where the sender is not told the truth: telling them
+     * would out the person who blocked them, which is precisely what a
+     * blocked player would use to find someone to harass by another route.
+     * A block is the one refusal whose subject is entitled to privacy.
+     */
+    if (targetId !== live.playerId && !deafTo(targetId, live.playerId)) {
+      sendTo(targetId, { t: 'chat', msg: line })
+    }
+    return
+  }
+
+  const near = verdict.channel === 'say'
+  for (const listener of lives.values()) {
+    if (deafTo(listener.playerId, live.playerId)) continue
+    // The sender always hears themselves, so they can see what was published
+    // rather than trusting their own client's guess at it.
+    if (near && listener.playerId !== live.playerId) {
+      if (Math.hypot(listener.x - live.x, listener.z - live.z) > CHAT_SAY_RADIUS) continue
+    }
+    send(listener, { t: 'chat', msg: line })
+  }
 }
 
 function clearChallenged(a: PlayerId, b: PlayerId) {
