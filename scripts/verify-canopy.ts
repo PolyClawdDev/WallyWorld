@@ -82,7 +82,7 @@ const quantile = (sorted: number[], q: number) => sorted[Math.min(sorted.length 
 
 /* ------------------------------ 1. species ------------------------------ */
 console.log('=== 1. species geometry (at scale 1) ===')
-console.log('species        height  leafFrom  leafTo  crownR  boleR<4.2  tri/instance')
+console.log(`species        height  leafFrom  leafTo  crownR  boleR<${stats.corridor}   tri/instance`)
 const SPECIES = ['pine', 'titanpine', 'oak', 'elder', 'birch', 'ironbark', 'scrub'] as const
 const triangleCost = new Map<string, number>()
 for (const id of SPECIES) {
@@ -92,7 +92,7 @@ for (const id of SPECIES) {
   console.log(
     `${id.padEnd(13)} ${species.height.toFixed(1).padStart(6)} ${species.canopy.base.toFixed(2).padStart(9)} ` +
     `${species.canopy.top.toFixed(1).padStart(7)} ${species.canopy.radius.toFixed(2).padStart(7)} ` +
-    `${species.solidRadiusBelow(4.2).toFixed(2).padStart(10)} ${triangles.toLocaleString().padStart(13)}`,
+    `${species.solidRadiusBelow(stats.corridor).toFixed(2).padStart(10)} ${triangles.toLocaleString().padStart(13)}`,
   )
 }
 

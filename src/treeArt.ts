@@ -16,8 +16,12 @@ import type { Surface } from './voxelBuild'
  * Seven species, so a wood reads as a wood: two kinds of conifer, three
  * broadleaves, the Brasswood's bronze ironbark, and a scrub for meadow
  * edges. Two of them are deliberately enormous — the titan pine and the
- * elder oak stand 34m and 31m, five or six times a townhouse and tall
- * enough that the canopy leaves the top of the frame from underneath.
+ * elder oak stand 37m and 31m, seven times a townhouse and tall enough
+ * that the canopy leaves the top of the frame from underneath.
+ *
+ * All six trees are HIGH-CANOPY: slim bole, no branch below 13m, crown
+ * above that. That is not a style choice, it is the only shape of wood
+ * you can hunt in — closed over your head, open at your eye.
  *
  * ---- What this costs, and why it is built this way ----
  *
@@ -37,21 +41,26 @@ import type { Surface } from './voxelBuild'
  *
  * ---- Two rules every profile below has to obey ----
  *
- * A. THE BOLE IS NEVER WIDER THAN TWO CELLS OF RADIUS. What blocks the
- *    player is measured off these grids (`solidRadiusBelow`), not off the
- *    `trunk` field, so a profile that flares to six cells at the base
- *    produces a six-cell navigation obstacle. The elder used to do
- *    exactly that — a fourteen-metre stump against a 2.3m obstacle, so
- *    the player walked inside the wood of the tree — and the honest fix
- *    for that is a believable trunk, not a fourteen-metre blocker.
+ * A. THE BARE BOLE IS ONE CELL OF RADIUS, AND TWO ONLY FOR A GIANT. What
+ *    blocks the player is measured off these grids (`solidRadiusBelow`),
+ *    not off the `trunk` field, so a profile that flares at the base
+ *    produces that flare as a navigation obstacle — and, worse, as an
+ *    opaque column in every sightline at standing height. Boles that were
+ *    two and three cells across put 4.3m to 5.5m of wood in the way of
+ *    every look through the wood; a horizontal ray at eye height reached
+ *    25m only a third of the time in the wildwood, and it was the TRUNKS
+ *    doing that, not the leaves. One cell is 0.7m to 0.95m of trunk, which
+ *    is what a real 20-30m tree has.
  *
- * B. THE LOWEST LEAF IS HIGH ENOUGH TO WALK AND ORBIT UNDER. `canopy.base`
- *    is measured here and `src/wildscape.ts` floors every instance's
- *    scale against it, so a crown that starts three rows up on a tree
- *    that plants at 0.8 scale is a crown the camera sits inside. Give a
- *    walk-under species a bare bole of at least six rows. A species whose
- *    crown reaches the ground — the scrub — is a thicket instead, and
- *    blocks over its whole width.
+ * B. THE LOWEST LEAF CLEARS THE WHOLE CORRIDOR, IN ROWS, NOT BY SCALING.
+ *    `canopy.base` is measured here and `src/wildscape.ts` floors every
+ *    instance's scale against it, so a species with too little bare bole
+ *    gets inflated to a grotesque size instead of being fixed. The
+ *    corridor is now 13m — a high canopy, the thing that lets you see and
+ *    shoot across a mature wood — so a walk-under species needs twelve to
+ *    twenty rows of bare bole depending on its cell size. A species whose
+ *    crown reaches the ground — the scrub — is a thicket instead, blocks
+ *    over its whole width, and is therefore kept below eye height.
  * ------------------------------------------------------------------ */
 
 export type TreeSpeciesId = 'pine' | 'titanpine' | 'oak' | 'elder' | 'birch' | 'ironbark' | 'scrub'
@@ -107,8 +116,8 @@ const profiles: Record<TreeSpeciesId, Profile> = {
    * which is what makes one silhouette read as branches rather than a cone. */
   pine: {
     cell: 0.85,
-    trunk: 0.55,
-    note: 'Wildwood pine, about 20m, crown from 4.7m up.',
+    trunk: 0.42,
+    note: 'Wildwood pine, about 28m, crown from 13.2m up.',
     half: [
       'L',
       'NL',
@@ -127,15 +136,27 @@ const profiles: Record<TreeSpeciesId, Profile> = {
       'NNNNNNL',
       'NNNNNd',
       'ttNNNNL',
-      // Six rows of bare bole under the lowest skirt. A pine wood seen from
-      // inside it is trunks at eye level and needles overhead; it used to be
-      // three rows, which put the lowest needles at 1.7m on a small pine.
-      'tt',
-      'tt',
-      'TT',
-      'TT',
-      'TT',
-      'TTt',
+      // SIXTEEN rows of bare bole, one cell of radius, under the lowest skirt.
+      // It was six rows three cells across: needles at 4.7m, which is a ceiling
+      // a metre and a half over the player's eye, on a 4.3m-wide column. Both
+      // halves of that were the complaint. A mature pine wood is columns you see
+      // between and a roof you cannot see through, and the roof is at 13m.
+      'T',
+      'T',
+      't',
+      'T',
+      'T',
+      't',
+      'T',
+      'T',
+      't',
+      'T',
+      'T',
+      't',
+      'T',
+      'T',
+      't',
+      'T',
     ],
     palette: { N: PINE, L: PINE_LIT, d: PINE_DEEP, T: BARK, t: BARK_DARK },
   },
@@ -146,8 +167,8 @@ const profiles: Record<TreeSpeciesId, Profile> = {
    * tall tree read as tall instead of as a big tree. */
   titanpine: {
     cell: 1.15,
-    trunk: 0.9,
-    note: 'Titan pine, about 34m — six townhouses.',
+    trunk: 1.7,
+    note: 'Titan pine, about 37m — seven townhouses. Crown from 13.2m up.',
     half: [
       'L',
       'NL',
@@ -169,18 +190,22 @@ const profiles: Record<TreeSpeciesId, Profile> = {
       'ttNNNNd',
       'ttNNNL',
       'ttNNd',
-      // A bare red bole, tapering one cell to two. It used to reach four cells
-      // at the foot, which at 1.15m a cell is a ten-metre stump.
+      // Twelve rows of bare red bole at one cell of radius, so the crown starts
+      // at 13.2m like everything else in the wood. A giant is allowed a 3.4m
+      // column where a pine is not: there are four of these in the world and
+      // they are meant to be the thing you navigate by.
       'Rt',
       'Rt',
-      'RRt',
-      'RRt',
-      'RRt',
-      'RRt',
-      'RRt',
-      'RRt',
-      'RRt',
-      'RRt',
+      'Rt',
+      'Rt',
+      'Rt',
+      'Rt',
+      'Rt',
+      'Rt',
+      'Rt',
+      'Rt',
+      'Rt',
+      'Rt',
     ],
     palette: { N: PINE, L: PINE_LIT, d: PINE_DEEP, R: BARK_RED, T: BARK, t: BARK_DARK },
   },
@@ -189,8 +214,8 @@ const profiles: Record<TreeSpeciesId, Profile> = {
    * third of the way down, not in the middle, so it does not read as a ball. */
   oak: {
     cell: 0.95,
-    trunk: 0.7,
-    note: 'Oak, about 17m, canopy 9m across, crown from 5.2m up.',
+    trunk: 0.48,
+    note: 'Oak, about 26m, canopy 14m across, crown from 13.8m up.',
     half: [
       '.LL',
       'LLLl',
@@ -204,14 +229,25 @@ const profiles: Record<TreeSpeciesId, Profile> = {
       'ggGGGGg',
       'TtgGGGg',
       'Tt.ggg',
-      // Six rows of bole, so the lowest leaf sits at 5.2m and an oak on open
-      // ground is something you walk under rather than into.
-      'Tt',
-      'Tt',
-      'TTt',
-      'TTt',
-      'TTt',
-      'TTt',
+      // Fifteen rows of bole at one cell of radius: the lowest leaf sits at
+      // 13.8m and the bole is 0.95m through. A standard oak in a park has a
+      // metre of trunk and fourteen metres of clear air under the crown, and
+      // that air is the whole of what the player was missing.
+      'T',
+      'T',
+      't',
+      'T',
+      'T',
+      't',
+      'T',
+      'T',
+      't',
+      'T',
+      'T',
+      't',
+      'T',
+      'T',
+      't',
     ],
     palette: { G: LEAF, L: LEAF_LIT, l: LEAF_LIT, g: LEAF_DEEP, T: BARK, t: BARK_DARK },
   },
@@ -220,8 +256,8 @@ const profiles: Record<TreeSpeciesId, Profile> = {
    * a crown twenty metres across, so one of these anchors a whole clearing. */
   elder: {
     cell: 1.1,
-    trunk: 1.15,
-    note: 'Elder oak, about 31m, canopy 20m across.',
+    trunk: 1.65,
+    note: 'Elder oak, about 31m, canopy 20m across, crown from 13.8m up.',
     half: [
       '..LLL',
       '.LLLLl',
@@ -238,21 +274,23 @@ const profiles: Record<TreeSpeciesId, Profile> = {
       'Tt.gGGGGg',
       'Tt..ggGgg',
       'Tt...ggg',
-      // Buttressed to four cells across, which is what the line above this
-      // profile always claimed. It was authored to thirteen cells across — a
-      // fourteen-metre stump standing exactly where a player walks.
+      // Thirteen rows of bole at one cell of radius — 3.3m through, which for a
+      // 31m landmark broadleaf is still a tree you cannot get your arms round,
+      // and the crown now clears 13.8m. It was mixed one and two cells, which
+      // put a 5.5m-wide disc of wood in the middle of the sightline.
       'Tt',
       'Tt',
-      'TTt',
-      'TTt',
-      'TTt',
-      'TTt',
-      'TTt',
-      'TTt',
-      'TTt',
-      'TTt',
-      'TTt',
-      'TTt',
+      'Tt',
+      'Tt',
+      'Tt',
+      'Tt',
+      'Tt',
+      'Tt',
+      'Tt',
+      'Tt',
+      'Tt',
+      'Tt',
+      'Tt',
     ],
     palette: { G: LEAF, L: LEAF_LIT, l: LEAF_LIT, g: LEAF_DEEP, T: BARK, t: BARK_DARK },
   },
@@ -262,7 +300,7 @@ const profiles: Record<TreeSpeciesId, Profile> = {
   birch: {
     cell: 0.7,
     trunk: 0.35,
-    note: 'Birch, about 12m, pale marked bole.',
+    note: 'Birch, about 19m, pale marked bole, crown from 13.7m up.',
     half: [
       '.L',
       'LLl',
@@ -271,16 +309,30 @@ const profiles: Record<TreeSpeciesId, Profile> = {
       'BBBLl',
       'bBBBl',
       'bBBl',
-      'WM',
-      'WW',
-      'WM',
-      'WW',
-      'WW',
-      'WM',
-      'WW',
-      'WW',
-      'WM',
-      'WW',
+      // Twenty rows of bole at one cell of radius: a 0.7m pale column carrying
+      // five metres of crown nineteen metres up. A birch is the species that
+      // proves the point — you stand in a birch stand and see a long way
+      // between white stems, which is what this profile now draws.
+      'W',
+      'M',
+      'W',
+      'W',
+      'M',
+      'W',
+      'W',
+      'M',
+      'W',
+      'W',
+      'M',
+      'W',
+      'W',
+      'M',
+      'W',
+      'W',
+      'M',
+      'W',
+      'W',
+      'M',
     ],
     palette: { B: BIRCH_LEAF, L: BIRCH_LIT, l: BIRCH_LIT, b: LEAF_DEEP, W: BARK_PALE, M: BARK_PALE_MARK },
   },
@@ -289,8 +341,8 @@ const profiles: Record<TreeSpeciesId, Profile> = {
    * foliage on a near-black trunk, tall enough to keep the hollow in shadow. */
   ironbark: {
     cell: 1.05,
-    trunk: 0.8,
-    note: 'Ironbark, about 29m, bronze canopy.',
+    trunk: 1.58,
+    note: 'Ironbark, about 29m, bronze canopy from 16.3m up.',
     half: [
       '.L',
       'LLl',
@@ -304,45 +356,51 @@ const profiles: Record<TreeSpeciesId, Profile> = {
       'ddBBBl',
       'tdBBBl',
       'tt.dBd',
-      // Sixteen rows of near-black bole, two cells of radius all the way down.
-      // The taper used to run out to seven cells, so the foot of an ironbark
-      // was a sixteen-metre disc of wood with a one-metre obstacle on it.
+      // Sixteen rows of near-black bole at one cell of radius: 3.2m through and
+      // sixteen metres of it bare, which is why this species needs no help from
+      // the corridor rule. It was three cells across, a 5.3m column.
       'tt',
-      'tTt',
-      'tTt',
-      'tTt',
-      'tTt',
-      'tTt',
-      'tTt',
-      'tTt',
-      'tTt',
-      'tTt',
-      'tTt',
-      'tTt',
-      'tTt',
-      'tTt',
-      'tTt',
-      'tTt',
+      'tT',
+      'tT',
+      'tT',
+      'tT',
+      'tT',
+      'tT',
+      'tT',
+      'tT',
+      'tT',
+      'tT',
+      'tT',
+      'tT',
+      'tT',
+      'tT',
+      'tT',
     ],
     palette: { B: BRONZE_LEAF, L: BRONZE_LIT, l: BRONZE_LIT, d: BRONZE_DEEP, T: BARK_DARK, t: IRON_BARK },
   },
 
-  /* Meadow scrub. Three metres and almost no trunk, so open ground can be
-   * dressed without closing the sightlines a hunt needs.
+  /* Meadow scrub, and the one species in this file that had to come DOWN.
    *
-   * The one species here whose leaves reach the ground, which makes it a
-   * THICKET: there is no corridor to walk under, so `wildscape.ts` blocks its
-   * whole width instead of just its stem. Kept to two cells of radius for that
-   * reason — a thicket is a navigation obstacle, and a four-metre one on open
-   * meadow is a wall. */
+   * It is a THICKET — the only profile whose leaves reach the ground — so there
+   * is no corridor to walk under and `wildscape.ts` blocks its whole width
+   * rather than just its stem. At 3.6m authored and up to 4m planted that made
+   * it the single worst thing in the world for a hunter's sightline: a solid
+   * 3m-wide bush standing a metre and a half ABOVE the first-person eye, in the
+   * open ground where the animals are. Nothing else could be done about it from
+   * the corridor rule, because the corridor rule cannot lift a bush whose leaves
+   * start at zero.
+   *
+   * So it is now knee-to-chest high: 1.5m authored, 1.0m to 1.6m planted, 1.5m
+   * across. Below the wayfinder's 1.9m shoulder and well under the 2.7m eye, so
+   * you look over it rather than into it, and it still dresses open ground and
+   * still turns a hedgerow into something a path goes round. */
   scrub: {
-    cell: 0.6,
+    cell: 0.3,
     trunk: 0.3,
-    note: 'Thorn scrub, about 3m. A thicket: blocks over its whole width.',
+    note: 'Thorn scrub, about 1.5m. A thicket: blocks over its whole width.',
     half: [
       '.L',
       'GLl',
-      'GGl',
       'GGl',
       'gGl',
       'Ttg',
