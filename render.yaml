@@ -82,9 +82,13 @@
 #   voxels-api  SOLANA_RPC_URL_MAINNET_BETA  (required — the app refuses to
 #               boot on mainnet against the rate-limited public endpoint)
 #   voxels-api  NPC_PAYEE_ADDRESS            (optional; empty = payments off)
-# and update WALLY_PUBLIC_ORIGIN, WALLY_ALLOWED_ORIGINS and
-# VITE_API_BASE_URL once Render has assigned the real hostnames, then
-# redeploy the static site so the new API URL is compiled into the bundle.
+#
+# The hostnames below are the real assigned ones. The custom domain
+# www.voxels.fun must also be added to voxels-web under Settings ->
+# Custom Domains, and its DNS moved at Namecheap: it currently points at
+# Vercel, which serves the game files but has no API, so the client falls
+# back to asking its own origin and gets Vercel's 404 instead of a health
+# record. That is the whole reason the domain looked broken.
 # ------------------------------------------------------------------
 
 services:
@@ -134,15 +138,19 @@ services:
         value: 1
       # The origin players type. Must be https: a ws:// upgrade to Render
       # is answered with a 301 that most WebSocket clients cannot follow.
-      # Replace with the real hostname after the first sync, or with a
-      # custom domain.
       - key: WALLY_PUBLIC_ORIGIN
-        value: https://voxels-web.onrender.com
+        value: https://www.voxels.fun
       # The static site is a different origin from the API, so it has to
       # be named. In production the app does NOT auto-trust private/LAN
-      # origins, so this list is the whole policy.
+      # origins, so this list is the whole policy — and it is also where
+      # SIWS domain binding comes from, via isAllowedPageHost.
+      #
+      # All three are us. The apex redirects to www, but a browser that
+      # loaded the apex before the redirect still sends the apex as its
+      # Origin, and the onrender.com hostname stays listed so the site
+      # keeps working while DNS moves off Vercel.
       - key: WALLY_ALLOWED_ORIGINS
-        value: https://voxels-web.onrender.com
+        value: https://www.voxels.fun,https://voxels.fun,https://voxels-web.onrender.com
       # SQLite on the attached disk, not Postgres.
       #
       # Postgres is the right long-term answer and this service is wired for
