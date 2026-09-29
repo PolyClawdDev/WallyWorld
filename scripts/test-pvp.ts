@@ -57,7 +57,20 @@ async function main() {
   const { PVP_KITS, pvpBasicDamage, pvpMaxHp } = await import('../src/shared/pvpKits')
   const { kits, basicDamageAt, maxHpAt } = await import('../src/battle/kits')
   const { attachPvpUpgrade } = await import('../src/server/pvp')
+  const { livePose } = await import('../src/server/pvp/hub')
+  const { authoriseRespawn, clearRespawnBudgetsForTest, RESPAWN_BURST, RESPAWN_MIN_GAP_MS } = await import('../src/server/pvp/respawn')
+  const { openHunt, recordHuntDeath } = await import('../src/server/hunt/rewards')
   const { CHALLENGE_TTL_MS } = await import('../src/shared/pvp')
+
+  /** Polls a condition rather than guessing how long a socket round trip takes. */
+  async function settles(condition: () => boolean, ms = 3000) {
+    const deadline = Date.now() + ms
+    while (Date.now() < deadline) {
+      if (condition()) return true
+      await new Promise(r => setTimeout(r, 25))
+    }
+    return false
+  }
 
   /* ---- 1. zone mirror ------------------------------------------------ */
   let zoneMismatch = 0
@@ -330,7 +343,10 @@ async function main() {
     const cardJson = JSON.stringify(card ?? {})
     check('card has game gold', /goldAvailable|goldTotal/.test(cardJson))
     check('card has no wallet', !cardJson.includes(walletB) && !cardJson.includes('account_id'))
-    check('card marked demo', cardJson.includes('Demo'))
+    // Was `includes('Demo')`. The gold stopped being a demo — it is
+    // server-authoritative and duel stakes really move — so the card now has
+    // to carry the claim that is still true rather than the one that is not.
+    check('card carries the not-redeemable notice', /not redeemable/i.test(cardJson))
 
     a.send({ t: 'challenge', playerId: accB.player_id, stake: 12 })
     const invite = await b.wait('invite', 4000)
@@ -346,13 +362,101 @@ async function main() {
       check('both received duel snapshot', Boolean(duelA && duelB))
     }
 
+    /* ---- respawn is the server's move, never the client's ----------- */
+    // A character the server believes is out in the wilds. The first pose of a
+    // connection with nothing remembered is trusted as a seed, which is how a
+    // test stands somebody 85m from town without walking them there.
+    async function standFarOut(name: string, wallet: string) {
+      const account = ensureAccount(wallet)
+      saveLoadout(account.player_id, name, loadout)
+      const sock = await client(createSession(wallet).token)
+      sock.send({ t: 'hello', protocol: 1, displayName: name, loadout })
+      await sock.wait('welcome')
+      sock.send({ t: 'pose', x: -30, z: -80, facing: 0, anim: 'idle', sprinting: false })
+      await settles(() => Math.hypot(livePose(account.player_id).x + 30, livePose(account.player_id).z + 80) < 0.01)
+      return { account, sock }
+    }
+
+    const elm = await standFarOut('Elm', 'WalletE666666666666666666666666666')
+    check('the server has Elm out in the wilds', !zones.isInTown(livePose(elm.account.player_id).x, livePose(elm.account.player_id).z),
+      JSON.stringify(livePose(elm.account.player_id)))
+
+    elm.sock.send({ t: 'respawn' })
+    const respawned = await settles(() => livePose(elm.account.player_id).x === zones.TOWN_RESPAWN.x && livePose(elm.account.player_id).z === zones.TOWN_RESPAWN.z)
+    check('a death moves the server\'s own copy of the player to the plaza', respawned, JSON.stringify(livePose(elm.account.player_id)))
+
+    elm.sock.inbox.length = 0
+    elm.sock.send({ t: 'respawn' })
+    const refused = await elm.sock.wait('error', 2000)
+    check('a second death claimed inside the floor is refused', String(refused?.code) === 'respawn_refused', JSON.stringify(refused ?? {}))
+    check('and the refusal moves nobody', livePose(elm.account.player_id).x === zones.TOWN_RESPAWN.x)
+
+    // The message type carries no coordinates. One that smuggles them in is
+    // still placed where the server says, or this is a teleport button.
+    const fir = await standFarOut('Fir', 'WalletF777777777777777777777777777')
+    fir.sock.send({ t: 'respawn', x: 88, z: 28 })
+    await settles(() => zones.isInTown(livePose(fir.account.player_id).x, livePose(fir.account.player_id).z))
+    const firAt = livePose(fir.account.player_id)
+    check('a respawn carrying its own destination is ignored and the plaza used',
+      firAt.x === zones.TOWN_RESPAWN.x && firAt.z === zones.TOWN_RESPAWN.z, JSON.stringify(firAt))
+
+    // And the ordinary speed budget is untouched by any of it: a jump from the
+    // plaza to the duel rings is still reeled in rather than granted.
+    fir.sock.send({ t: 'pose', x: 88, z: 28, facing: 0, anim: 'run', sprinting: true })
+    await new Promise(r => setTimeout(r, 200))
+    const afterJump = livePose(fir.account.player_id)
+    check('an unearned jump is still clamped after a respawn',
+      Math.hypot(afterJump.x - 88, afterJump.z - 28) > 12, JSON.stringify(afterJump))
+
+    elm.sock.ws.close()
+    fir.sock.ws.close()
     a.ws.close()
     b.ws.close()
   } finally {
     await new Promise<void>(resolveClose => server.close(() => resolveClose()))
   }
 
-  /* ---- 10. expiry does not reserve ---------------------------------- */
+  /* ---- 10. how much a respawn claim is allowed to be worth ---------- */
+  // The server cannot see the browser's hit points, so "I died" is a claim.
+  // What stops it being a teleport-to-town button is that the destination is
+  // never the client's and the rate is bounded — and that a death the ledger
+  // already charged for buys the budget back, so honest dying never runs out.
+  clearRespawnBudgetsForTest()
+  const budgeted = `p_${'e'.repeat(32)}`
+  const base = Date.now()
+  const grants: boolean[] = []
+  for (let i = 0; i < RESPAWN_BURST + 1; i++) grants.push(authoriseRespawn(budgeted, base + i * (RESPAWN_MIN_GAP_MS + 100)).ok)
+  eq('an uncorroborated claim is granted up to the burst', grants.slice(0, RESPAWN_BURST).every(Boolean), true)
+  eq('and refused past it', grants[RESPAWN_BURST], false)
+  const hasty = `p_${'f'.repeat(32)}`
+  authoriseRespawn(hasty, base)
+  const hurried = authoriseRespawn(hasty, base + RESPAWN_MIN_GAP_MS - 1)
+  check('a claim inside the floor is refused for coming too soon', !hurried.ok && hurried.code === 'too_soon')
+
+  clearRespawnBudgetsForTest()
+  const hunted = ensureAccount('WalletG888888888888888888888888888')
+  const hunt = openHunt({ userId: hunted.account_id, playerId: hunted.player_id, region: 'wildwood', level: 1 })
+  check('a hunt opens for the corroboration check', hunt.ok === true)
+  if (hunt.ok) {
+    const spent = readGold(hunted.player_id).available
+    const forfeit = recordHuntDeath({ userId: hunted.account_id, huntId: hunt.hunt.huntId, clientRef: 'deathref00001' })
+    check('the death forfeit is recorded on the money path', forfeit.ok === true)
+    check('and it actually cost the player gold', readGold(hunted.player_id).available < spent,
+      `${spent} → ${readGold(hunted.player_id).available}`)
+    const corroborated = authoriseRespawn(hunted.player_id)
+    check('a recorded forfeit corroborates the respawn that follows it',
+      corroborated.ok === true && corroborated.corroborated === true)
+    // Which is the whole point of counting them: a player who really is dying,
+    // and paying for it each time, is never capped by the unverified budget.
+    const spare: boolean[] = []
+    for (let i = 1; i <= RESPAWN_BURST + 1; i++) {
+      recordHuntDeath({ userId: hunted.account_id, huntId: hunt.hunt.huntId, clientRef: `deathref0000${i + 1}` })
+      spare.push(authoriseRespawn(hunted.player_id, Date.now() + i * (RESPAWN_MIN_GAP_MS + 100)).ok)
+    }
+    eq('every corroborated death buys a grant back', spare.every(Boolean), true)
+  }
+
+  /* ---- 11. expiry does not reserve ---------------------------------- */
   expireChallenges(Date.now() + CHALLENGE_TTL_MS + 10)
   const leftover = readChallenge(ok2.ok ? ok2.row.challenge_id : 'c_none')
   if (leftover) check('cancelled/expired challenge is not pending', leftover.status !== 'pending')

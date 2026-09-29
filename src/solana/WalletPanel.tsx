@@ -507,7 +507,7 @@ export function WalletSolanaPanel() {
 
   return (
     <div className="sol-panel">
-      <div className={`sol-banner funds-${label.mode}`} role={label.mode === 'live' ? 'alert' : undefined}>
+      <div className={`sol-banner funds-${label.mode}`}>
         <strong>{label.short}</strong>
         <span>{label.long}</span>
       </div>

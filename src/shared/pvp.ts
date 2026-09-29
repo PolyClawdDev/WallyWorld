@@ -61,7 +61,24 @@ export const STARTING_GAME_GOLD = 250
 export const CHALLENGE_RATE_MS = 8_000
 export const CHALLENGE_RATE_BURST = 3
 export const MAX_STAKE = 1_000_000_000
-export const DEMO_GOLD_NOTICE = 'Demo — no real funds' as const
+/**
+ * The one line every gold surface carries.
+ *
+ * It used to read "Demo — no real funds", which is now two claims and only
+ * one of them is true. The gold is not a demo: it is server-authoritative,
+ * append-only, double-entry, in whole base units, and duel stakes go through
+ * real escrow. Calling that a demo taught players the opposite of what to
+ * expect — that losing a wager did not really cost them anything.
+ *
+ * What has not changed is that it is not money and cannot become money.
+ * There is no treasury signer, no mint, and `PAYOUTS_ENABLED` is `false as
+ * const`. So the notice keeps saying the part that is still true and stops
+ * saying the part that is not.
+ *
+ * The constant's *name* is deliberately unchanged: it is imported across the
+ * server, and renaming it would be a wide edit for no reader's benefit.
+ */
+export const DEMO_GOLD_NOTICE = 'Game gold — not redeemable, no cash value' as const
 export const GOLD_KIND = 'game-gold' as const
 
 /* ------------------------------------------------------------------ *
@@ -72,11 +89,39 @@ export const GOLD_KIND = 'game-gold' as const
  * NAT entries. Both sides ping so neither has to guess.
  * ------------------------------------------------------------------ */
 
-/** How often each side proves it is still there. */
-export const HEARTBEAT_INTERVAL_MS = 20_000
+/**
+ * How often each side proves it is still there, and how long silence is
+ * tolerated before the far end is presumed gone.
+ *
+ * These two are one decision, not two, because the server's reaping sweep
+ * runs on the heartbeat timer. The worst case a player waits to disappear
+ * from everyone else's town is `STALE + HEARTBEAT`: the silence has to
+ * exceed the threshold, and then the next sweep has to come round. The
+ * arithmetic at 6 s / 21 s:
+ *
+ *   healthy connection   proof of life every 6 s, so three consecutive
+ *                        heartbeats have to be lost before anyone is
+ *                        suspected — a 3.5× margin, not a borderline one.
+ *                        (Presence is also broadcast every ~250 ms while
+ *                        the world ticks, so in practice the margin is
+ *                        larger still; 6 s is the floor.)
+ *   hard drop            detected between 21 s and 27 s. Previously
+ *                        60–80 s, which is long enough that a closed
+ *                        laptop looked like a player standing in the road.
+ *
+ * A clean close does not wait for any of this: the socket's close handler
+ * removes the player immediately, and the client sends that close on
+ * `pagehide` so a closed tab takes the same fast path.
+ *
+ * The lower bound on `STALE` is `RECONNECT_GRACE_MS` (15 s): a fighter who
+ * drops mid-duel must still be inside their reconnect window when the
+ * sweep notices, or the grace period would be unreachable in the one case
+ * it exists for.
+ */
+export const HEARTBEAT_INTERVAL_MS = 6_000
 
 /** No traffic for this long and the connection is treated as dead. */
-export const STALE_CONNECTION_MS = 60_000
+export const STALE_CONNECTION_MS = 21_000
 
 /** Reconnect backoff: doubles from the base, capped, with jitter applied by the client. */
 export const RECONNECT_BASE_MS = 500
@@ -247,6 +292,16 @@ export type C2S =
   | { t: 'leave'; duelId: DuelId }
   | { t: 'block'; playerId: PlayerId; on: boolean }
   | { t: 'settings'; incomingDisabled: boolean }
+  /**
+   * "Wildlife killed me, put me back in town."
+   *
+   * Carries no coordinates, and must never be given any. The server owns the
+   * destination — `TOWN_RESPAWN` — because a message that named its own would
+   * be exactly the free teleport the movement speed budget exists to refuse.
+   * What the server does and does not take on trust here is set out in
+   * `src/server/pvp/respawn.ts`.
+   */
+  | { t: 'respawn' }
   | { t: 'ping'; at: number }
 
 export type CombatInputKind = 'move' | 'stop' | 'attack' | 'attackMove' | 'cast' | 'cancel'

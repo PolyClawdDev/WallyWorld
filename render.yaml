@@ -21,10 +21,12 @@
 # SOLANA_CLUSTER and VITE_SOLANA_CLUSTER are both mainnet-beta, chosen
 # deliberately. Consequences, so nobody discovers them later:
 #   - Every player's wallet is a keypair generated in their browser and
-#     stored in localStorage. On mainnet it holds real, spendable value,
-#     and it is readable by any successful XSS on this origin and by
-#     anyone with access to the machine. The client says so in a red
-#     banner; that warning is now load-bearing rather than decorative.
+#     stored in localStorage. It signs identity only — there is no
+#     transaction signer for it anywhere in the build — so it holds
+#     nothing until a player sends funds to that address themselves. It is
+#     readable by any successful XSS on this origin and by anyone with
+#     access to the machine, so the wallet panel states that ceiling
+#     before offering the address and an explorer link.
 #   - The "DEMO — NO REAL FUNDS" labelling switches OFF.
 #   - Gold still cannot be redeemed for tokens. That is blocked on a
 #     treasury signing key and a token mint, not on the cluster, so
@@ -176,9 +178,11 @@ services:
         value: 64
       - key: WALLY_SHUTDOWN_GRACE_MS
         value: 25000
-      # MAINNET. Real funds. The client shows a red MAINNET — REAL FUNDS
-      # banner, the demo labelling switches off, and the browser-held key in
-      # localStorage is holding value that can actually be spent.
+      # MAINNET. A payment approved in Phantom is real, irreversible SOL. The
+      # client shows a brass MAINNET chip and the demo labelling switches off.
+      # The browser-held key in localStorage signs identity only — there is no
+      # transaction signer for it — so it holds nothing unless a player funds
+      # that address themselves, and the panel says so.
       # SOLANA_RPC_URL_MAINNET_BETA below is required: the app refuses to boot
       # on mainnet against the rate-limited public endpoint.
       - key: SOLANA_CLUSTER

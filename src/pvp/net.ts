@@ -279,6 +279,74 @@ function stopHeartbeat() {
   heartbeat = null
 }
 
+/* ------------------------------------------------------------------ *
+ * Leaving on purpose.
+ *
+ * A clean close is the fast path: the server drops the player from the
+ * town the instant it arrives, with no sweep involved. The problem is
+ * that a browser being closed, or navigated away from, does not reliably
+ * get one onto the wire — the socket is torn down with the page and the
+ * server is left holding a connection it can only reap on a timer.
+ *
+ * `pagehide` is the event that fires for all of those, including the iOS
+ * cases where nothing else does. `unload` is not used: it is skipped
+ * outright in several browsers, and merely registering a listener for it
+ * disqualifies the page from the back/forward cache, which would trade a
+ * faster goodbye for a slower return.
+ *
+ * Which is the other half of this. `pagehide` does not mean gone —
+ * `persisted` says the page went into the bfcache and may be restored. So
+ * the close here is deliberate and the reconnect on `pageshow` is what
+ * makes it safe: the character is given up on the way out and taken back
+ * on the way in, which is the ordinary supersede path and not a new one.
+ * ------------------------------------------------------------------ */
+
+/** True while this tab has handed its character back at `pagehide`. */
+let parked = false
+
+let pageLifecycleBound = false
+
+function leaveForPageHide() {
+  const going = socket
+  if (!going) return
+  stopHeartbeat()
+  if (timer) clearTimeout(timer)
+  timer = null
+  socket = null
+  // This close was chosen, so it must not be read as a drop: the ordinary
+  // handler would schedule a reconnect and file a failed attempt against a
+  // page that is no longer there.
+  going.onclose = null
+  going.onerror = null
+  try {
+    going.close(1000, 'pagehide')
+  } catch {
+    /* the page is going away regardless */
+  }
+  parked = true
+  pvpState.connected = false
+}
+
+function returnFromPageShow(persisted: boolean) {
+  if (!parked) return
+  parked = false
+  // A non-persisted `pageshow` is a fresh document; this module was reloaded
+  // with it and `startPvp` will run again on its own.
+  if (!persisted) return
+  if (!hello || superseded || stopped) return
+  retries = 0
+  pvpState.link = { phase: 'connecting', attempts: 0, reason: null, retrying: false }
+  pingPvp()
+  void open()
+}
+
+function bindPageLifecycle() {
+  if (pageLifecycleBound || typeof window === 'undefined') return
+  pageLifecycleBound = true
+  window.addEventListener('pagehide', () => leaveForPageHide())
+  window.addEventListener('pageshow', event => returnFromPageShow(event.persisted))
+}
+
 async function open() {
   if (!hello) {
     pvpState.connected = false
@@ -370,8 +438,10 @@ export function send(msg: C2S) {
 }
 
 export function startPvp(displayName: string, loadout: PublicLoadout) {
+  bindPageLifecycle()
   hello = { displayName, loadout }
   retries = 0
+  parked = false
   superseded = false
   stopped = false
   sessionReplaced = false

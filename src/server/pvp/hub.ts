@@ -22,11 +22,12 @@ import {
   type PublicPresence,
   type S2C,
 } from '../../shared/pvp'
-import { isInTown, ringById, ringStarts } from '../../shared/zones'
+import { isInTown, ringById, ringStarts, TOWN_RESPAWN } from '../../shared/zones'
 import { ROOM_CAPACITY } from '../config'
 import { walletFromAuthHeader } from '../auth'
 import { CharacterClaims } from './claims'
 import { rememberPosition, resolveMove, resumePosition, sweepPositions } from './presence'
+import { authoriseRespawn, sweepRespawns } from './respawn'
 import {
   accountByPlayer,
   accountByWallet,
@@ -468,6 +469,25 @@ function handle(live: Live, msg: C2S) {
     }
     case 'leave':
       return onLeave(live, msg.duelId)
+    case 'respawn': {
+      // Inside a ring the simulation owns the position outright, and dying
+      // there is a duel outcome with its own settlement, not a trip to town.
+      if (live.state === 'dueling' || live.state === 'preparing') return
+      const now = Date.now()
+      const verdict = authoriseRespawn(live.playerId, now)
+      if (!verdict.ok) {
+        // Nothing moves. The browser has already predicted the plaza, so the
+        // ordinary desync correction pulls it back to wherever this player
+        // really is — which is the right answer to a claim that could not be
+        // justified, and the same answer any other unearned jump would get.
+        return send(live, { t: 'error', code: 'respawn_refused', detail: verdict.detail })
+      }
+      placeLive(live, TOWN_RESPAWN, now)
+      live.facing = 0
+      live.anim = 'idle'
+      broadcastPresence()
+      return
+    }
     case 'block':
       setBlock(live.playerId, msg.playerId, msg.on)
       return
@@ -478,6 +498,23 @@ function handle(live: Live, msg: C2S) {
       send(live, { t: 'pong', at: msg.at })
       return
   }
+}
+
+/**
+ * Moves a player somewhere this server decided on.
+ *
+ * The speed budget is re-based with the move, so the first pose afterwards is
+ * measured from the new position instead of being read as a teleport back to
+ * it. Every authorised reposition goes through here — ring exits and respawns
+ * — and the client is not one of them: what it sends is a request, and
+ * `resolveMove` is the only path that ever acts on one.
+ */
+function placeLive(live: Live, at: { x: number; z: number }, now: number) {
+  live.x = at.x
+  live.z = at.z
+  live.lastMoveAtMs = now
+  live.awaitingSeed = false
+  rememberPosition(live.playerId, live, now)
 }
 
 function clearChallenged(a: PlayerId, b: PlayerId) {
@@ -622,17 +659,11 @@ function onLeave(live: Live, duelId: string) {
   const now = Date.now()
   if (liveA) {
     liveA.state = 'exploring'
-    liveA.x = exits[0].x
-    liveA.z = exits[0].z
-    liveA.lastMoveAtMs = now
-    rememberPosition(liveA.playerId, liveA, now)
+    placeLive(liveA, exits[0], now)
   }
   if (liveB) {
     liveB.state = 'exploring'
-    liveB.x = exits[1].x
-    liveB.z = exits[1].z
-    liveB.lastMoveAtMs = now
-    rememberPosition(liveB.playerId, liveB, now)
+    placeLive(liveB, exits[1], now)
   }
   freeRing(sim.ring.id)
   duels.delete(duelId)
@@ -888,6 +919,7 @@ setInterval(() => {
     live.conn.ping()
   }
   sweepPositions(now)
+  sweepRespawns(now)
 }, HEARTBEAT_INTERVAL_MS).unref()
 
 /**

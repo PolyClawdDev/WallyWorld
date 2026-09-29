@@ -4,8 +4,8 @@ import { huntState, subscribeHunt } from './huntStore'
 import type { HuntTarget } from './huntStore'
 import {
   DEATH_LOSS_PERCENT,
-  DEMO_NOTICE,
   formatCountdown,
+  GOLD_NOTICE,
   formatGold,
   rewardsSnapshot,
   subscribeRewards,
@@ -17,7 +17,7 @@ import './hunt.css'
 
 /* ------------------------------------------------------------------ *
  * The hunt HUD. Health, the active ability, the current target, a
- * compass out to the current hunt ground, and the demo reward ledger.
+ * compass out to the current hunt ground, and the gold ledger.
  *
  * Fast-moving values are written straight to DOM refs from a single
  * animation frame; React state is only used for things that actually
@@ -68,7 +68,7 @@ function TargetPlate({ target, range }: { target: HuntTarget; range: number }) {
           {target.distance.toFixed(1)} M
         </span>
         <span>
-          DROPS <b>{formatGold(target.goldBaseUnits)} GOLD</b> · DEMO
+          DROPS <b>{formatGold(target.goldBaseUnits)} GOLD</b> · GAME GOLD
         </span>
       </div>
     </div>
@@ -96,7 +96,7 @@ function HuntLog({ onClose }: { onClose: () => void }) {
       <div className="eyebrow">HUNT LEDGER · DISTRICT 01</div>
       <h3>Gold from the green.</h3>
       <p className="demo-line">
-        {DEMO_NOTICE}{' '}
+        {GOLD_NOTICE}{' '}
         {snapshot.authority === 'server'
           ? `Balance ${formatGold(snapshot.balanceBaseUnits)} gold, held by the server. ${formatGold(snapshot.redeemableBaseUnits ?? 0)} of it came from verified kills; the rest — gifts, duel winnings, imported demo gold — could never be redeemed even if a redemption existed. None of it is redeemable today.`
           : 'Not signed in, so this is a local counter only. Nothing here is recorded on the server and none of it is redeemable.'}
@@ -125,7 +125,7 @@ function HuntLog({ onClose }: { onClose: () => void }) {
         </p>
         <p>
           Status: {snapshot.payoutStatus}. No Solana or token conversion is implemented in this build — no network is
-          contacted, no address is held, and nothing is ever paid out. {DEMO_NOTICE}
+          contacted, no address is held, and nothing is ever paid out. {GOLD_NOTICE}
         </p>
         <p>
           Death forfeits {DEATH_LOSS_PERCENT}% of carried gold onto the ground where anyone can pick it up.
@@ -266,7 +266,7 @@ export function HuntHud({ wizard }: { wizard: WizardId }) {
             You dropped <b>{formatGold(death.goldDroppedBaseUnits)} gold</b> where you fell —{' '}
             {DEATH_LOSS_PERCENT}% of what you carried. Anyone can pick it up, including you. Walk back and get it.
           </p>
-          <small>RESPAWNED AT THE PLAZA · {DEMO_NOTICE.toUpperCase()}</small>
+          <small>RESPAWNED AT THE PLAZA · {GOLD_NOTICE.toUpperCase()}</small>
         </div>
       )}
     </div>

@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { wizards } from '../characters'
-import { DEMO_GOLD_NOTICE } from '../shared/pvp'
+import { DEMO_GOLD_NOTICE, type PublicCard, type PublicPresence } from '../shared/pvp'
+import { wayOutOfTown } from './leaveTown'
 import { fetchPvpJournal, reclaimPvp, retryPvp, send } from './net'
 import { isDuelLocked, pingPvp, pvpState, subscribePvp, type PvpLink } from './store'
 import './pvp.css'
@@ -14,7 +15,7 @@ function usePvp() {
 }
 
 function GoldNote() {
-  return <p className="pvp-demo">{DEMO_GOLD_NOTICE} · game gold only · not SOL</p>
+  return <p className="pvp-demo">{DEMO_GOLD_NOTICE} · not SOL and not wallet funds</p>
 }
 
 export function PvpOverlay() {
@@ -25,7 +26,7 @@ export function PvpOverlay() {
       {!s.connected && !s.superseded && <JoinChip link={s.link} />}
       {s.signedIn && s.connected && (
         <div className="pvp-chip pvp-gold-chip">
-          ✦ {s.gold.available} GAME GOLD<small>{s.gold.reserved ? ` · ${s.gold.reserved} in escrow` : ''} · DEMO</small>
+          ✦ {s.gold.available} GAME GOLD<small>{s.gold.reserved ? ` · ${s.gold.reserved} in escrow` : ''} · NOT REDEEMABLE</small>
         </div>
       )}
       {s.error && <div className="pvp-error" onClick={() => { pvpState.error = null; pingPvp() }}>{s.error}</div>}
@@ -94,11 +95,76 @@ function SupersededCard() {
   )
 }
 
+/**
+ * Why the Challenge button is dead, in the player's language.
+ *
+ * Five separate rules can close this button and they are not
+ * interchangeable — one is fixed by walking, one by waiting, one by
+ * hunting, and two cannot be fixed by this player at all. The button used
+ * to carry the only one of them that had any words attached, inside its own
+ * label, which left the other four looking like a bug: a button that says
+ * "Challenge" and does nothing.
+ *
+ * So the reasons are text and the button is a button. Every rule here has a
+ * counterpart on the server — `offerChallenge` and `onAccept` refuse the
+ * same things — and nothing in this list is what enforces them. It exists so
+ * a refusal is legible before it happens, not instead of it.
+ */
+function challengeBlockers(card: PublicCard, self: PublicPresence | null): string[] {
+  const reasons: string[] = []
+  const them = card.displayName
+
+  if (self?.inTown) {
+    const out = wayOutOfTown(self.x, self.z)
+    reasons.push(
+      out
+        ? `You are in town, and town is protected — duels happen on open ground only. Town is the plaza and every paved street, so walking further up a road will not leave it. The nearest open ground is about ${out.metres} m ${out.heading} of you.`
+        : 'You are in town, and town is protected — duels happen on open ground only. Town is the plaza and every paved street, so step off the paving onto the grass.',
+    )
+  }
+  if (card.inTown) {
+    reasons.push(`${them} is in town, where nobody can be challenged. They have to walk out onto open ground themselves.`)
+  }
+  if (card.state !== 'exploring') {
+    reasons.push(stateBlocker(them, card.state))
+  }
+  if (pvpState.gold.available <= 0 && card.goldAvailable <= 0) {
+    reasons.push('A duel stakes the same amount of gold from each side, and neither of you has any available to stake.')
+  } else if (pvpState.gold.available <= 0) {
+    reasons.push(
+      pvpState.gold.reserved > 0
+        ? `A duel stakes gold from both sides, and all ${pvpState.gold.reserved} of your gold is already held in escrow.`
+        : 'A duel stakes gold from both sides, and you have none available. Hunt for a while and come back.',
+    )
+  } else if (card.goldAvailable <= 0) {
+    reasons.push(`A duel stakes the same amount from each side, and ${them} has no gold available to match you.`)
+  }
+  if (card.theyBlockedYou) reasons.push(`${them} has blocked you.`)
+  if (card.incomingDisabled) reasons.push(`${them} has turned incoming challenges off.`)
+
+  return reasons
+}
+
+function stateBlocker(them: string, state: PublicCard['state']): string {
+  switch (state) {
+    case 'dueling':
+      return `${them} is in the middle of a duel. Wait for it to settle.`
+    case 'preparing':
+      return `${them} is about to start a duel. Wait for it to settle.`
+    case 'challenged':
+      return `${them} already has a challenge waiting on an answer.`
+    case 'disconnected':
+      return `${them} has dropped out of the world.`
+    default:
+      return `${them} is not out exploring right now, so there is nobody to challenge.`
+  }
+}
+
 function InspectCard() {
   const card = pvpState.inspect!
   const you = pvpState.self
-  const inTown = Boolean(you?.inTown || card.inTown)
   const available = Math.min(pvpState.gold.available, card.goldAvailable)
+  const blockers = challengeBlockers(card, you)
   return (
     <aside className="pvp-card" role="dialog" aria-label="Player card">
       <button className="pvp-x" onClick={() => { pvpState.inspect = null; pingPvp() }}>×</button>
@@ -115,10 +181,10 @@ function InspectCard() {
       <div className="pvp-actions">
         <button
           className="primary"
-          disabled={inTown || card.state !== 'exploring' || available <= 0 || card.theyBlockedYou || card.incomingDisabled}
+          disabled={blockers.length > 0}
           onClick={() => { pvpState.composer = card; pingPvp() }}
         >
-          {inTown ? 'Leave town to challenge this player.' : 'Challenge'}
+          Challenge
         </button>
         <button onClick={() => {
           const on = !pvpState.muted.has(card.playerId)
@@ -132,6 +198,14 @@ function InspectCard() {
           send({ t: 'inspect', playerId: card.playerId })
         }}>{card.youBlockedThem ? 'Unblock' : 'Block'}</button>
       </div>
+      {blockers.length > 0
+        ? blockers.map(reason => <p className="pvp-why" key={reason}>{reason}</p>)
+        : (
+          <p className="pvp-wager">
+            You each stake the same gold — up to {available} apiece, {available * 2} to the winner. The server holds both
+            stakes while you fight and pays out on the result.
+          </p>
+        )}
     </aside>
   )
 }
@@ -163,6 +237,10 @@ function ChallengeComposer() {
         <button onClick={() => setStake(max)}>Maximum both can stake</button>
       </div>
       <p className="pvp-loc">Location: nearest outdoor ring · no house fee · kits stay as they are</p>
+      <p className="pvp-wager">
+        Both stakes are taken the moment {card.displayName} accepts and held until the duel settles — they leave your
+        available balance together or not at all. A draw, a server restart or an unfinished duel returns both.
+      </p>
       <GoldNote />
       <button
         className="primary full"
@@ -270,7 +348,7 @@ export function PvpJournal() {
   useEffect(() => { void fetchPvpJournal() }, [])
   return (
     <div className="pvp-journal">
-      <div className="jr-ledger-head"><span>PVP LEDGER</span><b>GAME GOLD · DEMO</b></div>
+      <div className="jr-ledger-head"><span>PVP LEDGER</span><b>GAME GOLD · NOT REDEEMABLE</b></div>
       <p className="pvp-demo">{DEMO_GOLD_NOTICE} W / L / D · {s.gold.wins} / {s.gold.losses} / {s.gold.draws} · available {s.gold.available}</p>
       <label className="st-toggle" style={{ margin: '8px 0' }}>
         <input

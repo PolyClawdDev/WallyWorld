@@ -28,7 +28,20 @@ export const GOLD_BASE_UNITS_PER_GOLD = 1
 export const PAYOUT_WINDOW_MS = 30 * 60 * 1000
 
 export const PAYOUT_STATUS = 'UNAVAILABLE · NO VERIFIED ADAPTER CONFIGURED'
-export const DEMO_NOTICE = 'Demo — no real funds.'
+
+/**
+ * Renamed from `DEMO_NOTICE`, because the balance stopped being a demo.
+ *
+ * Hunt gold is credited by the server against a single-use token it issued,
+ * recorded with provenance on the append-only ledger above. "Demo — no real
+ * funds" described none of that, and it understated the one thing a player
+ * needs to know is real: losing this gold on a wager actually loses it.
+ *
+ * The half that has not changed is the half that matters legally, so it is
+ * the half the string keeps. Nothing here converts to a token or to money,
+ * and there is no code in this repository that could make it.
+ */
+export const GOLD_NOTICE = 'Game gold — not redeemable, no cash value.'
 
 /** Percentage of carried gold dropped on death. Integer, so the math stays exact. */
 export const DEATH_LOSS_PERCENT = 40

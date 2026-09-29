@@ -181,17 +181,17 @@ export type FundsMode =
   | 'demo'
   /** Test cluster, wallet connected: real signatures over worthless SOL. */
   | 'test'
-  /** mainnet-beta. Real money. */
+  /** mainnet-beta. A payment approved in Phantom is real SOL. */
   | 'live'
 
 /**
  * Note the asymmetry, which is deliberate.
  *
  * `live` depends only on the configured cluster, not on whether a wallet is
- * currently connected: on a mainnet build a real transfer is one click away, so
- * the warning must be up before the click, not after it. `demo` is the narrow
- * case — a test cluster with nothing connected — so a demo can never be dressed
- * up as real, and a real deployment can never be mistaken for a demo.
+ * currently connected: which chain this build talks to is a fact about the
+ * build, and it is stated before a wallet appears rather than after. `demo` is
+ * the narrow case — a test cluster with nothing connected — so a demo can never
+ * be dressed up as real, and a real deployment can never be mistaken for a demo.
  */
 export function fundsMode(walletConnected: boolean): FundsMode {
   if (IS_MAINNET) return 'live'
@@ -205,10 +205,10 @@ export function fundsLabel(walletConnected: boolean): FundsLabel {
   if (mode === 'live') {
     return {
       mode,
-      short: 'MAINNET · REAL FUNDS',
+      short: 'MAINNET',
       long: walletConnected
-        ? 'Mainnet-beta. Anything you approve in Phantom moves real money and cannot be reversed.'
-        : 'Mainnet-beta is configured. Connecting a wallet here exposes real money.',
+        ? 'Mainnet-beta. A payment you approve in Phantom moves real SOL and cannot be reversed.'
+        : 'Mainnet-beta. Nothing moves value until you approve a payment in Phantom, and a payment approved there is real SOL that cannot be reversed.',
     }
   }
   if (mode === 'test') {

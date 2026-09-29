@@ -6,37 +6,139 @@ import type { WizardId } from './characters'
  * numbers, so the two can never drift apart.
  * ------------------------------------------------------------------ */
 
-export type BuildingSpec = { name: string; x: number; z: number; width: number; depth: number; height: number; wall: string; roof: string; sign: string; accent?: string }
+/* ------------------------------------------------------------------ *
+ * The shielded-transfer notice.
+ *
+ * Held here, as data, for one reason: Sable's board in the world, and
+ * any panel that ever describes the service, must say the same thing,
+ * and that thing must not drift into optimism.
+ *
+ * What it says is not a stylistic choice. Shielded Zcash transfers do
+ * not work in this project and cannot be made to work right now:
+ *
+ *   - `src/server/providers/zcashWallet.ts` surveys every candidate
+ *     backend against its own words and concludes, as a value the
+ *     operator console reports rather than an inference: "Nothing in this
+ *     repository can sign a Zcash transaction."
+ *   - `src/server/providers/oneclick.ts` documents the trap that makes
+ *     this easy to get wrong. The 1Click quote endpoint ACCEPTS
+ *     shielded-only unified addresses and returns priced quotes for
+ *     them, while the same provider's chain-support page says Zcash is
+ *     "⚠️ Partially supported - Transparent addresses only". A priced
+ *     quote is therefore not evidence of shielded delivery; that
+ *     adapter's verdict for a shielded receiver is `unsubstantiated`,
+ *     and `planZecPayout` refuses outright rather than quietly
+ *     downgrading to a transparent address.
+ *
+ * The emblem on Sable's board says which network the desk would talk
+ * to. These lines say the desk is shut. Both are true, and the second
+ * does not get shortened to fit the sign.
+ * ------------------------------------------------------------------ */
+export const SHIELDED_NOTICE = {
+  headline: 'SHIELDED · UNAVAILABLE',
+  lines: [
+    'No usable Zcash signing wallet exists for this project,',
+    'so no shielded transfer can be sent. A priced quote for a',
+    'shielded address is not proof of shielded delivery, and the',
+    'payout planner refuses rather than downgrading to transparent.',
+  ],
+  /** Short form, for a sign board that only has room for two lines. */
+  boardLines: ['NO SIGNING WALLET', 'NOTHING HERE CAN SEND ZEC'],
+  /** Why the mark is on the board at all, so it cannot read as an endorsement. */
+  markCaption: 'INTEGRATES WITH',
+} as const
+
+/**
+ * What trade a building plies, which is what decides how it is BUILT.
+ *
+ * Before this existed every building was the same box with a pyramid on top and
+ * a floating label, so the only thing telling a smithy from a bakery was the
+ * word on the sign. `createTown()` in src/townArt.ts switches on this to give
+ * each one its own roofline, chimneys, shutters, signage and yard clutter.
+ */
+export type BuildingKind =
+  | 'inn' | 'hall' | 'bakery' | 'stable' | 'apothecary' | 'smithy' | 'market' | 'post'
+  | 'archive' | 'observatory' | 'garden' | 'tower' | 'glasshouse' | 'weaver' | 'cartwright'
+  | 'chapel' | 'fishery'
+
+export type BuildingSpec = {
+  name: string
+  kind: BuildingKind
+  x: number
+  z: number
+  width: number
+  depth: number
+  height: number
+  wall: string
+  roof: string
+  sign: string
+  accent?: string
+  /** Extra timber/plaster tone for courses and gable ends. Falls back to the wall. */
+  trim?: string
+}
 
 export const buildingSpecs: BuildingSpec[] = [
-  { name: 'Hearth Inn', x: -17, z: 16, width: 12, depth: 9, height: 5.3, wall: '#795c50', roof: '#463b43', sign: 'HEARTH', accent: '#d5a64b' },
-  { name: 'Town Hall', x: 17, z: 16, width: 11, depth: 9, height: 5.8, wall: '#626b70', roof: '#39444d', sign: 'HALL', accent: '#9580b8' },
-  { name: 'Bakery', x: -17, z: -17, width: 10, depth: 8, height: 4.6, wall: '#8a6a55', roof: '#57434a', sign: 'BAKERY', accent: '#d9a35c' },
-  { name: 'Stable', x: 17, z: -17, width: 11, depth: 8, height: 4.3, wall: '#6d594b', roof: '#4a3d39', sign: 'STABLE', accent: '#9a7046' },
-  { name: 'Potion Shop', x: 50, z: -16, width: 12, depth: 9, height: 5.2, wall: '#5c6e68', roof: '#3d4d4d', sign: 'ALCHEMY', accent: '#7bc9ce' },
-  { name: 'Workshop', x: 50, z: 18, width: 13, depth: 10, height: 5.5, wall: '#765a46', roof: '#4e3d38', sign: 'WORKSHOP', accent: '#e37c42' },
-  { name: 'Market Hall', x: 72, z: 0, width: 14, depth: 12, height: 5.6, wall: '#68655d', roof: '#45494a', sign: 'MARKET', accent: '#d5a64b' },
-  { name: 'Post Office', x: 50, z: 50, width: 12, depth: 9, height: 5.0, wall: '#78645c', roof: '#4b4145', sign: 'POST', accent: '#9580b8' },
-  { name: 'The Archive', x: -59, z: 43, width: 12, depth: 11, height: 9.0, wall: '#5a6879', roof: '#3b4350', sign: 'ARCHIVE', accent: '#7bc9ce' },
-  { name: 'Observatory', x: -72, z: 70, width: 14, depth: 12, height: 7.4, wall: '#645b7d', roof: '#39364d', sign: 'STARS', accent: '#9580b8' },
-  { name: 'Garden House', x: -42, z: 76, width: 11, depth: 9, height: 4.7, wall: '#5e705c', roof: '#3d5546', sign: 'GARDEN', accent: '#9ca66d' },
-  { name: 'Spell Tower', x: -82, z: 52, width: 10, depth: 10, height: 11, wall: '#555b70', roof: '#38384d', sign: 'TOWER', accent: '#9580b8' },
-  { name: 'Crystal Conservatory', x: -15, z: 74, width: 14, depth: 9, height: 5.2, wall: '#587275', roof: '#354f58', sign: 'GLASS', accent: '#7bc9ce' },
-  { name: 'Weaver', x: 74, z: 72, width: 11, depth: 9, height: 5.0, wall: '#826557', roof: '#544047', sign: 'WEAVER', accent: '#e39a6d' },
-  { name: 'Cartwright', x: 83, z: -54, width: 12, depth: 10, height: 4.8, wall: '#74604d', roof: '#4c443d', sign: 'CARTS', accent: '#d5a64b' },
-  { name: 'River Chapel', x: 0, z: -68, width: 11, depth: 9, height: 6.0, wall: '#69767b', roof: '#424e57', sign: 'CHAPEL', accent: '#7bc9ce' },
-  { name: 'Fisher Shed', x: 52, z: -70, width: 10, depth: 8, height: 4.0, wall: '#596b67', roof: '#3d4b48', sign: 'FISH', accent: '#7bc9ce' },
+  { name: 'Hearth Inn', kind: 'inn', x: -17, z: 16, width: 12, depth: 9, height: 5.3, wall: '#795c50', roof: '#463b43', sign: 'HEARTH', accent: '#d5a64b', trim: '#e5ddc8' },
+  { name: 'Town Hall', kind: 'hall', x: 17, z: 16, width: 11, depth: 9, height: 5.8, wall: '#626b70', roof: '#39444d', sign: 'HALL', accent: '#9580b8', trim: '#e5ddc8' },
+  { name: 'Bakery', kind: 'bakery', x: -17, z: -17, width: 10, depth: 8, height: 4.6, wall: '#8a6a55', roof: '#57434a', sign: 'BAKERY', accent: '#d9a35c', trim: '#e5ddc8' },
+  { name: 'Stable', kind: 'stable', x: 17, z: -17, width: 11, depth: 8, height: 4.3, wall: '#6d594b', roof: '#4a3d39', sign: 'STABLE', accent: '#9a7046' },
+  { name: 'Potion Shop', kind: 'apothecary', x: 50, z: -16, width: 12, depth: 9, height: 5.2, wall: '#5c6e68', roof: '#3d4d4d', sign: 'ALCHEMY', accent: '#7bc9ce', trim: '#e5ddc8' },
+  { name: 'Workshop', kind: 'smithy', x: 50, z: 18, width: 13, depth: 10, height: 5.5, wall: '#765a46', roof: '#4e3d38', sign: 'FORGE', accent: '#e37c42' },
+  { name: 'Market Hall', kind: 'market', x: 72, z: 0, width: 14, depth: 12, height: 5.6, wall: '#68655d', roof: '#45494a', sign: 'MARKET', accent: '#d5a64b', trim: '#e5ddc8' },
+  { name: 'Post Office', kind: 'post', x: 50, z: 50, width: 12, depth: 9, height: 5.0, wall: '#78645c', roof: '#4b4145', sign: 'POST', accent: '#9580b8', trim: '#e5ddc8' },
+  { name: 'The Archive', kind: 'archive', x: -59, z: 43, width: 12, depth: 11, height: 9.0, wall: '#5a6879', roof: '#3b4350', sign: 'ARCHIVE', accent: '#7bc9ce', trim: '#e5ddc8' },
+  { name: 'Observatory', kind: 'observatory', x: -72, z: 70, width: 14, depth: 12, height: 7.4, wall: '#645b7d', roof: '#39364d', sign: 'STARS', accent: '#9580b8' },
+  { name: 'Garden House', kind: 'garden', x: -42, z: 76, width: 11, depth: 9, height: 4.7, wall: '#5e705c', roof: '#3d5546', sign: 'GARDEN', accent: '#9ca66d', trim: '#e5ddc8' },
+  { name: 'Spell Tower', kind: 'tower', x: -82, z: 52, width: 10, depth: 10, height: 11, wall: '#555b70', roof: '#38384d', sign: 'TOWER', accent: '#9580b8' },
+  { name: 'Crystal Conservatory', kind: 'glasshouse', x: -15, z: 74, width: 14, depth: 9, height: 5.2, wall: '#587275', roof: '#354f58', sign: 'GLASS', accent: '#7bc9ce' },
+  { name: 'Weaver', kind: 'weaver', x: 74, z: 72, width: 11, depth: 9, height: 5.0, wall: '#826557', roof: '#544047', sign: 'WEAVER', accent: '#e39a6d', trim: '#e5ddc8' },
+  { name: 'Cartwright', kind: 'cartwright', x: 83, z: -54, width: 12, depth: 10, height: 4.8, wall: '#74604d', roof: '#4c443d', sign: 'CARTS', accent: '#d5a64b' },
+  { name: 'River Chapel', kind: 'chapel', x: 0, z: -68, width: 11, depth: 9, height: 6.0, wall: '#69767b', roof: '#424e57', sign: 'CHAPEL', accent: '#7bc9ce', trim: '#e5ddc8' },
+  { name: 'Fisher Shed', kind: 'fishery', x: 52, z: -70, width: 10, depth: 8, height: 4.0, wall: '#596b67', roof: '#3d4b48', sign: 'FISH', accent: '#7bc9ce' },
 ]
 
-export const serviceNpcs: Array<{ name: string; id: WizardId; x: number; z: number; color: string }> = [
-  { name: 'MIRA · GUIDE', id: 'ORBIT', x: 3.5, z: 5.2, color: '#7bc9ce' },
-  { name: 'LYRA · ARCHIVIST', id: 'ORBIT', x: -52, z: 36, color: '#7bc9ce' },
-  { name: 'VELLUM · MERCHANT', id: 'BRAMBLE', x: 65, z: -7, color: '#d5a64b' },
-  { name: 'SABLE · ALCHEMIST', id: 'CINDER', x: 43, z: -9, color: '#7bc9ce' },
-  { name: 'BRONZE · BLACKSMITH', id: 'CINDER', x: 43, z: 11, color: '#e37c42' },
-  { name: 'PIP · COURIER', id: 'MOTH', x: 43, z: 43, color: '#9580b8' },
-  { name: 'ASTRA · ORRERY KEEPER', id: 'ORBIT', x: -68, z: 61, color: '#9580b8' },
-  { name: 'NELL · INNKEEPER', id: 'MOTH', x: -10, z: 10, color: '#d5a64b' },
+/**
+ * The emblem each service NPC's standard carries, and the premises they work
+ * from. Ids are drawn as pixel art in src/emblems.ts — nothing is imported.
+ *
+ * `integrates` names an EXTERNAL network the service would talk to. It is a
+ * label on a third-party mark, not a statement that anything works; anything
+ * with an `integrates` mark must also carry a `status` line saying where it
+ * actually stands, which src/townArt.ts hangs on the same board.
+ */
+export type ServiceNpc = {
+  name: string
+  id: WizardId
+  x: number
+  z: number
+  color: string
+  trade: string
+  emblem: string
+  integrates?: string
+  status?: string[]
+}
+
+export const serviceNpcs: ServiceNpc[] = [
+  { name: 'MIRA · GUIDE', id: 'ORBIT', x: 3.5, z: 5.2, color: '#7bc9ce', trade: 'WAYFINDING', emblem: 'COMPASS' },
+  { name: 'LYRA · ARCHIVIST', id: 'ORBIT', x: -52, z: 36, color: '#7bc9ce', trade: 'RECORDS', emblem: 'BOOK' },
+  { name: 'VELLUM · MERCHANT', id: 'BRAMBLE', x: 65, z: -7, color: '#d5a64b', trade: 'TRADE', emblem: 'SCALES' },
+  {
+    name: 'SABLE · ALCHEMIST',
+    id: 'CINDER',
+    x: 43,
+    z: -9,
+    color: '#7bc9ce',
+    trade: 'DRAUGHTS',
+    emblem: 'MORTAR',
+    // Sable keeps the shielded-transfer desk. The desk is shut, and the sign
+    // says so; see SHIELDED_NOTICE below for why that wording is not softened.
+    integrates: 'ZCASH',
+    status: [...SHIELDED_NOTICE.boardLines],
+  },
+  { name: 'BRONZE · BLACKSMITH', id: 'CINDER', x: 43, z: 11, color: '#e37c42', trade: 'IRONWORK', emblem: 'HAMMER' },
+  { name: 'PIP · COURIER', id: 'MOTH', x: 43, z: 43, color: '#9580b8', trade: 'DELIVERY', emblem: 'LETTER' },
+  { name: 'ASTRA · ORRERY KEEPER', id: 'ORBIT', x: -68, z: 61, color: '#9580b8', trade: 'THE SKY', emblem: 'ORRERY' },
+  { name: 'NELL · INNKEEPER', id: 'MOTH', x: -10, z: 10, color: '#d5a64b', trade: 'BOARD', emblem: 'TANKARD' },
 ]
 
 export const ambientNpcs: Array<{ id: WizardId; x: number; z: number }> = [
@@ -92,5 +194,15 @@ export function districtAt(x: number, z: number) {
  * publishes regions, the list stays empty and the map draws none rather
  * than guessing at coordinates.
  * ------------------------------------------------------------------ */
-export type HuntingRegion = { name: string; x: number; z: number; radius: number; accent: string }
+export type HuntingRegion = {
+  name: string
+  /** The region's heart, for the label and the compass. */
+  x: number
+  z: number
+  /** Farthest the footprint reaches from the heart. Used to place the label clear of it. */
+  reach: number
+  /** The region edge as a closed ring of world points. Regions are not circles. */
+  outline: Array<[number, number]>
+  accent: string
+}
 export const huntingRegions: HuntingRegion[] = []

@@ -44,6 +44,16 @@ export const townBuildings: Rect[] = [
 export const townPlaza: Circle = { x: 0, z: 0, r: 18 }
 export const SAFE_ZONE: Circle = { x: 0, z: 0, r: 30 }
 
+/**
+ * Where a killed wayfinder comes back, on the plaza inside the safe zone.
+ *
+ * Shared because both ends have to agree on it. The browser puts the player
+ * here the instant they die, and the world server puts its own copy here when
+ * it authorises the respawn; if the two picked different points the gap would
+ * be read as drift and the desync correction would pull the player back.
+ */
+export const TOWN_RESPAWN = { x: 0, z: 8 } as const
+
 const PAVING_MARGIN = 4
 const BUILDING_MARGIN = 9
 const PLAZA_MARGIN = 6

@@ -127,7 +127,9 @@ export function WorldMap() {
         <rect x={-townLayout.bounds} y={-townLayout.bounds} width={townLayout.bounds * 2} height={townLayout.bounds * 2} fill="none" stroke="#8a6c4366" strokeWidth="1" strokeDasharray="6 4" />
 
         {/* hunting grounds and the lit trail, published by the wildlife module */}
-        {huntingRegions.map(region => <polygon key={region.name} points={polygon(region.x, region.z, region.radius, 14)} fill={`${region.accent}26`} stroke={region.accent} strokeWidth="1.1" strokeDasharray="5 3" />)}
+        {/* the real footprint, not a stand-in circle: the same outline the ground
+            is cut to and the same one the animals are fenced by */}
+        {huntingRegions.map(region => <polygon key={region.name} points={region.outline.map(([x, z]) => `${x.toFixed(1)},${z.toFixed(1)}`).join(' ')} fill={`${region.accent}26`} stroke={region.accent} strokeWidth="1.1" strokeDasharray="5 3" />)}
         {huntTrails.map((trail, index) => (
           <g key={`trail-${index}`}>
             <polyline points={trail.map(([x, z]) => `${x},${z}`).join(' ')} fill="none" stroke="#7a5c33" strokeWidth="2.6" strokeLinejoin="round" />
@@ -169,8 +171,11 @@ export function WorldMap() {
           </g>
         })}
 
-        {/* region names sit inside the top of their own circle */}
-        {huntingRegions.map(region => <text key={`${region.name}-label`} className="mp-region" x={region.x} y={region.z - region.radius + 4} fill={region.accent} textAnchor="middle">{region.name}</text>)}
+        {/* region names sit inside the northern edge of their own footprint */}
+        {huntingRegions.map(region => {
+          const north = Math.min(...region.outline.map(([, z]) => z))
+          return <text key={`${region.name}-label`} className="mp-region" x={region.x} y={north + 4.5} fill={region.accent} textAnchor="middle">{region.name}</text>
+        })}
 
         {/* live animals, polled from the wildlife module */}
         {animals.filter(animal => animal.alive).map((animal, index) => <rect

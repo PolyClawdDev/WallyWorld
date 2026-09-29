@@ -207,11 +207,26 @@ async function main() {
   await clickText(page, 'Enter Voxels')
   await sleep(4000)
 
-  const bannerVisible = await page.evaluate(() => !!document.querySelector('.mainnet-banner'))
-  check(
-    EXPECT_DISCONNECTED === 'live' ? 'mainnet banner is shown in the world' : 'no mainnet banner on a test cluster',
-    EXPECT_DISCONNECTED === 'live' ? bannerVisible : !bannerVisible,
-  )
+  // The network is named by the badge alone. There is no full-width alarm strip
+  // on any cluster: nothing in this build can move value without an explicit
+  // approval in Phantom, so the HUD states the network and leaves it there.
+  const alarm = await page.evaluate(() => ({
+    banner: !!document.querySelector('.mainnet-banner'),
+    siren: !!document.querySelector('.funds-siren'),
+    alert: !!document.querySelector('.funds-badge[role="alert"]'),
+  }))
+  check('no full-width mainnet alarm strip in the world', !alarm.banner)
+  check('the funds badge is not an alert and carries no siren', !alarm.siren && !alarm.alert)
+  check(`world badge reads ${EXPECT_DISCONNECTED}`, (await fundsMode()) === EXPECT_DISCONNECTED, String(await badgeText()))
+  if (EXPECT_DISCONNECTED === 'live') {
+    // The topbar is offset only when something sits above it; the banner's
+    // removal must not leave that gap behind.
+    const topbarTop = await page.evaluate(() => {
+      const el = document.querySelector('.topbar')
+      return el ? Math.round(el.getBoundingClientRect().top) : null
+    })
+    check('the topbar is not offset for a banner that no longer exists', topbarTop !== null && topbarTop < 40, `top=${topbarTop}px`)
+  }
   await page.screenshot({ path: `${SHOTS}/${LABEL}-3-world.png` })
 
   /* ------------------------------------------------------ wallet panel */

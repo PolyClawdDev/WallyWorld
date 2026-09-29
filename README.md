@@ -85,12 +85,20 @@ The cluster comes from `VITE_SOLANA_CLUSTER` (client) and `SOLANA_CLUSTER`
 (server), **defaulting to devnet**. `mainnet-beta` is an explicit opt-in.
 
 Labelling is deliberately asymmetric, because the two mistakes are not equally
-bad. "Real funds" depends only on the configured cluster, so a mainnet build is
-loud before a wallet is even connected: a red `MAINNET · REAL FUNDS` chip on
-every screen plus a banner across the top of the world. Devnet shows
+bad. The live state depends only on the configured cluster, so a mainnet build
+names its network before a wallet is even connected: a `MAINNET` chip on every
+screen, whose tooltip says that nothing moves value until a payment is approved
+in Phantom and that such a payment is real, irreversible SOL. Devnet shows
 `DEMO · NO REAL FUNDS` until a wallet connects and `DEVNET · TEST FUNDS`
 afterwards. A demo build cannot display the live styling, and a mainnet build
 cannot display the demo styling.
+
+The chip is brass rather than red, and there is no full-width alarm strip. That
+is proportionate rather than lax: no code path in this build can move value
+without an explicit approval in Phantom (`src/solana/payments.ts` requires a
+`PhantomProvider`), the browser-held key signs identity only and has no
+transaction signer at all, and payouts are hardcoded off. Red is reserved for
+real faults, so a badge naming the network never reads as one.
 
 The server independently reads the RPC genesis hash at boot and reports it on
 `/api/health`, so an endpoint that disagrees with the configured cluster is

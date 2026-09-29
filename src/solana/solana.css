@@ -5,8 +5,10 @@
  * does not collide with concurrent edits there. Palette matches the town:
  * brass #d5a64b, cyan #7bc9ce, ember #e35e35.
  *
- * The three funds states are colour-coded and deliberately not subtle:
- * demo is brass and quiet, devnet is cyan, mainnet is ember and moves.
+ * The three funds states are distinguished by their text first and their
+ * colour second: devnet is cyan, demo and mainnet are brass, and mainnet
+ * additionally carries a brass border and bold weight. Ember is reserved
+ * for actual errors, so a badge naming the network never reads as a fault.
  * ------------------------------------------------------------------ */
 
 /* ------------------------------------------------------------ the badge */
@@ -27,28 +29,14 @@
 .funds-badge.funds-demo { color: #d5a64b; }
 .funds-badge.funds-test { color: #7bc9ce; border-color: #7bc9ce55; }
 
-/* Mainnet: ember, a heavier border, a glow and a live indicator. Nobody should
-   be able to glance at this and think they are in a demo. */
+/* Mainnet: brass, matching the gold chip it sits beside in the topbar. It
+   names the network it is on and does not shout, because nothing in this build
+   can move value without an explicit approval in Phantom. */
 .funds-badge.funds-live {
-  color: #ffd8c4;
-  background: #3a1108ee;
-  border: 1px solid #e35e35;
-  box-shadow: 0 0 0 1px #e35e3555, 0 6px 26px #e35e3540;
+  color: #f0b84d;
+  background: #1e2b2bdd;
+  border: 1px solid #d5a64b99;
   font-weight: 700;
-}
-
-.funds-siren {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: #e35e35;
-  box-shadow: 0 0 9px 2px #e35e35;
-  animation: funds-pulse 1.1s ease-in-out infinite;
-}
-
-@keyframes funds-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: .35; transform: scale(.72); }
 }
 
 /* Pre-game header and entry footer variants sit in existing typography. */
@@ -56,42 +44,14 @@
 .funds-dot { font: 10px "DM Mono", monospace; }
 .funds-foot { font: 10px "DM Mono", monospace; text-transform: uppercase; }
 .funds-dot.funds-live, .funds-foot.funds-live {
-  background: #3a1108ee;
-  border: 1px solid #e35e35;
+  background: #1e2b2bdd;
+  border: 1px solid #d5a64b66;
   padding: 7px 10px;
 }
 
-/* Full-width strip pinned above the HUD. Sits outside `.hud` so it is not
-   caught by that layer's `pointer-events: none`, and above it in z-order so the
-   warning is never covered by a chip or a panel edge. */
-.mainnet-banner {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 30;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
-  padding: 8px 16px;
-  background: #4a1409f2;
-  border-bottom: 2px solid #e35e35;
-  color: #ffd8c4;
-  font: 11px "DM Mono", monospace;
-  letter-spacing: .1em;
-  text-align: center;
-}
-
-/* The topbar would otherwise sit under the banner. */
-.mainnet-banner ~ .hud .topbar { top: 52px; }
-
-.mainnet-banner strong { color: #ff9b78; }
-.mainnet-banner span { letter-spacing: 0; color: #f0c6b6; }
-
 @media (max-width: 800px) {
-  /* Mirrors the existing rule that hides the demo chip on narrow screens — but
-     never for mainnet, where the warning matters more than the layout. */
+  /* Mirrors the existing rule that hides the demo chip on narrow screens. The
+     mainnet chip stays: which network this build is on is worth one line. */
   .funds-chip.funds-demo, .funds-chip.funds-test { display: none; }
 }
 
@@ -113,13 +73,8 @@
 .sol-banner.funds-demo strong { color: #f0b84d; }
 .sol-banner.funds-test { border-color: #7bc9ce66; }
 .sol-banner.funds-test strong { color: #7bc9ce; }
-.sol-banner.funds-live {
-  border: 2px solid #e35e35;
-  background: #3a1108;
-  box-shadow: 0 0 24px #e35e3540;
-}
-.sol-banner.funds-live strong { color: #ff9b78; }
-.sol-banner.funds-live span { color: #f0c6b6; }
+.sol-banner.funds-live { border-color: #d5a64b99; }
+.sol-banner.funds-live strong { color: #f0b84d; }
 
 .sol-block {
   padding: 13px;
@@ -152,6 +107,9 @@
 .sol-off { color: #8b9899; }
 .sol-warn { color: #f0b84d; }
 .sol-bad-text { color: #e35e35; }
+/* The cluster tag on mainnet: brass, so it reads as "which network" rather
+   than as an error, while still not looking like the cyan test clusters. */
+.sol-cluster-live { color: #d5a64b; }
 
 .sol-row {
   display: flex;

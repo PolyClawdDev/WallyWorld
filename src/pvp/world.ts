@@ -125,6 +125,23 @@ export function inspectRemote(playerId: string) {
   send({ t: 'inspect', playerId })
 }
 
+/**
+ * Tells the world server this wizard was killed, so it moves its own copy.
+ *
+ * Without this the respawn is a local teleport the server never agreed to: it
+ * clamps the jump to a walking pace, still believes the player is lying where
+ * they fell, and the correction below drags them back there within a frame.
+ *
+ * The message deliberately carries nothing. The server owns the destination,
+ * and one that named its own would be the free teleport the speed budget
+ * exists to refuse. Offline this is a no-op and the local respawn stands
+ * alone, because there is then nobody to disagree with it.
+ */
+export function reportRespawn() {
+  if (!pvpState.connected) return
+  send({ t: 'respawn' })
+}
+
 export function listRemotes() {
   return [...remotes.values()].map(remote => ({
     playerId: remote.id,

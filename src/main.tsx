@@ -21,7 +21,7 @@ import { HuntHud } from './huntHud'
 import { creditPickup, debitDeath, recordKill } from './rewards'
 import { attachHuntSession, claimKillOnServer, reportDeathOnServer } from './serverGold'
 import { JournalPanel, SettingsPanel } from './panels'
-import { FundsBadge, MainnetWarningBanner } from './solana/FundsBadge'
+import { FundsBadge } from './solana/FundsBadge'
 import { WalletSolanaPanel } from './solana/WalletPanel'
 import { registerPlayer } from './solana/playerBridge'
 import { createBattle } from './battle/engine'
@@ -43,7 +43,8 @@ import { CombatHud } from './combatHud'
 import { PvpOverlay } from './pvp/ui'
 import { refreshPvpIdentity, send, startPvp, stopPvp } from './pvp/net'
 import { isDuelLocked, pvpState } from './pvp/store'
-import { applyDuelPose, disposePvpWorld, inspectRemote, listRemotes, pickRemote, updatePvpWorld } from './pvp/world'
+import { applyDuelPose, disposePvpWorld, inspectRemote, listRemotes, pickRemote, reportRespawn, updatePvpWorld } from './pvp/world'
+import { TOWN_RESPAWN } from './shared/zones'
 import { createCharacterNameplate, displayNameFor } from './nameplate'
 import { PixelWordmark } from './PixelWordmark'
 import { API_BASE_URL, API_ORIGIN } from './solana/cluster'
@@ -676,7 +677,13 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       pingHunt()
       wildlife.clearAggro()
       battle?.onPlayerDied()
-      player.position.set(0, 0, 8)
+      // Both halves of the respawn, and the second is not optional. The world
+      // server has to move its own copy of this wizard as well, or its speed
+      // budget reads the jump to the plaza as a teleport, refuses it, and the
+      // desync correction in the render loop puts the player straight back
+      // where the animal killed them.
+      player.position.set(TOWN_RESPAWN.x, 0, TOWN_RESPAWN.z)
+      reportRespawn()
       vitals.reset(performance.now())
       battle?.onRespawn()
     })
@@ -1244,6 +1251,11 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       unregisterCommands(); unregisterKeyboardMove()
       huntState.active = false; drops.forEach(retireDrop); drops.length = 0
       wildlife.dispose(); battle?.dispose(); nameplate.dispose(); disposePvpWorld(scene)
+      // Typed through userData because the wildscape is handed back as a plain
+      // Object3D. Nothing else can reach its props, ground patches, water, fire
+      // or the eight canvas-textured sign boards.
+      const disposeWildscape = wildscape.userData.dispose as (() => void) | undefined
+      disposeWildscape?.()
       renderer.dispose(); mount.current?.removeChild(renderer.domElement)
     }
   }, [wizard, style])
@@ -1332,7 +1344,11 @@ function App() {
   if (!entered && tab === 'select') return (
     <main className="entry">
       <div className="entry-copy">
-        <div className="eyebrow">MULTIPLAYER DEMO · SAME NETWORK</div>
+        {/* Was "MULTIPLAYER DEMO · SAME NETWORK", which stopped being true the
+            moment the deployment went public: the town is one authoritative
+            world reachable from anywhere, and two players on separate networks
+            have duelled in it. */}
+        <div className="eyebrow">ONE SHARED WORLD · OPEN TO ANYONE</div>
         <PixelWordmark />
         <p>Voxels is a playable wallet: walk a voxel town with the mouse, and the pouch holds your gold and tokens. Agents live there as a guide, shops, and services — useful, not flavor. You can hand items and gold to people in the world. Private transfers are the longer-term idea, not a live feature here.</p>
         <button className="primary" onClick={() => setEntered(true)}>Enter world <span>→</span></button>
@@ -1352,7 +1368,7 @@ function App() {
   if (!entered) return null
   const action = (target: string) => { if (target.startsWith('ANIMAL:')) { setToast('Click the animal to attack it · loot drops on the ground for anyone') } else if (target.startsWith('LYRA')) setPanel('journal'); else setToast(`${target} is preparing a demo service.`) }
   const talkable = npc && !npc.startsWith('ANIMAL:') ? npc : null
-  return <main className="game"><WorldCanvas wizard={wizard} style={style} playerName={playerName} paused={panel !== null} onNear={setNpc} onGold={amount => setGold(value => Math.max(0, value + amount))} onAction={action} /><HuntHud wizard={wizard} /><CombatHud wizard={wizard} style={style} /><PvpOverlay /><MainnetWarningBanner /><div className="hud"><div className="topbar"><div className="avatar-chip"><span style={{ background: wizards[wizard].accent }} />{playerName || wizards[wizard].name}<small>{wizards[wizard].name} WAYFINDER</small></div><div className="gold-chip">✦ {gold} GOLD <small>DEMO LOOT</small></div><FundsBadge variant="chip" /><div className="fps-chip">WORLD 01 <span>●</span></div></div><div className="minimap"><div className="map-ring"><i /><b /><em /></div><small>OLD TOWN LOOP</small></div><div className="bottom-nav">{[['map','Map'],['journal','Journal'],['wallet','Wallet'],['settings','Settings']].map(([id, label]) => <button key={id} onClick={() => setPanel(id as Panel)}><span>{id === 'map' ? '⌖' : id === 'journal' ? '▤' : id === 'wallet' ? '◇' : '⚙'}</span>{label}</button>)}</div>{talkable && <button className="interact" onClick={() => { if (talkable.startsWith('LYRA')) setPanel('journal'); else setToast(`${talkable} is preparing a demo service.`) }}>F <span>Talk to</span> {talkable}</button>}{panel === 'wallet' && <Popup variant="pouch" eyebrow="THE HEARTH · PRIVATE" title="Your pouch" onClose={() => setPanel(null)}><WalletPouch gold={gold} onGoldChange={setGold} nearbyNpc={npc} onToast={setToast} /><WalletSolanaPanel /></Popup>}{panel === 'map' && <Popup variant="chart" size="wide" eyebrow="VOXELS · DISTRICT 01" title="Old Town Loop" note={`${townLayout.ground}m × ${townLayout.ground}m · one grid square is 8m · surveyed from the live town layout`} onClose={() => setPanel(null)}><WorldMap /></Popup>}{panel === 'journal' && <Popup variant="book" eyebrow="THE ARCHIVE · LYRA" title="Your journal" onClose={() => setPanel(null)}><JournalPanel task={task} receipt={receipt} onApprove={doTask} /></Popup>}{panel === 'settings' && <Popup variant="plate" eyebrow="PREFERENCES" title="Control plate" onClose={() => setPanel(null)}><SettingsPanel /></Popup>}{toast && <div className="toast" onClick={() => setToast('')}>{toast}</div>}</div></main>
+  return <main className="game"><WorldCanvas wizard={wizard} style={style} playerName={playerName} paused={panel !== null} onNear={setNpc} onGold={amount => setGold(value => Math.max(0, value + amount))} onAction={action} /><HuntHud wizard={wizard} /><CombatHud wizard={wizard} style={style} /><PvpOverlay /><div className="hud"><div className="topbar"><div className="avatar-chip"><span style={{ background: wizards[wizard].accent }} />{playerName || wizards[wizard].name}<small>{wizards[wizard].name} WAYFINDER</small></div><div className="gold-chip">✦ {gold} GOLD <small>GAME GOLD</small></div><FundsBadge variant="chip" /><div className="fps-chip">WORLD 01 <span>●</span></div></div><div className="minimap"><div className="map-ring"><i /><b /><em /></div><small>OLD TOWN LOOP</small></div><div className="bottom-nav">{[['map','Map'],['journal','Journal'],['wallet','Wallet'],['settings','Settings']].map(([id, label]) => <button key={id} onClick={() => setPanel(id as Panel)}><span>{id === 'map' ? '⌖' : id === 'journal' ? '▤' : id === 'wallet' ? '◇' : '⚙'}</span>{label}</button>)}</div>{talkable && <button className="interact" onClick={() => { if (talkable.startsWith('LYRA')) setPanel('journal'); else setToast(`${talkable} is preparing a demo service.`) }}>F <span>Talk to</span> {talkable}</button>}{panel === 'wallet' && <Popup variant="pouch" eyebrow="THE HEARTH · PRIVATE" title="Your pouch" onClose={() => setPanel(null)}><WalletPouch gold={gold} onGoldChange={setGold} nearbyNpc={npc} onToast={setToast} /><WalletSolanaPanel /></Popup>}{panel === 'map' && <Popup variant="chart" size="wide" eyebrow="VOXELS · DISTRICT 01" title="Old Town Loop" note={`${townLayout.ground}m × ${townLayout.ground}m · one grid square is 8m · surveyed from the live town layout`} onClose={() => setPanel(null)}><WorldMap /></Popup>}{panel === 'journal' && <Popup variant="book" eyebrow="THE ARCHIVE · LYRA" title="Your journal" onClose={() => setPanel(null)}><JournalPanel task={task} receipt={receipt} onApprove={doTask} /></Popup>}{panel === 'settings' && <Popup variant="plate" eyebrow="PREFERENCES" title="Control plate" onClose={() => setPanel(null)}><SettingsPanel /></Popup>}{toast && <div className="toast" onClick={() => setToast('')}>{toast}</div>}</div></main>
 }
 
 createRoot(document.getElementById('root')!).render(<App />)

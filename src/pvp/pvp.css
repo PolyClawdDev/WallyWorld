@@ -135,7 +135,37 @@
 
 .pvp-demo { color: #c4a15a !important; font-size: 11px; letter-spacing: 0.03em; }
 
+/* Why the button above is dead. Warm rather than red: every one of these is a
+   rule working as intended, not a fault, and it reads next to the button
+   instead of inside its label so the button can still look like a button. */
+.pvp-why {
+  margin: 8px 0 0 !important;
+  padding-left: 9px;
+  border-left: 2px solid #c4653a;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #d8cdb4 !important;
+}
+
+.pvp-wager {
+  margin: 8px 0 0 !important;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #a89068 !important;
+}
+
 .pvp-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+/* A disabled `.primary` inherits the full gold treatment, hover lift included,
+   so it looked pressable and did nothing. It now reads as unavailable, and the
+   sentence underneath says which rule made it so. */
+.pvp-card .primary:disabled {
+  color: #6f6450;
+  background: #4a4335;
+  box-shadow: none;
+}
+.pvp-card .primary:disabled:hover { transform: none; background: #4a4335; }
+
 .pvp-actions button, .pvp-card .full { pointer-events: auto; }
 .pvp-stake { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
 .pvp-stake input {

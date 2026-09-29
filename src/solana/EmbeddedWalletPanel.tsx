@@ -32,10 +32,13 @@ import {
 import { claimAccountWithEmbeddedWallet, embeddedClaimState, subscribeEmbeddedClaim } from './embeddedIdentity'
 
 /* ------------------------------------------------------------------ *
- * The one sentence that must never be softened.
+ * What this key is for, and the one clause that must never be softened:
+ * a key in browser storage is readable by script on this page and by
+ * anyone who can reach the machine. The panel shows the address and an
+ * explorer link, so a player can fund it, so the ceiling has to be said.
  * ------------------------------------------------------------------ */
 const STORAGE_WARNING =
-  'This key is kept in this browser\u2019s storage. Anything that can run scripts on this page, and anyone with access to this computer and browser profile, can read it. That is fine for a game balance and small amounts. Do not keep savings here, and do not treat it as a hardware wallet.'
+  'This key signs your identity, and nothing else \u2014 the game never spends from it, so the address holds nothing unless you send funds to it yourself. It is kept in this browser\u2019s storage, which means anything that can run scripts on this page, and anyone with access to this computer and browser profile, can read it. So if you do fund it, keep it to small amounts: this is not a hardware wallet and not a place for savings.'
 
 function useEmbedded() {
   return useSyncExternalStore(subscribeEmbeddedWallet, embeddedWallet, embeddedWallet)
@@ -192,16 +195,8 @@ export function EmbeddedWalletBlock() {
     <div className="sol-block">
       <div className="sol-block-head">
         <span>THIS BROWSER&rsquo;S WALLET</span>
-        <b className={IS_MAINNET ? 'sol-bad-text' : 'sol-on'}>{CLUSTER.toUpperCase()}</b>
+        <b className={IS_MAINNET ? 'sol-cluster-live' : 'sol-on'}>{CLUSTER.toUpperCase()}</b>
       </div>
-
-      {IS_MAINNET && (
-        <p className="sol-error">
-          <strong>Mainnet.</strong> This build is pointed at mainnet-beta, so an automatically generated key sitting in
-          browser storage would be holding real value. Do not fund it. Move to a hardware wallet or Phantom for
-          anything that matters.
-        </p>
-      )}
 
       <div className="sol-row">
         <span>Address</span>

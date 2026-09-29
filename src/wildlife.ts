@@ -235,101 +235,250 @@ export const speciesSpecs: Record<SpeciesId, SpeciesSpec> = {
 
 export type WildRegionKind = 'wildwood' | 'woods' | 'grassland' | 'meadow' | 'fields' | 'outskirts' | 'brasswood'
 
+/** One blob of a region's footprint. A region is the smooth union of its lobes. */
+export type Lobe = { x: number; z: number; r: number }
+
 export type WildRegion = {
   id: string
   label: string
   kind: WildRegionKind
+  /** The region's heart: the compass target, and the anchor its props hang off. */
   x: number
   z: number
-  radius: number
+  /** Absolute lobe centres and radii. `regionDistance` blends them into one shape. */
+  lobes: Lobe[]
+  /** Farthest the footprint reaches from the heart. Framing and scatter budgets only. */
+  reach: number
   note: string
   /** Ground tint used by the scenery pass, reused by the map panel. */
   color: string
   counts: Partial<Record<SpeciesId, number>>
 }
 
+/* ------------------------------------------------------------------ *
+ * Why a signed-distance blend of lobes, and not a circle or a polygon.
+ *
+ * A circle was what this used to be, and it was visibly a circle: a disc
+ * of lighter grass with a hard rim, and animals ringed inside it.
+ *
+ * A polygon would fix the look but not the work. What the rest of this
+ * module actually asks of a region is not "draw me" — it is:
+ *
+ *   - is this point inside, with at least N metres of slack? (spawning,
+ *     wander targets, and the movement fence, thousands of times a
+ *     second)
+ *   - which way is inward from here? (turning a fleeing animal back
+ *     before it grinds into the boundary)
+ *   - where is the edge, as a line? (the ground patch and the map)
+ *
+ * A signed distance field answers all three in a few multiplies, and a
+ * polygon answers only the first cheaply. `smoothUnion` is the standard
+ * polynomial smooth-min, which fuses overlapping lobes into one organic
+ * outline with no corner where two circles meet — so the shape reads as
+ * a clearing that grew, rather than as several circles.
+ * ------------------------------------------------------------------ */
+
+/** Lobe fusion width in metres. Bigger swells the joins and rounds the outline. */
+const LOBE_BLEND = 7
+
+function smoothUnion(a: number, b: number, k: number) {
+  const h = Math.max(0, k - Math.abs(a - b)) / k
+  return Math.min(a, b) - h * h * k * 0.25
+}
+
+/** Signed metres to the region's edge: negative inside, positive outside. */
+export function regionDistance(region: WildRegion, x: number, z: number) {
+  const first = region.lobes[0]
+  let distance = Math.hypot(x - first.x, z - first.z) - first.r
+  for (let i = 1; i < region.lobes.length; i++) {
+    const lobe = region.lobes[i]
+    distance = smoothUnion(distance, Math.hypot(x - lobe.x, z - lobe.z) - lobe.r, LOBE_BLEND)
+  }
+  return distance
+}
+
+/** Inside, with `inset` metres of slack to the edge. */
+export function insideRegion(region: WildRegion, x: number, z: number, inset = 0) {
+  return regionDistance(region, x, z) <= -inset
+}
+
+/**
+ * Open green inside the region, in square metres, measured rather than derived.
+ *
+ * Sampled on a grid because the union of blended lobes has no closed form and
+ * because what the scenery pass actually wants to know is how much PLANTABLE
+ * ground there is — which means the town cut-outs have to come off it too. The
+ * tree and grass budgets are densities per square metre against this number, so
+ * enlarging a region plants more trees without anyone retuning a count.
+ */
+export function regionArea(region: WildRegion, inset = ROAM_INSET, step = 1.5) {
+  let inside = 0
+  const far = region.reach + LOBE_BLEND
+  for (let x = region.x - far; x <= region.x + far; x += step) {
+    for (let z = region.z - far; z <= region.z + far; z += step) {
+      if (!insideRegion(region, x, z, inset)) continue
+      if (!isGreen(x, z, 1)) continue
+      inside += 1
+    }
+  }
+  return inside * step * step
+}
+
+/** Unit vector pointing into the region: the downhill direction of the field. */
+export function regionInward(region: WildRegion, x: number, z: number) {
+  const e = 0.7
+  const gx = regionDistance(region, x + e, z) - regionDistance(region, x - e, z)
+  const gz = regionDistance(region, x, z + e) - regionDistance(region, x, z - e)
+  const length = Math.hypot(gx, gz)
+  if (length < 1e-6) return { x: 0, z: 0 }
+  return { x: -gx / length, z: -gz / length }
+}
+
+/**
+ * The edge as a ring of points, for the ground patch and the map.
+ *
+ * Found by bisection along rays from the heart, which assumes the shape is
+ * star-shaped about that heart — true for the footprints below, because each
+ * one is a chain of lobes overlapping the first. Only the DRAWING relies on
+ * that assumption; every containment test goes through `regionDistance`, which
+ * is exact for any arrangement.
+ */
+export function regionOutline(region: WildRegion, steps = 64): Array<[number, number]> {
+  const far = region.reach + LOBE_BLEND + 6
+  const points: Array<[number, number]> = []
+  for (let i = 0; i < steps; i++) {
+    const angle = (i / steps) * Math.PI * 2
+    const cos = Math.cos(angle)
+    const sin = Math.sin(angle)
+    let inside = 0
+    let outside = far
+    for (let k = 0; k < 22; k++) {
+      const mid = (inside + outside) / 2
+      if (regionDistance(region, region.x + cos * mid, region.z + sin * mid) < 0) inside = mid
+      else outside = mid
+    }
+    points.push([region.x + cos * inside, region.z + sin * inside])
+  }
+  return points
+}
+
+/**
+ * How far inside its own ground an animal is held. The fence, in metres.
+ *
+ * Kept small and positive rather than zero so an animal is always standing on
+ * ground the player can see is green, instead of balancing on the contour line.
+ */
+export const ROAM_INSET = 1.5
+
+/** Within this band of the edge, a fleeing animal turns along it rather than into it. */
+const FLEE_TURN_BAND = 7
+
+/** How far outside its ground a player can stand and still be hunted. */
+const AGGRO_REACH = 8
+
+type RegionPlan = Omit<WildRegion, 'lobes' | 'reach'> & {
+  /** Lobes as [dx, dz, r] from the heart, so moving a region moves its whole shape. */
+  shape: Array<[number, number, number]>
+}
+
+function plan(region: RegionPlan): WildRegion {
+  const lobes = region.shape.map(([dx, dz, r]) => ({ x: region.x + dx, z: region.z + dz, r }))
+  const reach = Math.max(...lobes.map(lobe => Math.hypot(lobe.x - region.x, lobe.z - region.z) + lobe.r))
+  const { shape: _shape, ...rest } = region
+  // The smooth union bulges slightly past the lobes it fuses, by at most k/4.
+  return { ...rest, lobes, reach: reach + LOBE_BLEND * 0.25 }
+}
+
 /**
  * Exported as plain data so the map panel can draw the hunting region without
  * reaching into the Three.js scene.
+ *
+ * The lobes are laid out to stay clear of the streets, the canal and every
+ * building footprint — `npm run verify:regions` measures that rather than
+ * trusting it, and prints how much of each footprint is open green.
  */
 export const wildRegions: WildRegion[] = [
-  {
+  plan({
     id: 'wildwood',
     label: 'THE WILDWOOD',
     kind: 'wildwood',
     x: -58,
     z: -58,
-    radius: 30,
-    note: 'Dense pine, standing stones, a still pond. Bears.',
+    // A wide, lopsided clearing with two arms: one reaching north-east toward
+    // the trail out of town, one south into the deep pine.
+    shape: [[0, 0, 25], [-16, -14, 16], [16, -14, 15], [-4, 20, 18], [22, 10, 14]],
+    note: 'Dense pine, standing stones, a still pond. Bears range the whole clearing.',
     color: '#2c3f34',
     counts: { BEAR: 4, REINDEER: 5, CHICKEN: 1 },
-  },
-  {
+  }),
+  plan({
     id: 'hollow',
     label: 'ELDER HOLLOW',
     kind: 'woods',
     x: -25,
     z: -78,
-    radius: 14,
+    shape: [[0, 0, 13], [-13, 3, 11], [4, 4, 8]],
     note: 'Old wood south of the chapel. One bear works this patch.',
     color: '#2f4338',
     counts: { BEAR: 1, REINDEER: 2, CHICKEN: 2 },
-  },
-  {
+  }),
+  plan({
     id: 'northmeadow',
     label: 'LANTERN MEADOW',
     kind: 'grassland',
     x: 28,
     z: 78,
-    radius: 16,
-    note: 'Open grass above the post road. Reindeer graze here.',
+    shape: [[0, 0, 14], [-14, 2, 11], [14, -2, 10]],
+    note: 'Open grass above the post road. Reindeer graze the long side of it.',
     color: '#3b5342',
     counts: { REINDEER: 2, CHICKEN: 4 },
-  },
-  {
+  }),
+  plan({
     id: 'eastmeadow',
     label: 'EAST COMMON',
     kind: 'meadow',
     x: 80,
     z: -28,
-    radius: 13,
-    note: 'Scrub east of the market. Easy starting ground.',
+    // A corridor, not a disc: it threads the gap between the market hall and
+    // the cartwright's yard, which is the shape the ground there actually has.
+    shape: [[0, 0, 12], [-14, 4, 13], [-12, -12, 10]],
+    note: 'Scrub east of the market, running down to the cartwright. Easy starting ground.',
     color: '#3e5544',
     counts: { REINDEER: 1, CHICKEN: 3 },
-  },
-  {
+  }),
+  plan({
     id: 'southfields',
     label: 'SOUTH FIELDS',
     kind: 'fields',
     x: 18,
     z: -45,
-    radius: 12,
-    note: 'Fenced fields by the canal. Chickens everywhere.',
+    shape: [[0, 0, 10], [-2, -13, 8], [3, 10, 7]],
+    note: 'Field strip between the south road and the canal. Chickens everywhere.',
     color: '#42583f',
     counts: { REINDEER: 1, CHICKEN: 3 },
-  },
-  {
+  }),
+  plan({
     id: 'westoutskirts',
     label: 'WEST OUTSKIRTS',
     kind: 'outskirts',
-    x: -85,
+    x: -82,
     z: -24,
-    radius: 11,
-    note: 'Thin grass at the world edge.',
+    shape: [[0, 0, 10], [2, 14, 9], [0, -16, 9]],
+    note: 'A long ribbon of thin grass down the world edge.',
     color: '#3d5140',
     counts: { CHICKEN: 2 },
-  },
-  {
+  }),
+  plan({
     id: 'brasswood',
     label: 'THE BRASSWOOD',
     kind: 'brasswood',
-    x: 78,
-    z: -80,
-    radius: 16,
-    note: 'Far south-east timber. Wolves and boars. Come at level 8 or do not come.',
+    x: 74,
+    z: -74,
+    shape: [[0, 0, 17], [-6, 14, 11], [6, -10, 8]],
+    note: 'Far south-east timber under the tall ironbark. Wolves and boars. Come at level 8 or do not come.',
     color: '#2a3226',
     counts: { WOLF: 4, BOAR: 3 },
-  },
+  }),
 ]
 
 /** The starter hunting area. Compass points here until the high-level bracket. */
@@ -362,7 +511,10 @@ huntingRegions.push(
     name: region.label,
     x: region.x,
     z: region.z,
-    radius: region.radius,
+    reach: region.reach,
+    // The chart traces the same edge the ground patch is cut to, so the map is
+    // still a projection of the world and not a circle standing in for one.
+    outline: regionOutline(region, 48),
     accent: regionAccent[region.kind],
   })),
 )
@@ -880,13 +1032,29 @@ function splitCoins(total: number, count: number): number[] {
   return Array.from({ length: coins }, (_, i) => base + (i < remainder ? 1 : 0))
 }
 
+/**
+ * A point somewhere on the region's open green, chosen without bias toward its
+ * heart: a lobe is picked in proportion to its area, then a point inside it.
+ * Sampling the bounding circle instead would crowd everything into the middle
+ * of the largest lobe, which is the look this replaced.
+ */
 function randomGreenPoint(region: WildRegion, rng: () => number): THREE.Vector3 | null {
-  for (let attempt = 0; attempt < 80; attempt++) {
+  const area = region.lobes.reduce((sum, lobe) => sum + lobe.r * lobe.r, 0)
+  for (let attempt = 0; attempt < 120; attempt++) {
+    let pick = rng() * area
+    let lobe = region.lobes[0]
+    for (const candidate of region.lobes) {
+      lobe = candidate
+      pick -= candidate.r * candidate.r
+      if (pick <= 0) break
+    }
     const angle = rng() * Math.PI * 2
-    const radius = Math.sqrt(rng()) * region.radius
-    const x = region.x + Math.cos(angle) * radius
-    const z = region.z + Math.sin(angle) * radius
-    if (isGreen(x, z, 2)) return new THREE.Vector3(x, 0, z)
+    const radius = Math.sqrt(rng()) * lobe.r
+    const x = lobe.x + Math.cos(angle) * radius
+    const z = lobe.z + Math.sin(angle) * radius
+    if (!isGreen(x, z, 2)) continue
+    if (!insideRegion(region, x, z, ROAM_INSET + 0.5)) continue
+    return new THREE.Vector3(x, 0, z)
   }
   return null
 }
@@ -1113,18 +1281,44 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
     animal.status = emptyStatus()
   }
 
+  /**
+   * The one place an animal moves. Two rules, and both hold for every caller.
+   *
+   * Rule one, which was always here: stay on open green, never on pavement.
+   * Rule two, which was NOT here and is why animals escaped: stay on your own
+   * ground.
+   *
+   * The region bound used to be applied in exactly two places — when an animal
+   * was spawned, and when it chose a wander destination. Nowhere else. So
+   * fleeing (which steers purely away from the player), chasing (bounded only
+   * by a 30m leash from the spawn point, larger than most regions), knockback,
+   * the pull ability and crowd separation all moved animals with `isGreen` as
+   * their only constraint, and walked them clean out of the wood. Applying the
+   * bound at the funnel instead of at each of those call sites is what makes it
+   * impossible for the next movement path to leak.
+   *
+   * An animal that somehow starts outside is not frozen in place: any step that
+   * reduces its distance to the region is allowed, so it walks itself home
+   * rather than standing in a field forever.
+   */
   const step = (animal: Animal, dx: number, dz: number) => {
     const position = animal.group.position
-    if (isGreen(position.x + dx, position.z + dz, 0.5)) {
+    const from = regionDistance(animal.region, position.x, position.z)
+    const allowed = (x: number, z: number) => {
+      if (!isGreen(x, z, 0.5)) return false
+      const to = regionDistance(animal.region, x, z)
+      return to <= -ROAM_INSET || to < from
+    }
+    if (allowed(position.x + dx, position.z + dz)) {
       position.x += dx
       position.z += dz
       return true
     }
-    if (isGreen(position.x + dx, position.z, 0.5)) {
+    if (allowed(position.x + dx, position.z)) {
       position.x += dx
       return true
     }
-    if (isGreen(position.x, position.z + dz, 0.5)) {
+    if (allowed(position.x, position.z + dz)) {
       position.z += dz
       return true
     }
@@ -1212,17 +1406,35 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
     }
   }
 
+  /**
+   * Where to graze next.
+   *
+   * Mostly somewhere nearby, which reads as grazing. The rest of the time,
+   * anywhere on the region — because the old version only ever sampled within
+   * twenty metres of the spawn point, so a herd lived out its whole life inside
+   * one circle whatever shape the ground was. Drifting `home` along with the
+   * far walks is what lets an animal end up genuinely on the other side of the
+   * wood from where it started.
+   */
   const pickDestination = (animal: Animal) => {
-    const leash = Math.min(animal.region.radius * 0.8, 20)
-    for (let attempt = 0; attempt < 24; attempt++) {
-      const angle = rng() * Math.PI * 2
-      const radius = 3 + rng() * leash
-      const x = animal.home.x + Math.cos(angle) * radius
-      const z = animal.home.z + Math.sin(angle) * radius
-      if (isGreen(x, z, 1.5) && Math.hypot(x - animal.region.x, z - animal.region.z) < animal.region.radius) {
-        animal.destination.set(x, 0, z)
-        return
+    const position = animal.group.position
+    if (rng() < 0.68) {
+      for (let attempt = 0; attempt < 18; attempt++) {
+        const angle = rng() * Math.PI * 2
+        const radius = 4 + rng() * 16
+        const x = position.x + Math.cos(angle) * radius
+        const z = position.z + Math.sin(angle) * radius
+        if (isGreen(x, z, 1.5) && insideRegion(animal.region, x, z, ROAM_INSET + 0.5)) {
+          animal.destination.set(x, 0, z)
+          return
+        }
       }
+    }
+    const far = randomGreenPoint(animal.region, rng)
+    if (far) {
+      animal.destination.copy(far)
+      animal.home.copy(far)
+      return
     }
     animal.destination.copy(animal.home)
   }
@@ -1259,7 +1471,14 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
         const toPlayer = new THREE.Vector3(playerPos.x - animal.group.position.x, 0, playerPos.z - animal.group.position.z)
         const distance = toPlayer.length()
         const huntable = playerVulnerable && !playerSafe
-        const leashed = animal.group.position.distanceTo(animal.home) < 30
+        /* Aggro is bounded by the animal's own ground, not by a radius around
+         * wherever it happened to spawn. The old leash was 30m from the spawn
+         * point — larger than every region on the map — so an aggressive animal
+         * was positively licensed to chase the player out of the wood, and once
+         * out, nothing but `isGreen` was still holding it. Now a wolf hunts
+         * while the player is in the Brasswood or within a few strides of its
+         * edge, and loses interest beyond that. */
+        const leashed = regionDistance(animal.region, playerPos.x, playerPos.z) < AGGRO_REACH
 
         // --- crowd control ------------------------------------------------
         // A stun stops everything; a root only stops the feet, which is why it
@@ -1318,6 +1537,17 @@ export function createWildlife(scene: THREE.Scene, options: WildlifeOptions): Wi
             const ax = away.x - away.z * wobble
             const az = away.z + away.x * wobble
             away.set(ax, 0, az).normalize()
+            /* Approaching the edge of its own ground, flight bends back along
+             * it. The fence in step() would stop the animal dead otherwise, and
+             * a chicken shuddering against an invisible wall for three seconds
+             * is the other half of what "the animals bug out of the area" looks
+             * like — the escape was one symptom, this was the other. */
+            const edge = regionDistance(animal.region, animal.group.position.x, animal.group.position.z)
+            if (edge > -FLEE_TURN_BAND) {
+              const inward = regionInward(animal.region, animal.group.position.x, animal.group.position.z)
+              const blend = Math.min(1, (edge + FLEE_TURN_BAND) / FLEE_TURN_BAND)
+              away.set(away.x + inward.x * blend * 1.8, 0, away.z + inward.z * blend * 1.8).normalize()
+            }
             const speed = (spec.fleeSpeed || spec.walkSpeed) * speedScale
             moving = moveToward(animal, animal.group.position.x + away.x * 4, animal.group.position.z + away.z * 4, speed, dt) > 0
             if (!moving) {
