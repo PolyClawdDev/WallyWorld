@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from 'react'
 import { wizards } from '../characters'
 import { DEMO_GOLD_NOTICE } from '../shared/pvp'
-import { fetchPvpJournal, reclaimPvp, send } from './net'
-import { isDuelLocked, pingPvp, pvpState, subscribePvp } from './store'
+import { fetchPvpJournal, reclaimPvp, retryPvp, send } from './net'
+import { isDuelLocked, pingPvp, pvpState, subscribePvp, type PvpLink } from './store'
 import './pvp.css'
 
 function usePvp() {
@@ -22,9 +22,7 @@ export function PvpOverlay() {
   return (
     <div className="pvp-layer" onMouseDown={e => e.stopPropagation()} onClick={e => e.stopPropagation()}>
       {s.superseded && <SupersededCard />}
-      {!s.connected && !s.superseded && (
-        <div className="pvp-chip">{s.reconnecting ? 'Reconnecting to the shared town…' : 'Joining the shared town…'}</div>
-      )}
+      {!s.connected && !s.superseded && <JoinChip link={s.link} />}
       {s.signedIn && s.connected && (
         <div className="pvp-chip pvp-gold-chip">
           ✦ {s.gold.available} GAME GOLD<small>{s.gold.reserved ? ` · ${s.gold.reserved} in escrow` : ''} · DEMO</small>
@@ -36,6 +34,38 @@ export function PvpOverlay() {
       {s.invite && <InviteCard />}
       {s.duel && <DuelHud />}
       {s.result && <ResultCard />}
+    </div>
+  )
+}
+
+/**
+ * What the player is told while they are not in the shared world.
+ *
+ * The rule is that it may not claim to be doing something it is not. "Joining"
+ * is only true for an attempt that has not failed yet; past a few failures the
+ * chip names what went wrong and offers the one useful action, because a
+ * spinner that never resolves is worse than a sentence that admits the problem.
+ * It is gone entirely the moment `welcome` arrives — there is no residual strip.
+ */
+function JoinChip({ link }: { link: PvpLink }) {
+  if (link.phase === 'offline') {
+    return (
+      <div className="pvp-chip pvp-chip-offline" role="status">
+        <b>Could not reach the shared world</b>
+        <span>{link.reason ?? 'The presence connection did not come up.'}</span>
+        <span className="pvp-chip-foot">
+          {link.attempts} failed attempt{link.attempts === 1 ? '' : 's'}
+          {link.retrying ? ' · still retrying in the background' : ' · not retrying'}
+          {' · the rest of the game keeps working'}
+        </span>
+        <button type="button" onClick={() => retryPvp()}>Try again now</button>
+      </div>
+    )
+  }
+  return (
+    <div className="pvp-chip" role="status">
+      {link.phase === 'retrying' ? `Reconnecting to the shared town… (attempt ${link.attempts + 1})` : 'Joining the shared town…'}
+      {link.phase === 'retrying' && link.attempts > 1 && link.reason && <small>{link.reason}</small>}
     </div>
   )
 }

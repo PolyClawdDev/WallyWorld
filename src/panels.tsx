@@ -67,6 +67,11 @@ export function SettingsPanel() {
         <small>Damps camera sway and panel animation.</small>
       </div>
     </div>
-    <p className="st-note">The normal cursor stays available for the pouch, chart, journal, and this plate. Right-drag the world to look around, WASD to walk, SHIFT to run.</p>
+    <p className="st-note">
+      Right-drag the world to look around, and tap the right button to walk there.
+      Either button attacks the animal under the cursor. The wheel zooms, SPACE swings
+      the view back behind you, SHIFT runs, and V drops you into first person.
+      The normal cursor stays available for the pouch, chart, journal, and this plate.
+    </p>
   </>
 }

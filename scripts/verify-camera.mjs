@@ -460,8 +460,53 @@ try {
 
   }
   if (stage(5)) {
-  /* ------------------------------------ 5. alt+left and shift+left orbit */
-  console.log('\n5. The no-middle-button bindings')
+  /* ------------------ 5. right-drag (primary), alt+left and shift+left */
+  console.log('\n5. The trackpad bindings: right-drag is the primary orbit')
+  /* A MacBook trackpad has no middle button, so right-drag is the only orbit
+   * gesture most of the players of this game can physically perform. It gets
+   * the same scrutiny the middle button got in stages 1 and 2. */
+  const rBefore = await settled(page)
+  const rStart = await pos(page)
+  const menusBeforeRight = await page.evaluate(() => window.__ctx.length)
+  await drag(page, { button: 'right', dx: 280, dy: 0 })
+  const rYaw = await settled(page)
+  check('a right-drag turns yaw', Math.abs(rYaw.yaw - rBefore.yaw) > 0.5,
+    `yaw ${rBefore.yaw.toFixed(4)} -> ${rYaw.yaw.toFixed(4)} (${(rYaw.yaw - rBefore.yaw).toFixed(4)} rad, expected ${(-280 * 0.004).toFixed(3)})`)
+
+  const rPitchBefore = await settled(page)
+  await drag(page, { button: 'right', dx: 0, dy: 150 })
+  const rPitch = await settled(page)
+  const rCam = await camPos(page)
+  check('a right-drag pitches the camera', Math.abs(rPitch.pitch - rPitchBefore.pitch) > 0.2,
+    `pitch ${rPitchBefore.pitch.toFixed(4)} -> ${rPitch.pitch.toFixed(4)} rad (${(rPitch.pitch * 57.2958).toFixed(1)}°)`)
+  check('and the right-drag camera stays above the street', rCam.y > 1.4, `camera y ${rCam.y.toFixed(3)} (floor 1.4)`)
+
+  // The clamps are shared with the middle button, but prove the right button
+  // reaches them rather than assuming the shared code path does.
+  for (let i = 0; i < 5; i++) await drag(page, { button: 'right', dx: 0, dy: 300, steps: 20 })
+  const rTop = await settled(page)
+  check('right-drag reaches the high pitch clamp and stops', Math.abs(rTop.pitchWanted - 0.85) < 1e-6,
+    `pitchWanted ${rTop.pitchWanted.toFixed(6)} (PITCH_MAX 0.85)`)
+  for (let i = 0; i < 6; i++) await drag(page, { button: 'right', dx: 0, dy: -300, steps: 20 })
+  const rBottom = await settled(page)
+  const rBottomCam = await camPos(page)
+  check('right-drag reaches the low pitch clamp and stops', Math.abs(rBottom.pitchWanted + 0.34) < 1e-6,
+    `pitchWanted ${rBottom.pitchWanted.toFixed(6)} (PITCH_MIN -0.34)`)
+  check('and the ground floor holds at the low clamp under the right button', rBottomCam.y > 1.4,
+    `camera y ${rBottomCam.y.toFixed(3)}`)
+  await page.keyboard.press('Space')
+  await sleep(1500)
+
+  // The whole point of the drag threshold: a look must not also be an order.
+  await sleep(1500)
+  const rEnd = await pos(page)
+  check('a right-DRAG issues no walk order and no attack', dist(rStart, rEnd) < 0.5 &&
+    (await page.evaluate(() => window.__wally.battle.currentOrder())) !== 'attack',
+    `player moved ${dist(rStart, rEnd).toFixed(3)} units across 13 right-drags, order ${await page.evaluate(() => window.__wally.battle.currentOrder())}`)
+  const rMenus = (await page.evaluate(() => window.__ctx)).slice(menusBeforeRight)
+  check('no context menu escaped any right-drag', rMenus.every(m => m.prevented),
+    `${rMenus.length} contextmenu event(s) during the right-drags, all prevented: ${rMenus.every(m => m.prevented)}`)
+
   const altBefore = await settled(page)
   await drag(page, { button: 'left', dx: 250, dy: 0, modifier: 'Alt' })
   const altAfter = await settled(page)
@@ -523,6 +568,52 @@ try {
     }, 20_000)
     check('a shift+left tap with no drag still commands (sprint can click)', !!tapTo,
       `moved ${dist(tapFrom, tapTo ?? tapFrom).toFixed(2)} units toward (${tapSpot.at[0]}, ${tapSpot.at[1]})`)
+  }
+
+  /* The other half of the right button: a tap walks. This is the thing the
+   * user asked for in as many words — "with the right should be walk to that
+   * distance or walk there". */
+  await page.evaluate(() => window.__wally.battle.pressStop())
+  await sleep(1200)
+  const rightSpot = await until(() => groundPoint(page), 20_000, 1000)
+  const rightFrom = await pos(page)
+  if (!rightSpot) {
+    check('there is open ground on screen for the right tap', false, 'none found')
+  } else {
+    await page.mouse.move(rightSpot.x, rightSpot.y)
+    await sleep(400)
+    await page.mouse.click(rightSpot.x, rightSpot.y, { button: 'right' })
+    const rightTo = await until(async () => {
+      const p = await pos(page)
+      return dist(rightFrom, p) > 0.5 ? p : null
+    }, 20_000)
+    check('a right TAP on open ground walks there', !!rightTo,
+      `moved ${dist(rightFrom, rightTo ?? rightFrom).toFixed(2)} units, (${rightFrom.x.toFixed(1)}, ${rightFrom.z.toFixed(1)}) -> (${(rightTo ?? rightFrom).x.toFixed(1)}, ${(rightTo ?? rightFrom).z.toFixed(1)}), aiming at (${rightSpot.at[0]}, ${rightSpot.at[1]})`)
+  }
+
+  /* A tap that jitters a pixel or two is still a tap: a trackpad press is
+   * never perfectly still, so the threshold has to absorb that. */
+  await page.evaluate(() => window.__wally.battle.pressStop())
+  await sleep(1200)
+  const jitterSpot = await until(() => groundPoint(page), 20_000, 1000)
+  const jitterFrom = await pos(page)
+  if (!jitterSpot) {
+    check('there is open ground on screen for the jittery right tap', false, 'none found')
+  } else {
+    await page.mouse.move(jitterSpot.x, jitterSpot.y)
+    await sleep(400)
+    await page.mouse.down({ button: 'right' })
+    // Under the 4px threshold in total travel, as a real thumb press is.
+    await page.mouse.move(jitterSpot.x + 1, jitterSpot.y + 1)
+    await page.mouse.move(jitterSpot.x + 2, jitterSpot.y + 1)
+    const midDrag = await cam(page)
+    await page.mouse.up({ button: 'right' })
+    const jitterTo = await until(async () => {
+      const p = await pos(page)
+      return dist(jitterFrom, p) > 0.5 ? p : null
+    }, 20_000)
+    check('a 3px-jitter right press is still a tap, not an orbit', !!jitterTo,
+      `travel ${midDrag.dragTravel} px (threshold 4), pendingButton ${midDrag.pendingButton}; player moved ${dist(jitterFrom, jitterTo ?? jitterFrom).toFixed(2)} units`)
   }
 
   }
@@ -670,6 +761,47 @@ try {
     check('the right click damaged it', !!rDamage,
       rDamage ? `hp ${quarry.hp} -> ${rDamage.hp}, state ${rDamage.state}` : `hp stayed at ${quarry.hp}`)
     if (!rDamage) note(`engine state: ${JSON.stringify(await diagnose(page))}`)
+  }
+
+  /* A right press that begins *on* an animal and then drags is a look, not a
+   * fight: the threshold has to win over the target under the cursor. */
+  await page.evaluate(() => window.__wally.battle.pressStop())
+  await sleep(1500)
+  /* Insist the game's own cursor agrees an animal is under the pointer at the
+   * moment the button goes down. Animals wander, and a press that happens to
+   * land on empty grass would pass this check without ever testing it. */
+  let dragTarget = null
+  let hovering = false
+  for (let attempt = 0; attempt < 10 && !hovering; attempt++) {
+    dragTarget = await until(() => findOnScreenAnimal(page).then(r => r.pick), 12_000, 800)
+    if (!dragTarget) continue
+    await page.mouse.move(dragTarget.x, dragTarget.y)
+    hovering = !!(await until(() => page.evaluate(() => {
+      const h = window.__wally.getHover()
+      return h && h.state !== 'dead' ? h.species.id : null
+    }), 2500, 150))
+  }
+  if (!hovering) {
+    check('an animal stayed under the real cursor for the right-drag-over-target check', false,
+      dragTarget ? `${dragTarget.id} was found but stepped off the ray before every press` : 'none found')
+    dragTarget = null
+  }
+  if (dragTarget) {
+    const camBefore = await settled(page)
+    await page.mouse.down({ button: 'right' })
+    // Confirmed on the ray at press time, not merely when it was scanned.
+    const hoverAtPress = await page.evaluate(() => {
+      const h = window.__wally.getHover()
+      return h && h.state !== 'dead' ? `${h.species.id} ${h.hp}hp` : null
+    })
+    await page.mouse.move(dragTarget.x + 180, dragTarget.y, { steps: 18 })
+    await page.mouse.up({ button: 'right' })
+    await sleep(2000)
+    const camAfter = await settled(page)
+    const orderAfter = await page.evaluate(() => window.__wally.battle.currentOrder())
+    check('a right-drag that starts on an animal orbits and does not attack it',
+      !!hoverAtPress && Math.abs(camAfter.yaw - camBefore.yaw) > 0.3 && orderAfter !== 'attack',
+      `cursor was over ${hoverAtPress ?? 'NOTHING — the press did not test the case'} when the button went down; yaw ${camBefore.yaw.toFixed(4)} -> ${camAfter.yaw.toFixed(4)}, order after ${orderAfter}`)
   }
   const menus = await page.evaluate(() => window.__ctx)
   check('every context menu over the world was cancelled', menus.every(m => !m.onCanvas || m.prevented),
@@ -845,6 +977,29 @@ try {
           const za = await cam(page)
           check('and the wheel still zooms during a duel', za.zoomWanted > zb.zoomWanted + 0.3,
             `zoomWanted ${zb.zoomWanted.toFixed(2)} -> ${za.zoomWanted.toFixed(2)}`)
+
+          /* Duel inputs are counted by __pvpSeq, which the client bumps once
+           * per message it sends. A right-drag must not bump it; a right tap
+           * must, exactly as it did before the binding changed. */
+          const seq = () => page.evaluate(() => window.__pvpSeq ?? 0)
+          const seqBeforeDrag = await seq()
+          await drag(page, { button: 'right', dx: 200, dy: 0 })
+          await sleep(1500)
+          const seqAfterDrag = await seq()
+          check('a right-DRAG in a duel sends no move input', seqAfterDrag === seqBeforeDrag,
+            `__pvpSeq ${seqBeforeDrag} -> ${seqAfterDrag} across a 200px right-drag`)
+
+          const ce = await centre(page)
+          await page.mouse.move(ce.x + 120, ce.y + 90)
+          await sleep(600)
+          const seqBeforeTap = await seq()
+          await page.mouse.click(ce.x + 120, ce.y + 90, { button: 'right' })
+          const seqAfterTap = await until(async () => {
+            const s = await seq()
+            return s > seqBeforeTap ? s : null
+          }, 10_000)
+          check('a right TAP in a duel still sends the move input', !!seqAfterTap,
+            `__pvpSeq ${seqBeforeTap} -> ${seqAfterTap ?? await seq()}`)
           await pageB.evaluate(id => window.__wally.pvpSend({ t: 'surrender', duelId: id }), active.duelId)
           await sleep(2000)
         }

@@ -194,7 +194,14 @@ export function occupancy() {
 export function attachLive(tokenHeader: string | undefined, conn: WsConn): Live | null {
   const accountId = walletFromAuthHeader(tokenHeader)
   if (!accountId) {
-    conn.send(JSON.stringify({ t: 'error', code: 'unauthenticated', detail: 'Sign in first.' } satisfies S2C))
+    // The token was presented and is not live here. "Sign in first" was the old
+    // wording and it misled every guest, who had nothing to sign into and was
+    // already standing in the world: the fix is a new session, not a login.
+    conn.send(JSON.stringify({
+      t: 'error',
+      code: 'unauthenticated',
+      detail: 'This world does not recognise that session, so a new one is needed.',
+    } satisfies S2C))
     conn.close(CLOSE.policy, 'unauthenticated')
     return null
   }

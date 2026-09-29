@@ -749,46 +749,58 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
     }
 
     /* --- input ---------------------------------------------------------
-     * The mouse moves you and fights for you. Left-click open ground walks
-     * there, left-click a living animal attacks it, right-click does the same
-     * pair, and either button confirms an aimed spell. Q/W/E/R are abilities,
-     * A then click is attack-move, S stops, F interacts.
+     * The mouse moves you, fights for you and aims the camera. Q/W/E/R are
+     * abilities, A then click is attack-move, S stops, F interacts.
      *
-     * Button precedence on the world canvas, highest first: paused, middle
-     * button (camera), alt+left (camera), shift+left (camera once it drags, the
-     * ordinary click if it does not), another player (inspect, never attack),
-     * an active duel (the press becomes a server input), an aimed spell, an
-     * armed attack-move, a living animal (attack), open ground (walk).
-     *
-     * Camera, in full:
+     *   RIGHT-DRAG           orbit the camera — yaw and pitch. The primary
+     *                        binding, and the only orbit a MacBook trackpad
+     *                        can actually perform: it has no middle button,
+     *                        and a two-finger tap is a right button.
+     *   right tap            walk to that spot, or attack the animal under
+     *                        the cursor. Drag and tap are told apart by
+     *                        ORBIT_SLOP pixels of travel, so the press is not
+     *                        resolved until the button comes back up.
+     *   left click           attack the animal under the cursor, else walk.
+     *                        Never a camera gesture on its own.
+     *   middle drag          orbit. Kept for three-button mice.
+     *   alt/option+left drag orbit. Alt is bound to nothing else, so an
+     *                        alt+left press is camera-only and never reaches
+     *                        the battle engine — it has no tap half.
+     *   shift+left drag      orbit past ORBIT_SLOP; below it, the ordinary
+     *                        left click, because shift is also the sprint
+     *                        modifier and a sprinting player still has to be
+     *                        able to select, attack-move and confirm spells.
      *   wheel                zoom, ZOOM_MIN..ZOOM_MAX
-     *   middle-button drag   orbit — yaw and pitch. The primary binding.
-     *   alt/option+left drag orbit. For mice and trackpads with no usable
-     *                        middle button. Alt is bound to nothing else, so
-     *                        an alt+left press is camera-only and never
-     *                        reaches the battle engine.
-     *   shift+left drag      orbit, but only once the pointer has travelled
-     *                        ORBIT_SLOP pixels. Shift is also the sprint
-     *                        modifier, so a shift+left press that does *not*
-     *                        drag falls through on mouseup and issues the
-     *                        ordinary click — a sprinting player can still
-     *                        select, attack-move and confirm spells.
      *   arrow keys           yaw left/right, zoom in/out
      *   space                recentre behind the wayfinder at the default tilt
-     * The right button is deliberately not a camera gesture: it attacks, and
-     * during a duel it is the move input. The cursor is never captured, and
-     * pointer lock is never requested; the drag only takes *pointer* capture,
-     * which is released again on pointerup, pointercancel and window blur so a
-     * release outside the window cannot leave the camera spinning.
+     *
+     * Precedence on the world canvas, highest first: a panel is open (nothing
+     * happens), middle button, alt+left, a right or shift+left press that
+     * travelled past ORBIT_SLOP (camera, and no world command on release),
+     * another player (inspect, never attack), an active duel (the press
+     * becomes a server input — right moves, left attacks), an aimed spell, an
+     * armed attack-move, a living animal (attack), open ground (walk).
+     *
+     * The cursor is never captured and pointer lock is never requested; a drag
+     * takes only *pointer* capture, released again on pointerup, pointercancel
+     * and window blur, so a release outside the window cannot leave the camera
+     * spinning. The context menu is cancelled for every right gesture.
      */
     const pressedAt = new Map<string, number>()
     /* Which gesture, if any, is currently orbiting, and the pointer id that
-     * owns it. `orbitTravel` measures the drag so shift+left can tell a camera
-     * drag from a click. */
-    let orbitMode: 'middle' | 'alt' | 'shift' | null = null
+     * owns it. `orbitTravel` measures the drag, which is how the two
+     * dual-purpose presses — right and shift+left — tell a camera drag from a
+     * click; `pendingButton` is the button whose meaning that will decide. */
+    let orbitMode: 'middle' | 'alt' | 'shift' | 'right' | null = null
     let orbitPointer: number | null = null
     let orbitTravel = 0
-    let shiftClickPending = false
+    let pendingButton: number | null = null
+    /* A right-drag must not leave a context menu behind it. Chrome raises that
+     * menu on mousedown on macOS but on mouseup elsewhere, and a drag released
+     * off the canvas raises it somewhere the canvas handler will never see, so
+     * the suppression has to be a window on the document rather than one
+     * element's listener. */
+    let suppressMenuUntil = 0
     let keyboardMove = readKeyboardMove()
     const castSlot = (slot: 'Q' | 'W' | 'E' | 'R') => battle?.pressSlot(slot, { cursorGround, hover })
     const command = (key: string) => {
@@ -853,10 +865,13 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         try { if (renderer.domElement.hasPointerCapture(orbitPointer)) renderer.domElement.releasePointerCapture(orbitPointer) }
         catch { /* the pointer is already gone; nothing to hand back */ }
       }
+      // Outlive the gesture by a moment: the menu is raised by the *release*
+      // on every platform but macOS, and that arrives after this runs.
+      if (orbitMode === 'right') suppressMenuUntil = performance.now() + 500
       orbitMode = null
       orbitPointer = null
     }
-    const releaseKeys = () => { keys.clear(); pressedAt.clear(); shiftClickPending = false; endOrbit() }
+    const releaseKeys = () => { keys.clear(); pressedAt.clear(); pendingButton = null; endOrbit() }
     /* The camera drag runs on pointer events rather than mouse events purely
      * for setPointerCapture: it keeps the moves coming when the cursor leaves
      * the canvas, and guarantees a pointerup even over browser chrome. World
@@ -865,6 +880,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       if (pausedRef.current || e.pointerType !== 'mouse') return
       const mode: typeof orbitMode =
         e.button === 1 ? 'middle'
+        : e.button === 2 ? 'right'
         : e.button === 0 && e.altKey ? 'alt'
         : e.button === 0 && e.shiftKey ? 'shift'
         : null
@@ -883,9 +899,13 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       // next move with the button already up is the other way to notice.
       if (e.buttons === 0 || pausedRef.current) { endOrbit(); return }
       orbitTravel += Math.abs(e.movementX) + Math.abs(e.movementY)
-      // Shift is also sprint, so a shift+left press only becomes a camera drag
-      // once it has clearly moved. Below that it is still a pending click.
-      if (orbitMode === 'shift' && orbitTravel < ORBIT_SLOP) return
+      // The two dual-purpose presses only become camera drags once they have
+      // clearly moved. Below the threshold they are still pending clicks, and
+      // moving the camera under a player who only meant to tap would be worse
+      // than the small amount of rotation lost at the start of a real drag.
+      if ((orbitMode === 'right' || orbitMode === 'shift') && orbitTravel < ORBIT_SLOP) return
+      // Past the threshold this is unambiguously a look, so no context menu.
+      if (orbitMode === 'right') suppressMenuUntil = performance.now() + 500
       yawWanted -= e.movementX * ORBIT_YAW_SENS
       // Drag down, camera climbs and looks further down — the same sense as
       // every other orbit control.
@@ -934,19 +954,23 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       // Alt plus left is camera-only, and alt is bound to nothing else, so it
       // never needs to fall through to a command.
       if (e.button === 0 && e.altKey) return
-      // Shift plus left is undecided until the button comes back up: it is a
-      // camera drag if it moved, and the ordinary click if it did not. That is
-      // what lets a sprinting player still click.
-      if (e.button === 0 && e.shiftKey) { shiftClickPending = true; orbitTravel = 0; return }
+      /* Right, and shift plus left, are undecided until the button comes back
+       * up: a camera drag if the pointer moved, the ordinary click if it did
+       * not. Deferring the command to the release is the whole mechanism —
+       * acting on the press would fire a walk order under every look. */
+      if (e.button === 2 || (e.button === 0 && e.shiftKey)) {
+        pendingButton = e.button
+        orbitTravel = 0
+        return
+      }
       worldClick(e)
     }
     const onMouseUp = (e: MouseEvent) => {
       if (e.button === 1) endOrbit()
-      if (e.button === 0) {
-        const tap = shiftClickPending && orbitTravel < ORBIT_SLOP
-        shiftClickPending = false
-        if (tap && !pausedRef.current) worldClick(e)
-      }
+      if (e.button !== pendingButton) return
+      const tap = orbitTravel < ORBIT_SLOP
+      pendingButton = null
+      if (tap && !pausedRef.current) worldClick(e)
     }
     // Canvas-only and non-passive: the wheel over the pouch, the journal or the
     // map scrolls that panel and the world never hears about it.
@@ -957,9 +981,17 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       zoomWanted = THREE.MathUtils.clamp(zoomWanted + step * ZOOM_STEP * zoomWanted, ZOOM_MIN, ZOOM_MAX)
     }
     const blockMenu = (e: MouseEvent) => e.preventDefault()
+    /* The canvas listener above covers a menu raised over the world. This one
+     * covers a right-drag that ended somewhere else — over the HUD, or off the
+     * window entirely — and only for as long as such a drag is in flight, so a
+     * right click on a panel keeps its normal menu. */
+    const blockMenuDuringOrbit = (e: MouseEvent) => {
+      if (orbitMode === 'right' || performance.now() < suppressMenuUntil) e.preventDefault()
+    }
     window.addEventListener('keydown', onKey); window.addEventListener('keyup', onKey)
     window.addEventListener('blur', releaseKeys); document.addEventListener('visibilitychange', releaseKeys)
     document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp)
+    document.addEventListener('contextmenu', blockMenuDuringOrbit, true)
     renderer.domElement.addEventListener('contextmenu', blockMenu)
     renderer.domElement.addEventListener('mousedown', onCanvasDown)
     renderer.domElement.addEventListener('pointerdown', onPointerDown)
@@ -1155,7 +1187,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         // Drives the camera-relative pointer without a real mouse, so the
         // verification scripts can aim at a world point directly.
         setPointer: (x: number, y: number) => { pointer.set(x, y); resolveCursor() },
-        camState: () => ({ zoom, zoomWanted, yaw, yawWanted, pitch, pitchWanted, orbiting: orbitMode, keyboardMove }),
+        camState: () => ({ zoom, zoomWanted, yaw, yawWanted, pitch, pitchWanted, orbiting: orbitMode, dragTravel: orbitTravel, pendingButton, keyboardMove }),
         remotes: () => listRemotes(),
         apiBase: API_BASE_URL,
         apiOrigin: API_ORIGIN,
@@ -1173,7 +1205,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         pvpClearError: () => { pvpState.error = null },
         pvpUi: () => ({
           connected: pvpState.connected,
-          reconnecting: pvpState.reconnecting,
+          link: pvpState.link,
           superseded: pvpState.superseded,
           playerId: pvpState.playerId,
           gold: pvpState.gold,
@@ -1200,6 +1232,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       window.removeEventListener('blur', releaseKeys); document.removeEventListener('visibilitychange', releaseKeys)
       window.removeEventListener('resize', resize)
       document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp)
+      document.removeEventListener('contextmenu', blockMenuDuringOrbit, true)
       renderer.domElement.removeEventListener('mousedown', onCanvasDown)
       renderer.domElement.removeEventListener('pointerdown', onPointerDown)
       renderer.domElement.removeEventListener('pointermove', onPointerMove)
@@ -1317,7 +1350,7 @@ function App() {
   if (entered && tab === 'select') return <main className="select"><header><div className="brand">VOXELS</div><FundsBadge variant="dot" /></header><div className="select-layout"><section className="menu-panel"><div className="eyebrow">CREATE YOUR WAYFINDER</div><h2>Name your<br />character.</h2><p className="muted">Start with {wizards[wizard].name}, the selected wayfinder. Shape the details,<br />then carry your look into the town.</p><label className="name-label" htmlFor="wayfinder-name">NAME YOUR CHARACTER:</label><input id="wayfinder-name" className="name-input" value={playerName} onChange={event => setPlayerName(event.target.value.slice(0, 24))} placeholder="Write any name" autoComplete="off" /><div className="arrow-options"><div className="arrow-choice character-choice"><label>CHARACTER</label><button onClick={() => cycleWizard(-1)} aria-label="Previous character">←</button><div><strong>{wizards[wizard].name}</strong><small>{wizards[wizard].role}</small></div><button onClick={() => cycleWizard(1)} aria-label="Next character">→</button></div>{styleSlots(wizard).map(slot => <div className="arrow-choice" key={slot.key}><label>{slot.label}</label><button onClick={() => cycle(slot.key, -1)} aria-label={`Previous ${slot.key}`}>←</button><div><strong>{styleLabel(wizard, style, slot.key).label}</strong><small>{styleLabel(wizard, style, slot.key).note}</small></div><button onClick={() => cycle(slot.key, 1)} aria-label={`Next ${slot.key}`}>→</button></div>)}</div><button className="primary" onClick={() => setTab('preview')}>Continue with {playerName || wizards[wizard].name} <span>→</span></button></section><section className="selection-art"><div className="selection-grid" /><CharacterPreview wizard={wizard} style={style} /><div className="art-caption"><span>WAYFINDER {Object.keys(wizards).indexOf(wizard) + 1} / 4</span><strong>{playerName || wizards[wizard].name}</strong><small>{wizards[wizard].name} · {wizards[wizard].role}</small></div></section></div></main>
   if (entered && tab === 'preview') return <main className="preview"><div className="preview-left"><button className="back" onClick={() => setTab('select')}>← Back to archetypes</button><div className="eyebrow">WAYFINDER SELECTED</div><h2>{playerName || wizards[wizard].name}</h2><p>{wizards[wizard].name} · {wizards[wizard].desc}</p><div className="preview-facts"><span><b>01</b> Equal permissions</span><span><b>02</b> Cosmetic identity</span><span><b>03</b> Demo-ready</span></div><button className="primary" onClick={() => { setEntered(true); setTab('world') }}>Enter Voxels <span>→</span></button></div><div className="preview-stage"><div className="stage-stars" /><CharacterPreview wizard={wizard} style={style} /><div className="preview-label"><span>ARCHETYPE {Object.keys(wizards).indexOf(wizard) + 1} / 4</span><strong>{wizards[wizard].role}</strong></div></div></main>
   if (!entered) return null
-  const action = (target: string) => { if (target.startsWith('ANIMAL:')) { setToast('Right-click the animal to attack it · loot drops on the ground for anyone') } else if (target.startsWith('LYRA')) setPanel('journal'); else setToast(`${target} is preparing a demo service.`) }
+  const action = (target: string) => { if (target.startsWith('ANIMAL:')) { setToast('Click the animal to attack it · loot drops on the ground for anyone') } else if (target.startsWith('LYRA')) setPanel('journal'); else setToast(`${target} is preparing a demo service.`) }
   const talkable = npc && !npc.startsWith('ANIMAL:') ? npc : null
   return <main className="game"><WorldCanvas wizard={wizard} style={style} playerName={playerName} paused={panel !== null} onNear={setNpc} onGold={amount => setGold(value => Math.max(0, value + amount))} onAction={action} /><HuntHud wizard={wizard} /><CombatHud wizard={wizard} style={style} /><PvpOverlay /><MainnetWarningBanner /><div className="hud"><div className="topbar"><div className="avatar-chip"><span style={{ background: wizards[wizard].accent }} />{playerName || wizards[wizard].name}<small>{wizards[wizard].name} WAYFINDER</small></div><div className="gold-chip">✦ {gold} GOLD <small>DEMO LOOT</small></div><FundsBadge variant="chip" /><div className="fps-chip">WORLD 01 <span>●</span></div></div><div className="minimap"><div className="map-ring"><i /><b /><em /></div><small>OLD TOWN LOOP</small></div><div className="bottom-nav">{[['map','Map'],['journal','Journal'],['wallet','Wallet'],['settings','Settings']].map(([id, label]) => <button key={id} onClick={() => setPanel(id as Panel)}><span>{id === 'map' ? '⌖' : id === 'journal' ? '▤' : id === 'wallet' ? '◇' : '⚙'}</span>{label}</button>)}</div>{talkable && <button className="interact" onClick={() => { if (talkable.startsWith('LYRA')) setPanel('journal'); else setToast(`${talkable} is preparing a demo service.`) }}>F <span>Talk to</span> {talkable}</button>}{panel === 'wallet' && <Popup variant="pouch" eyebrow="THE HEARTH · PRIVATE" title="Your pouch" onClose={() => setPanel(null)}><WalletPouch gold={gold} onGoldChange={setGold} nearbyNpc={npc} onToast={setToast} /><WalletSolanaPanel /></Popup>}{panel === 'map' && <Popup variant="chart" size="wide" eyebrow="VOXELS · DISTRICT 01" title="Old Town Loop" note={`${townLayout.ground}m × ${townLayout.ground}m · one grid square is 8m · surveyed from the live town layout`} onClose={() => setPanel(null)}><WorldMap /></Popup>}{panel === 'journal' && <Popup variant="book" eyebrow="THE ARCHIVE · LYRA" title="Your journal" onClose={() => setPanel(null)}><JournalPanel task={task} receipt={receipt} onApprove={doTask} /></Popup>}{panel === 'settings' && <Popup variant="plate" eyebrow="PREFERENCES" title="Control plate" onClose={() => setPanel(null)}><SettingsPanel /></Popup>}{toast && <div className="toast" onClick={() => setToast('')}>{toast}</div>}</div></main>
 }

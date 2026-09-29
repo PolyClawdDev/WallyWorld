@@ -20,6 +20,42 @@
   letter-spacing: 0.04em;
 }
 
+.pvp-chip small {
+  display: block;
+  margin-top: 4px;
+  max-width: 420px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: #b8a57a;
+  white-space: normal;
+}
+
+/* Failure, not progress: warmer border, room for a sentence and one action. */
+.pvp-chip-offline {
+  display: grid;
+  gap: 5px;
+  justify-items: start;
+  max-width: min(460px, calc(100vw - 36px));
+  padding: 9px 13px 11px;
+  border-color: #c4653a;
+  text-align: left;
+}
+
+.pvp-chip-offline b { font-size: 12px; letter-spacing: 0.06em; color: #f0c9a0; }
+.pvp-chip-offline span { font-weight: 500; line-height: 1.5; color: #d8cdb4; }
+.pvp-chip-offline .pvp-chip-foot { font-size: 11px; color: #9c8f73; }
+.pvp-chip-offline button {
+  margin-top: 2px;
+  padding: 5px 11px;
+  font: 600 11px/1.2 monospace;
+  letter-spacing: 0.06em;
+  color: #201a12;
+  background: #c4a15a;
+  border: 0;
+  cursor: pointer;
+}
+.pvp-chip-offline button:hover { background: #dbb96f; }
+
 .pvp-gold-chip {
   top: 12px;
   right: 18px;

@@ -11,6 +11,33 @@ import {
   type PublicPresence,
 } from '../shared/pvp'
 
+/**
+ * How the presence connection is doing, as three states rather than one flag.
+ *
+ * A single "reconnecting" boolean could only ever say "still trying", which
+ * stays true forever when the reason is not going to go away on its own. The
+ * player then reads a chip that claims to be working while nothing is. These
+ * three are distinguishable to a player and each implies something different:
+ *
+ *   connecting  the first attempt is in flight and nothing has failed yet;
+ *   retrying    an attempt failed, another is scheduled, and this is normal
+ *               for a moment after a dropped connection;
+ *   offline     enough attempts have failed that calling it "connecting"
+ *               would be untrue. `reason` says what went wrong and `retrying`
+ *               says whether anything further is being attempted.
+ */
+export type PvpLinkPhase = 'connecting' | 'retrying' | 'offline'
+
+export type PvpLink = {
+  phase: PvpLinkPhase
+  /** Failed attempts since the last `welcome`. */
+  attempts: number
+  /** What went wrong, naming the URL that was tried. Null before anything has. */
+  reason: string | null
+  /** True while a further attempt is scheduled. False means the client has stopped. */
+  retrying: boolean
+}
+
 export type PvpUi = {
   connected: boolean
   signedIn: boolean
@@ -29,13 +56,13 @@ export type PvpUi = {
   blocked: Set<PlayerId>
   muted: Set<PlayerId>
   error: string | null
-  reconnecting: boolean
+  link: PvpLink
   /**
    * This character is being played in another tab or on another device.
    *
-   * Distinct from `reconnecting`, and the UI must not treat them alike:
-   * reconnecting resolves itself, whereas this waits for the player to
-   * decide which tab wins.
+   * Distinct from every `link` phase, and the UI must not treat them alike:
+   * retrying resolves itself, whereas this waits for the player to decide
+   * which tab wins.
    */
   superseded: boolean
   surrenderAsk: boolean
@@ -72,7 +99,7 @@ export const pvpState: PvpUi = {
   blocked: new Set(),
   muted: new Set(),
   error: null,
-  reconnecting: false,
+  link: { phase: 'connecting', attempts: 0, reason: null, retrying: false },
   superseded: false,
   surrenderAsk: false,
 }

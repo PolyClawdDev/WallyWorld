@@ -23,9 +23,19 @@
  *   responses: a dropped socket should come back hard, and a superseded
  *   one must never come back at all, or two tabs kick each other out in
  *   a loop that neither can win.
+ *
+ * The fourth behaviour is about what the player is told. Retrying forever
+ * is right for a socket that dropped and wrong for one the server is
+ * refusing, and from the outside those look identical: the socket opens,
+ * something arrives, the socket closes. So every attempt records why it
+ * failed, and after a few failures the UI stops claiming to be
+ * "connecting" and says what actually went wrong. A session token the
+ * server no longer holds is the case that made this necessary — it can be
+ * replayed indefinitely without ever succeeding, so it is now thrown away
+ * the first time it is refused rather than retried until the tab closes.
  * ------------------------------------------------------------------ */
 
-import { API_BASE_URL, wsBaseUrl } from '../solana/cluster'
+import { API_BASE_URL, API_IS_SAME_ORIGIN, API_ORIGIN, wsBaseUrl } from '../solana/cluster'
 import {
   HEARTBEAT_INTERVAL_MS,
   PVP_PROTOCOL,
@@ -36,7 +46,7 @@ import {
   type S2C,
 } from '../shared/pvp'
 import type { PublicLoadout } from '../shared/pvp'
-import { presenceTokenSync, resolvePresenceAuth } from './guest'
+import { forgetPresenceAuth, presenceAuthProblem, presenceTokenSync, resolvePresenceAuth } from './guest'
 import { pingPvp, pvpState } from './store'
 
 let socket: WebSocket | null = null
@@ -46,6 +56,30 @@ let timer: ReturnType<typeof setTimeout> | null = null
 let heartbeat: ReturnType<typeof setInterval> | null = null
 let opening = false
 let lastServerMessageAt = 0
+
+/**
+ * Failures tolerated before the chip stops saying "connecting".
+ *
+ * Four covers the ordinary cases this should ride out silently — a laptop
+ * waking up, a router re-establishing NAT, a server restart — while still
+ * being reached in a few seconds of backoff when the cause is not going away.
+ */
+const FAILURES_BEFORE_OFFLINE = 4
+
+/** True once this attempt has been welcomed, so a close can tell why it closed. */
+let welcomed = false
+
+/** True once this attempt's socket reached OPEN. Separates "refused" from "unreachable". */
+let sawOpen = false
+
+/** The server's own explanation for the close, when it sent one. */
+let serverReason: string | null = null
+
+/** Set when a refused session has already been replaced once. A second refusal is not the token. */
+let sessionReplaced = false
+
+/** Set when nothing further is being attempted, so the UI can stop implying otherwise. */
+let stopped = false
 
 /**
  * Set when the server says this character is being played elsewhere.
@@ -63,13 +97,80 @@ function wsUrl(token: string) {
   return `${wsBaseUrl()}/ws/pvp?token=${encodeURIComponent(token)}`
 }
 
+/** The presence endpoint without the token, which is the part worth showing a player. */
+const presenceEndpoint = () => `${wsBaseUrl()}/ws/pvp`
+
+/**
+ * Names the URL that was tried and the setting that decides it.
+ *
+ * Same shape as the wallet panel's API-base message on purpose: a player who
+ * has misconfigured one has misconfigured both, and a chip that says only
+ * "could not connect" leaves them with nowhere to look.
+ */
+function unreachableReason(): string {
+  return API_IS_SAME_ORIGIN
+    ? `Nothing answered at ${presenceEndpoint()}. This page came from ${API_ORIGIN}, and with no VITE_API_BASE_URL set the shared world is expected on that same origin — so either the API is not running (\`npm run server\`, which the dev server proxies to) or this host serves only the game files.`
+    : `Nothing answered at ${presenceEndpoint()}. VITE_API_BASE_URL points the shared world at ${API_ORIGIN}.`
+}
+
+/**
+ * Records a failed attempt.
+ *
+ * `retrying` is the honest part: it is whatever `schedule()` decided, not an
+ * assumption, so the chip can never say "still trying" while nothing is.
+ */
+function noteFailure(reason: string) {
+  const attempts = pvpState.link.attempts + 1
+  pvpState.link = {
+    phase: attempts >= FAILURES_BEFORE_OFFLINE ? 'offline' : 'retrying',
+    attempts,
+    reason,
+    retrying: !stopped,
+  }
+}
+
+/** Gives up, and says so. Only for failures that retrying cannot fix. */
+function stopTrying(reason: string) {
+  stopped = true
+  if (timer) clearTimeout(timer)
+  timer = null
+  pvpState.link = { phase: 'offline', attempts: Math.max(1, pvpState.link.attempts), reason, retrying: false }
+}
+
+/**
+ * Replaces a session the server refused, once.
+ *
+ * The token in localStorage is only meaningful while the server still holds its
+ * row; a restart on another database leaves one that looks valid here and is
+ * unknown there. Discarding it means the next attempt mints a fresh one through
+ * the normal route. A second refusal is not the token's fault, and pretending
+ * otherwise would be an infinite loop wearing a spinner.
+ */
+function repairSession(detail: string) {
+  if (sessionReplaced) {
+    stopTrying(
+      `${API_ORIGIN} refused this browser's session for the shared world, and refused a freshly issued one too. ${detail}`,
+    )
+    return
+  }
+  sessionReplaced = true
+  const discarded = forgetPresenceAuth()
+  serverReason =
+    discarded === 'wallet'
+      ? `The signed-in session had expired at ${API_ORIGIN}. Rejoining as a guest; reconnect the wallet from the wallet panel.`
+      : `The stored session had expired at ${API_ORIGIN}. Asking for a new one.`
+}
+
 function apply(msg: S2C) {
   lastServerMessageAt = Date.now()
   switch (msg.t) {
     case 'welcome':
+      welcomed = true
+      serverReason = null
+      sessionReplaced = false
       pvpState.connected = true
       pvpState.signedIn = true
-      pvpState.reconnecting = false
+      pvpState.link = { phase: 'connecting', attempts: 0, reason: null, retrying: false }
       pvpState.superseded = false
       pvpState.playerId = msg.playerId
       pvpState.gold = msg.gold
@@ -122,15 +223,25 @@ function apply(msg: S2C) {
       // otherwise this tab and the new one take turns evicting each other.
       superseded = true
       pvpState.superseded = true
-      pvpState.reconnecting = false
+      pvpState.link = { phase: 'offline', attempts: pvpState.link.attempts, reason: msg.detail, retrying: false }
       pvpState.error = msg.detail
       break
     case 'serverClosing':
       serverClosingUntil = Date.now() + msg.reconnectAfterMs
-      pvpState.reconnecting = true
-      pvpState.error = msg.detail
+      serverReason = msg.detail
       break
     case 'error':
+      // A refusal of the connection itself is not a gameplay error, and putting
+      // it in the error banner said "Sign in first." over a world the player was
+      // already standing in. It belongs to the connection state instead.
+      if (msg.code === 'unauthenticated') {
+        repairSession(msg.detail)
+        break
+      }
+      if (msg.code === 'at_capacity') {
+        serverReason = msg.detail
+        break
+      }
       pvpState.error = msg.detail
       break
     case 'pong':
@@ -174,7 +285,7 @@ async function open() {
     pingPvp()
     return
   }
-  if (superseded) return
+  if (superseded || stopped) return
   if (opening) return
   if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) return
   opening = true
@@ -182,17 +293,26 @@ async function open() {
   opening = false
   pvpState.signedIn = Boolean(auth)
   if (!auth) {
+    // No socket is created here, so no close handler will run and nothing else
+    // would ever mark this attempt as failed. This is the path that left the
+    // chip reading "Joining the shared town…" with nothing behind it.
     schedule()
+    noteFailure(presenceAuthProblem() ?? `Could not get a session for the shared world from ${API_ORIGIN}.`)
     pingPvp()
     return
   }
+  welcomed = false
+  sawOpen = false
   try {
     socket = new WebSocket(wsUrl(auth.token))
-  } catch {
+  } catch (error) {
     schedule()
+    noteFailure(`${presenceEndpoint()} is not a usable WebSocket URL (${error instanceof Error ? error.message : String(error)}).`)
+    pingPvp()
     return
   }
   socket.onopen = () => {
+    sawOpen = true
     send({ t: 'hello', protocol: PVP_PROTOCOL, displayName: hello!.displayName, loadout: hello!.loadout })
     startHeartbeat()
   }
@@ -205,13 +325,19 @@ async function open() {
   }
   socket.onclose = () => {
     stopHeartbeat()
+    const wasWelcomed = welcomed
     pvpState.connected = false
-    pvpState.reconnecting = superseded
-      ? false
-      : Boolean(pvpState.duel && pvpState.duel.phase !== 'ended') || Boolean(hello)
-    pingPvp()
     socket = null
-    if (!superseded) schedule()
+    if (!superseded && !stopped) {
+      schedule()
+      // A welcomed connection that closed is a drop, and the count restarts:
+      // the player was in the world a moment ago, so this is attempt one of a
+      // recovery rather than the fifth failure of a join that never worked.
+      if (wasWelcomed) pvpState.link = { phase: 'connecting', attempts: 0, reason: null, retrying: true }
+      noteFailure(serverReason ?? (sawOpen ? `${presenceEndpoint()} accepted the connection and then closed it without letting this character in.` : unreachableReason()))
+      serverReason = null
+    }
+    pingPvp()
   }
   socket.onerror = () => {
     /* close handler reconnects */
@@ -227,7 +353,7 @@ async function open() {
  * give or take 10%" still means everyone retries at roughly 8 seconds.
  */
 function schedule() {
-  if (timer || superseded) return
+  if (timer || superseded || stopped) return
   const ceiling = Math.min(RECONNECT_MAX_MS, RECONNECT_BASE_MS * 2 ** retries)
   const jittered = Math.random() * ceiling
   const restartFloor = Math.max(0, serverClosingUntil - Date.now())
@@ -247,7 +373,11 @@ export function startPvp(displayName: string, loadout: PublicLoadout) {
   hello = { displayName, loadout }
   retries = 0
   superseded = false
+  stopped = false
+  sessionReplaced = false
+  serverReason = null
   pvpState.superseded = false
+  pvpState.link = { phase: 'connecting', attempts: 0, reason: null, retrying: false }
   void open()
 }
 
@@ -261,6 +391,26 @@ export function stopPvp() {
 }
 
 /**
+ * The player asking, from the offline chip, to try the shared world again.
+ *
+ * Distinct from the automatic retry: it clears the give-up flag and the attempt
+ * count, so a configuration that has since been fixed — the API started, the
+ * network back — is picked up immediately instead of waiting out a backoff.
+ */
+export function retryPvp() {
+  if (!hello) return
+  stopped = false
+  sessionReplaced = false
+  serverReason = null
+  retries = 0
+  if (timer) clearTimeout(timer)
+  timer = null
+  pvpState.link = { phase: 'connecting', attempts: 0, reason: null, retrying: false }
+  pingPvp()
+  void open()
+}
+
+/**
  * Takes the character back into this tab after it was claimed elsewhere.
  *
  * Reconnecting supersedes whoever holds it now, which is symmetric and
@@ -270,8 +420,10 @@ export function stopPvp() {
 export function reclaimPvp() {
   if (!hello) return
   superseded = false
+  stopped = false
   pvpState.superseded = false
   pvpState.error = null
+  pvpState.link = { phase: 'connecting', attempts: 0, reason: null, retrying: false }
   retries = 0
   pingPvp()
   void open()
