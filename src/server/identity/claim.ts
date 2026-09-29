@@ -36,7 +36,7 @@
 import { randomBytes } from 'node:crypto'
 import { ed25519 } from '@noble/curves/ed25519.js'
 import bs58 from 'bs58'
-import { buildSiwsMessage, looksLikeAddress, looksLikeNonce, SIWS_VERSION, type SiwsFields } from '../../shared/siws'
+import { buildSiwsMessage, LINK_STATEMENT, looksLikeAddress, looksLikeNonce, SIWS_VERSION, type SiwsFields } from '../../shared/siws'
 import { CHAIN_ID, NONCE_TTL_MS } from '../config'
 import { coreDb, immediateTransaction } from '../store'
 import { sessionIsLive } from '../db'
@@ -53,9 +53,12 @@ import {
 
 const db = coreDb
 
-/** Distinct from SIWS_STATEMENT on purpose: different bytes, different meaning. */
-export const LINK_STATEMENT =
-  'Link this wallet to your Voxels account. This proves you control this wallet. It is not a transaction, it costs no fees, and it cannot move funds.'
+/**
+ * Distinct from SIWS_STATEMENT on purpose: different bytes, different meaning.
+ * Shared with the client so the browser can rebuild the exact text it signs;
+ * re-exported here because this module is where it is enforced.
+ */
+export { LINK_STATEMENT }
 
 export type ClaimIntent = 'link'
 

@@ -45,7 +45,9 @@ import { refreshPvpIdentity, send, startPvp, stopPvp } from './pvp/net'
 import { isDuelLocked, pvpState } from './pvp/store'
 import { applyDuelPose, disposePvpWorld, inspectRemote, listRemotes, pickRemote, updatePvpWorld } from './pvp/world'
 import { createCharacterNameplate, displayNameFor } from './nameplate'
-import { API_BASE_URL } from './solana/cluster'
+import { API_BASE_URL, API_ORIGIN } from './solana/cluster'
+import { embeddedWallet, ensureEmbeddedWallet } from './solana/embeddedWallet'
+import { claimAccountWithEmbeddedWallet, embeddedClaimState } from './solana/embeddedIdentity'
 
 import './styles.css'
 // Loads last on purpose: the UI kit restyles the panels and HUD chrome that
@@ -67,6 +69,21 @@ const TAP_MS = 200
 const ZOOM_MIN = 3.2
 const ZOOM_MAX = 32
 const ZOOM_STEP = 0.0024
+/* Orbit sensitivity, radians per pixel of mouse travel. */
+const ORBIT_YAW_SENS = 0.004
+const ORBIT_PITCH_SENS = 0.0035
+/**
+ * Pitch is stored as an offset from the framing the zoom already picks, so an
+ * untouched camera sits exactly where it always did. The limits are chosen
+ * against the steepest and shallowest base elevation the zoom range can
+ * produce (0.42 rad pulled all the way back, 0.55 rad pushed all the way in),
+ * which keeps the true elevation inside roughly 5°..80°: never flat enough to
+ * dip under the street, never steep enough to flip over the top.
+ */
+const PITCH_MIN = -0.34
+const PITCH_MAX = 0.85
+/** Mouse travel, in pixels, before a shift+left press counts as a camera drag. */
+const ORBIT_SLOP = 4
 
 const buildings = [
   { name: 'THE HEARTH', sub: 'Your home', x: -15, z: 11, color: '#765b52', npc: '' },
@@ -592,7 +609,13 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
     const unregisterWorld = registerWorld({ scene, camera, canvas: renderer.domElement, player })
     const keys = keysRef.current
     keys.clear()
+    /* Camera angles. A drag moves the `*Wanted` pair; the render loop eases the
+     * live pair toward them with a delta-time curve, so the orbit glides at any
+     * framerate and neither the start nor the end of a drag snaps. */
     let yaw = 0.25
+    let yawWanted = yaw
+    let pitch = 0
+    let pitchWanted = 0
     /* Camera distance. The wheel moves `zoomWanted`; `zoom` chases it so the
      * view glides instead of snapping, and both stay inside the clamp so the
      * camera can never end up inside the wayfinder or under the street. */
@@ -602,6 +625,16 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
     let nearbyNpc: string | null = null
     let walking = false
     const drops: THREE.Group[] = []
+    /** Each coin builds its own geometry and material, so each one frees them. */
+    const retireDrop = (drop: THREE.Group) => {
+      scene.remove(drop)
+      drop.traverse(node => {
+        const mesh = node as THREE.Mesh
+        if (!mesh.isMesh) return
+        mesh.geometry.dispose()
+        ;(mesh.material as THREE.Material).dispose()
+      })
+    }
 
     /* --- hunting ------------------------------------------------------------
      * Wildlife, abilities and the player's health live in their own modules;
@@ -715,14 +748,46 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
     }
 
     /* --- input ---------------------------------------------------------
-     * The mouse moves you. Right-click walkable ground walks there, right-click
-     * an enemy attacks it, left-click selects or confirms an aimed spell,
-     * Q/W/E/R are abilities, A then click is attack-move, S stops, F interacts.
-     * The wheel zooms, middle-drag or shift-drag or the arrow keys turn the
-     * camera, and Space swings it back behind the wayfinder. The cursor is
-     * never captured. */
+     * The mouse moves you and fights for you. Left-click open ground walks
+     * there, left-click a living animal attacks it, right-click does the same
+     * pair, and either button confirms an aimed spell. Q/W/E/R are abilities,
+     * A then click is attack-move, S stops, F interacts.
+     *
+     * Button precedence on the world canvas, highest first: paused, middle
+     * button (camera), alt+left (camera), shift+left (camera once it drags, the
+     * ordinary click if it does not), another player (inspect, never attack),
+     * an active duel (the press becomes a server input), an aimed spell, an
+     * armed attack-move, a living animal (attack), open ground (walk).
+     *
+     * Camera, in full:
+     *   wheel                zoom, ZOOM_MIN..ZOOM_MAX
+     *   middle-button drag   orbit — yaw and pitch. The primary binding.
+     *   alt/option+left drag orbit. For mice and trackpads with no usable
+     *                        middle button. Alt is bound to nothing else, so
+     *                        an alt+left press is camera-only and never
+     *                        reaches the battle engine.
+     *   shift+left drag      orbit, but only once the pointer has travelled
+     *                        ORBIT_SLOP pixels. Shift is also the sprint
+     *                        modifier, so a shift+left press that does *not*
+     *                        drag falls through on mouseup and issues the
+     *                        ordinary click — a sprinting player can still
+     *                        select, attack-move and confirm spells.
+     *   arrow keys           yaw left/right, zoom in/out
+     *   space                recentre behind the wayfinder at the default tilt
+     * The right button is deliberately not a camera gesture: it attacks, and
+     * during a duel it is the move input. The cursor is never captured, and
+     * pointer lock is never requested; the drag only takes *pointer* capture,
+     * which is released again on pointerup, pointercancel and window blur so a
+     * release outside the window cannot leave the camera spinning.
+     */
     const pressedAt = new Map<string, number>()
-    let orbiting = false
+    /* Which gesture, if any, is currently orbiting, and the pointer id that
+     * owns it. `orbitTravel` measures the drag so shift+left can tell a camera
+     * drag from a click. */
+    let orbitMode: 'middle' | 'alt' | 'shift' | null = null
+    let orbitPointer: number | null = null
+    let orbitTravel = 0
+    let shiftClickPending = false
     let keyboardMove = readKeyboardMove()
     const castSlot = (slot: 'Q' | 'W' | 'E' | 'R') => battle?.pressSlot(slot, { cursorGround, hover })
     const command = (key: string) => {
@@ -761,24 +826,72 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         if (!keyboardMove) command(key)
       }
       // Arrow keys are the no-middle-button way to work the camera.
-      if (key === 'arrowleft') yaw += 0.12
-      if (key === 'arrowright') yaw -= 0.12
+      if (key === 'arrowleft') yawWanted += 0.12
+      if (key === 'arrowright') yawWanted -= 0.12
       if (key === 'arrowup') zoomWanted = Math.max(ZOOM_MIN, zoomWanted - 1.4)
       if (key === 'arrowdown') zoomWanted = Math.min(ZOOM_MAX, zoomWanted + 1.4)
       if (key === ' ') {
         // Recentre: swing the orbit round to sit behind whichever way the
-        // character is actually facing.
+        // character is actually facing, and drop the tilt back to the default
+        // framing so one key undoes a wandering camera completely.
         e.preventDefault()
-        yaw = player.rotation.y + Math.PI
+        // Take the congruent angle nearest the current yaw: a drag winds yaw
+        // up past a full turn, and recentring must not unwind all of it.
+        const want = player.rotation.y + Math.PI
+        yawWanted += Math.atan2(Math.sin(want - yawWanted), Math.cos(want - yawWanted))
+        pitchWanted = 0
       }
       if (key === 'escape' && battle?.cancel()) markEscapeConsumed()
       if (key === 'f' && nearbyNpc && !nearbyNpc.startsWith('ANIMAL:')) handlers.current.onAction(nearbyNpc)
     }
-    const releaseKeys = () => { keys.clear(); pressedAt.clear(); orbiting = false }
+    /* Give the drag up, whatever ended it, and hand back pointer capture. Safe
+     * to call when nothing is orbiting, which is why blur and every failure
+     * path can simply call it. */
+    const endOrbit = () => {
+      if (orbitPointer !== null) {
+        try { if (renderer.domElement.hasPointerCapture(orbitPointer)) renderer.domElement.releasePointerCapture(orbitPointer) }
+        catch { /* the pointer is already gone; nothing to hand back */ }
+      }
+      orbitMode = null
+      orbitPointer = null
+    }
+    const releaseKeys = () => { keys.clear(); pressedAt.clear(); shiftClickPending = false; endOrbit() }
+    /* The camera drag runs on pointer events rather than mouse events purely
+     * for setPointerCapture: it keeps the moves coming when the cursor leaves
+     * the canvas, and guarantees a pointerup even over browser chrome. World
+     * commands stay on mousedown, below. */
+    const onPointerDown = (e: PointerEvent) => {
+      if (pausedRef.current || e.pointerType !== 'mouse') return
+      const mode: typeof orbitMode =
+        e.button === 1 ? 'middle'
+        : e.button === 0 && e.altKey ? 'alt'
+        : e.button === 0 && e.shiftKey ? 'shift'
+        : null
+      if (!mode) return
+      // Middle-press is the browser's autoscroll gesture; the world wants it.
+      if (mode === 'middle') e.preventDefault()
+      endOrbit()
+      orbitMode = mode
+      orbitPointer = e.pointerId
+      orbitTravel = 0
+      try { renderer.domElement.setPointerCapture(e.pointerId) } catch { /* capture is a bonus, the drag still works without it */ }
+    }
+    const onPointerMove = (e: PointerEvent) => {
+      if (orbitMode === null || e.pointerId !== orbitPointer) return
+      // A button released over browser chrome can swallow the pointerup; the
+      // next move with the button already up is the other way to notice.
+      if (e.buttons === 0 || pausedRef.current) { endOrbit(); return }
+      orbitTravel += Math.abs(e.movementX) + Math.abs(e.movementY)
+      // Shift is also sprint, so a shift+left press only becomes a camera drag
+      // once it has clearly moved. Below that it is still a pending click.
+      if (orbitMode === 'shift' && orbitTravel < ORBIT_SLOP) return
+      yawWanted -= e.movementX * ORBIT_YAW_SENS
+      // Drag down, camera climbs and looks further down — the same sense as
+      // every other orbit control.
+      pitchWanted = THREE.MathUtils.clamp(pitchWanted + e.movementY * ORBIT_PITCH_SENS, PITCH_MIN, PITCH_MAX)
+    }
+    const onPointerEnd = (e: PointerEvent) => { if (e.pointerId === orbitPointer) endOrbit() }
     const onMouseMove = (e: MouseEvent) => {
-      // Shift-drag is the alternative to the middle button, which plenty of
-      // mice and every trackpad make awkward.
-      if (orbiting || (e.buttons === 1 && e.shiftKey)) yaw -= e.movementX * 0.004
       const rect = renderer.domElement.getBoundingClientRect()
       pointer.set(((e.clientX - rect.left) / rect.width) * 2 - 1, -((e.clientY - rect.top) / rect.height) * 2 + 1)
     }
@@ -786,16 +899,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
     // or the pouch can therefore never also issue a world command, and a pouch
     // drag that ends over the world never fires one either, because only the
     // press is listened for and that press happened on the pouch.
-    const onCanvasDown = (e: MouseEvent) => {
-      if (pausedRef.current) return
-      primeAudio()
-      if (e.button === 1) {
-        e.preventDefault()
-        orbiting = true
-        return
-      }
-      // Shift plus the left button is a camera drag, not a selection.
-      if (e.button === 0 && e.shiftKey) return
+    const worldClick = (e: MouseEvent) => {
       resolveCursor()
       const remoteId = pickRemote(raycaster)
       if (e.button === 0 && remoteId && !isDuelLocked()) {
@@ -820,7 +924,29 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         battle?.secondaryClick(cursorGround, target)
       }
     }
-    const onMouseUp = (e: MouseEvent) => { if (e.button === 1) orbiting = false }
+    const onCanvasDown = (e: MouseEvent) => {
+      if (pausedRef.current) return
+      primeAudio()
+      // Middle is camera-only. preventDefault here too: autoscroll is a
+      // mousedown behaviour, and this listener is the non-passive one.
+      if (e.button === 1) { e.preventDefault(); return }
+      // Alt plus left is camera-only, and alt is bound to nothing else, so it
+      // never needs to fall through to a command.
+      if (e.button === 0 && e.altKey) return
+      // Shift plus left is undecided until the button comes back up: it is a
+      // camera drag if it moved, and the ordinary click if it did not. That is
+      // what lets a sprinting player still click.
+      if (e.button === 0 && e.shiftKey) { shiftClickPending = true; orbitTravel = 0; return }
+      worldClick(e)
+    }
+    const onMouseUp = (e: MouseEvent) => {
+      if (e.button === 1) endOrbit()
+      if (e.button === 0) {
+        const tap = shiftClickPending && orbitTravel < ORBIT_SLOP
+        shiftClickPending = false
+        if (tap && !pausedRef.current) worldClick(e)
+      }
+    }
     // Canvas-only and non-passive: the wheel over the pouch, the journal or the
     // map scrolls that panel and the world never hears about it.
     const onWheel = (e: WheelEvent) => {
@@ -835,6 +961,11 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
     document.addEventListener('mousemove', onMouseMove); document.addEventListener('mouseup', onMouseUp)
     renderer.domElement.addEventListener('contextmenu', blockMenu)
     renderer.domElement.addEventListener('mousedown', onCanvasDown)
+    renderer.domElement.addEventListener('pointerdown', onPointerDown)
+    renderer.domElement.addEventListener('pointermove', onPointerMove)
+    renderer.domElement.addEventListener('pointerup', onPointerEnd)
+    renderer.domElement.addEventListener('pointercancel', onPointerEnd)
+    renderer.domElement.addEventListener('lostpointercapture', onPointerEnd)
     renderer.domElement.addEventListener('wheel', onWheel, { passive: false })
     const unregisterKeyboardMove = onKeyboardMoveChange(on => { keyboardMove = on })
     const resize = () => { if (!mount.current) return; const { width, height } = mount.current.getBoundingClientRect(); camera.aspect = width / height; camera.updateProjectionMatrix(); renderer.setSize(width, height) }
@@ -886,34 +1017,68 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         o.rotation.y += Math.sin(now * 0.001 + o.userData.phase) * 0.0007
         animateCharacter(o, now, o.userData.phase)
       })
+      /* Every camera ease below is `1 - exp(-dt * rate)` rather than a fixed
+       * fraction per frame, so the glide takes the same wall-clock time at 8fps
+       * on a software renderer as it does at 144. The rates are picked to match
+       * what the old per-frame constants felt like at 60fps. */
+      const chase = (rate: number) => 1 - Math.exp(-dt * rate)
+      const angleEase = chase(20)
+      yaw += (yawWanted - yaw) * angleEase
+      pitch += (pitchWanted - pitch) * angleEase
       const target = player.position.clone().add(new THREE.Vector3(0, 1.6, 0))
-      if (firstPerson.current) { camera.position.copy(target); camera.position.y += 1.1; camera.rotation.set(0, yaw, 0) }
+      if (firstPerson.current) {
+        camera.position.copy(target)
+        camera.position.y += 1.1
+        // YXZ so pitch is applied about the camera's own right-hand axis: an
+        // XYZ order would roll the horizon as soon as yaw left zero.
+        camera.rotation.order = 'YXZ'
+        // The third-person pitch range is a tilt budget for an orbit, which is
+        // narrower than a head; scaled up here and clamped short of straight
+        // up or straight down so the view can never flip.
+        camera.rotation.set(THREE.MathUtils.clamp(-pitch * 1.5, -1.4, 1.4), yaw, 0)
+      }
       else {
         // Ease toward the wanted distance rather than snapping to it, and lift
         // the lens as it pulls back so the far end of the range reads as a
         // tactical overhead rather than a view of the rooftops edge-on.
-        zoom += (zoomWanted - zoom) * Math.min(1, dt * 9)
+        zoom += (zoomWanted - zoom) * chase(9)
         const height = 0.6 + zoom * 0.43
-        const ahead = Math.min(zoom * 0.81, 7)
-        const desired = target.clone().add(new THREE.Vector3(Math.sin(yaw) * zoom, height, Math.cos(yaw) * zoom))
+        /* `pitch` is an offset on the elevation the zoom already implies, and
+         * the boom length is whatever that framing gave — so pitch 0 puts the
+         * camera exactly where it sat before there was a pitch at all. */
+        const baseElevation = Math.atan2(height, zoom)
+        const elevation = baseElevation + pitch
+        const boom = Math.hypot(zoom, height)
+        const flat = Math.cos(elevation) * boom
+        const desired = target.clone().add(new THREE.Vector3(Math.sin(yaw) * flat, Math.sin(elevation) * boom, Math.cos(yaw) * flat))
         // Never below the street, and never inside the wayfinder's own hat.
         desired.y = Math.max(desired.y, 1.4)
-        const streetLook = target.clone().add(new THREE.Vector3(-Math.sin(yaw) * ahead, 0.1, -Math.cos(yaw) * ahead))
-        camera.position.lerp(desired, 0.18)
+        /* Looking ahead of the wayfinder is what makes the default framing read
+         * as a street view, but it makes no sense from overhead: fade the lead
+         * out, and raise the look point onto the wayfinder, as the camera
+         * climbs. The ratio is 1 at pitch 0, so the default is untouched. */
+        const lead = THREE.MathUtils.clamp(Math.cos(elevation) / Math.cos(baseElevation), 0, 1)
+        const ahead = Math.min(zoom * 0.81, 7) * lead
+        const streetLook = target.clone().add(new THREE.Vector3(-Math.sin(yaw) * ahead, 0.1 * lead, -Math.cos(yaw) * ahead))
+        camera.position.lerp(desired, chase(12))
         camera.position.y = Math.max(camera.position.y, 1.4)
         camera.lookAt(streetLook)
       }
-      drops.forEach(drop => {
+      // Backwards, because a collected coin leaves the list. It used to be only
+      // hidden and removed from the scene, which left its meshes — one fresh
+      // geometry and material per coin — alive for the rest of the session and
+      // spun them every frame for nothing.
+      for (let i = drops.length - 1; i >= 0; i--) {
+        const drop = drops[i]
         drop.rotation.y += dt * 2
         drop.position.y = 0.22 + Math.sin(now * 0.004 + drop.position.x) * 0.06
-        if (drop.visible && drop.position.distanceTo(player.position) < 2.3) {
-          drop.visible = false
-          const gold = creditPickup((drop.userData.gold as number) ?? 1)
-          battle?.floatText(`+${gold}`, drop.position.clone().setY(1.4), '#f0b84d')
-          handlers.current.onGold(gold)
-          scene.remove(drop)
-        }
-      })
+        if (drop.position.distanceTo(player.position) >= 2.3) continue
+        const gold = creditPickup((drop.userData.gold as number) ?? 1)
+        battle?.floatText(`+${gold}`, drop.position.clone().setY(1.4), '#f0b84d')
+        handlers.current.onGold(gold)
+        retireDrop(drop)
+        drops.splice(i, 1)
+      }
 
       /* --- hunt: wildlife, abilities, vitals, HUD ------------------------- */
       const safe = isSafeZone(player.position.x, player.position.z)
@@ -989,9 +1154,14 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         // Drives the camera-relative pointer without a real mouse, so the
         // verification scripts can aim at a world point directly.
         setPointer: (x: number, y: number) => { pointer.set(x, y); resolveCursor() },
-        camState: () => ({ zoom, zoomWanted, yaw, keyboardMove }),
+        camState: () => ({ zoom, zoomWanted, yaw, yawWanted, pitch, pitchWanted, orbiting: orbitMode, keyboardMove }),
         remotes: () => listRemotes(),
         apiBase: API_BASE_URL,
+        apiOrigin: API_ORIGIN,
+        // Address and link state only. There is deliberately no probe that
+        // returns key material, so a verification script cannot accidentally
+        // print one and the DEV build cannot become a way to read it.
+        wallet: () => ({ address: embeddedWallet()?.address ?? null, claim: embeddedClaimState() }),
         pvp: () => ({ playerId: pvpState.playerId, others: pvpState.others, connected: pvpState.connected, self: pvpState.self }),
         // The duel flow is normally reached by clicking a remote player in the
         // scene. Headless software WebGL can barely hit a moving target, so the
@@ -1024,16 +1194,22 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       }
     }
     return () => {
-      cancelAnimationFrame(raf); keys.clear(); if (import.meta.env.DEV) delete probe.__wally; unregisterWorld()
+      cancelAnimationFrame(raf); keys.clear(); endOrbit(); if (import.meta.env.DEV) delete probe.__wally; unregisterWorld()
       window.removeEventListener('keydown', onKey); window.removeEventListener('keyup', onKey)
       window.removeEventListener('blur', releaseKeys); document.removeEventListener('visibilitychange', releaseKeys)
       window.removeEventListener('resize', resize)
       document.removeEventListener('mousemove', onMouseMove); document.removeEventListener('mouseup', onMouseUp)
       renderer.domElement.removeEventListener('mousedown', onCanvasDown)
+      renderer.domElement.removeEventListener('pointerdown', onPointerDown)
+      renderer.domElement.removeEventListener('pointermove', onPointerMove)
+      renderer.domElement.removeEventListener('pointerup', onPointerEnd)
+      renderer.domElement.removeEventListener('pointercancel', onPointerEnd)
+      renderer.domElement.removeEventListener('lostpointercapture', onPointerEnd)
       renderer.domElement.removeEventListener('wheel', onWheel)
       renderer.domElement.removeEventListener('contextmenu', blockMenu)
       unregisterCommands(); unregisterKeyboardMove()
-      huntState.active = false; wildlife.dispose(); battle?.dispose(); nameplate.dispose(); disposePvpWorld(scene)
+      huntState.active = false; drops.forEach(retireDrop); drops.length = 0
+      wildlife.dispose(); battle?.dispose(); nameplate.dispose(); disposePvpWorld(scene)
       renderer.dispose(); mount.current?.removeChild(renderer.domElement)
     }
   }, [wizard, style])
@@ -1070,6 +1246,14 @@ function App() {
     probe.__pvpLocked = () => isDuelLocked()
     return () => { delete probe.__pvpLocked }
   }, [])
+  // Entering the world is what gives a player their wallet. Generated before
+  // the presence socket opens so the account this session builds is a claimed
+  // one from its first write, rather than a guest that gets adopted later.
+  useEffect(() => {
+    if (tab !== 'world') return
+    ensureEmbeddedWallet()
+    void claimAccountWithEmbeddedWallet()
+  }, [tab])
   useEffect(() => {
     if (tab !== 'world') return
     const progress = progressFor(wizard)

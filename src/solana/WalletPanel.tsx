@@ -2,10 +2,15 @@
  * The real wallet panel: Phantom connection, balances, sign-in, the
  * cross-device save, one user-signed payment, and the disabled payout.
  *
- * Nothing in this component can produce, request, or display a private
+ * Nothing in *this* component can produce, request, or display a private
  * key or seed phrase. There is no field that accepts one and no button
- * that reveals one, because the app never has one: Phantom holds the key
- * and performs every signature.
+ * that reveals one, because on the Phantom path the app never has one:
+ * Phantom holds the key and performs every signature.
+ *
+ * The browser-held wallet is the other path, and it is deliberately in a
+ * separate file (`EmbeddedWalletPanel.tsx`) so the two cannot be confused
+ * for each other. Neither replaces the other: a player can use Phantom,
+ * the embedded wallet, or both.
  *
  * Amounts render from bigint base units through `formatBaseUnits`. No
  * amount is ever put through a float on the way to the screen or on the
@@ -13,7 +18,8 @@
  * ------------------------------------------------------------------ */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { explorerAddress, explorerTx, fundsLabel, truncateAddress, CLUSTER, RPC } from './cluster'
+import { explorerAddress, explorerTx, fundsLabel, truncateAddress, CLUSTER, RPC, RPC_PROXY_URL } from './cluster'
+import { EmbeddedWalletBlock } from './EmbeddedWalletPanel'
 import { PHANTOM_DOWNLOAD_URL, describeWalletError, isUserRejection } from './phantom'
 import { connect, disconnect, persistProfile, refreshBalances, signIn, signOut, useWallet, getProvider } from './wallet'
 import { fetchPayoutStatus, fetchQuote, fetchReceipts, postReceipt, recheckReceipt, type Quote, type ReceiptView } from './api'
@@ -455,6 +461,20 @@ function ReceiptLine({ receipt, onRecheck }: { receipt: ReceiptView; onRecheck: 
 
 /* --------------------------------------------------------------- payouts */
 
+/**
+ * Why gold cannot be cashed out, stated as it actually stands.
+ *
+ * The previous wording — "gold is counted by your browser" — was true before
+ * `server/money/ledger.ts` existed and is not true now, and an out-of-date
+ * reason is worse than a blunt one: it invites the player to conclude that the
+ * real blockers were solved when they were not.
+ *
+ * The server sends its own version of this and it wins, so the two are kept
+ * saying the same thing; this is the fallback for a server that is not up.
+ */
+const PAYOUT_FALLBACK =
+  'Your gold is held by the server now, in an append-only double-entry ledger of whole units — not counted by your browser. Only gold from a verified hunt claim is even eligible; gifts, duel winnings and imported demo gold are permanently not. What is missing is the payout side: there is no treasury signing key, the five withdrawal settings have no values and no defaults, and no WALLY token mint exists.'
+
 function PayoutNotice() {
   const [reason, setReason] = useState<string | null>(null)
   useEffect(() => {
@@ -468,11 +488,13 @@ function PayoutNotice() {
     <div className="sol-block sol-disabled-block">
       <div className="sol-block-head"><span>GOLD → TOKEN REWARDS</span><b className="sol-off">UNAVAILABLE</b></div>
       <button className="primary full" disabled aria-disabled="true">Convert gold to tokens — not available</button>
+      <p className="sol-fine">{reason ?? PAYOUT_FALLBACK}</p>
       <p className="sol-fine">
-        {reason ??
-          'Gold is counted by your browser, so it cannot authorise a payment out of a treasury. A real payout would need server-authoritative gameplay, a custodied treasury, idempotent reconciliation against on-chain confirmation, and legal review. No WALLY token mint exists.'}
+        <strong>The honest limit:</strong> hunting still runs in your browser. The server decides what each animal is
+        worth, which species it was, that each one pays at most once, and how much a single trip can ever pay — but it
+        does not watch the fight, so it cannot prove one happened.
       </p>
-      <p className="sol-fine">This is deliberate and is not a configuration you can switch on. See the README for the full list of what would have to exist first.</p>
+      <p className="sol-fine">This is not a setting anyone can switch on. See the README for what would have to exist first.</p>
     </div>
   )
 }
@@ -494,6 +516,15 @@ export function WalletSolanaPanel() {
         <p className="sol-error"><strong>Configuration problem.</strong> {wallet.configError}</p>
       )}
 
+      {/* Shown instead of a chain error, because when this is set no chain call
+          was ever made: the address the client was pointed at is not this
+          project's API. Naming the URL is the whole point. */}
+      {wallet.apiError && (
+        <p className="sol-error">
+          <strong>The Voxels API is not where this page is looking.</strong> {wallet.apiError}
+        </p>
+      )}
+
       {wallet.clusterCheck?.status === 'mismatch' && (
         <p className="sol-error">
           <strong>Cluster mismatch.</strong> The app is configured for {CLUSTER}, but the configured RPC endpoint reports
@@ -501,17 +532,24 @@ export function WalletSolanaPanel() {
           not trustworthy until this is fixed.
         </p>
       )}
-      {wallet.clusterCheck?.status === 'unreachable' && (
-        <p className="sol-error"><strong>RPC unreachable.</strong> {wallet.clusterCheck.detail}</p>
+      {wallet.clusterCheck?.status === 'unreachable' && !wallet.apiError && (
+        <p className="sol-error">
+          <strong>RPC unreachable.</strong> The API at {RPC_PROXY_URL} answered, but the chain read through it did
+          not complete: {wallet.clusterCheck.detail}
+        </p>
       )}
+
+      {/* First, because it is the wallet every player actually has. */}
+      <EmbeddedWalletBlock />
 
       {wallet.phantom === 'checking' && <p className="sol-fine">Looking for Phantom…</p>}
 
       {wallet.phantom === 'missing' && (
         <div className="sol-block">
-          <div className="sol-block-head"><span>WALLET</span><b className="sol-off">PHANTOM NOT FOUND</b></div>
+          <div className="sol-block-head"><span>PHANTOM</span><b className="sol-off">NOT FOUND</b></div>
           <p className="sol-fine">
-            This build connects to Phantom only. Install the extension, then reload this page.
+            Phantom is the other way in, and it is optional: the browser wallet above is already a real Solana
+            keypair. Install the extension if you would rather Phantom held the key, then reload this page.
           </p>
           <a className="primary full" href={PHANTOM_DOWNLOAD_URL} target="_blank" rel="noopener noreferrer">Get Phantom ↗</a>
           <p className="sol-fine">
@@ -523,7 +561,7 @@ export function WalletSolanaPanel() {
 
       {wallet.phantom === 'ready' && wallet.status !== 'connected' && (
         <div className="sol-block">
-          <div className="sol-block-head"><span>WALLET</span><b className="sol-off">NOT CONNECTED</b></div>
+          <div className="sol-block-head"><span>PHANTOM</span><b className="sol-off">NOT CONNECTED</b></div>
           <p className="sol-fine">
             Connecting shares your public address only. Your key stays in Phantom, and every signature is approved by
             you inside the extension.
@@ -536,7 +574,7 @@ export function WalletSolanaPanel() {
 
       {wallet.status === 'connected' && wallet.address && (
         <div className="sol-block">
-          <div className="sol-block-head"><span>WALLET</span><b className="sol-on">CONNECTED</b></div>
+          <div className="sol-block-head"><span>PHANTOM</span><b className="sol-on">CONNECTED</b></div>
           <Row label="Address"><CopyableAddress address={wallet.address} label="wallet address" /></Row>
           <button className="ghost full" onClick={() => void disconnect()}>Disconnect</button>
         </div>
@@ -550,10 +588,22 @@ export function WalletSolanaPanel() {
       <NpcPayment />
       <PayoutNotice />
 
-      <p className="sol-fine sol-footer">
-        Non-custodial: Voxels never holds, stores, transmits, or displays your private key or seed phrase, and no
-        part of the game will ever ask for one. Phantom signs; this app only asks.
-      </p>
+      {/* Two paths, two different truths. Collapsing them into one sentence is
+          how a browser-held key ends up described as if Phantom were holding
+          it. */}
+      <div className="sol-fine sol-footer">
+        <p>
+          <strong>Phantom:</strong> non-custodial and key-free here. Voxels never holds, stores, transmits or
+          displays that key, and no part of the game will ever ask for a seed phrase. Phantom signs; this app only
+          asks.
+        </p>
+        <p>
+          <strong>The browser wallet:</strong> you hold the key, and it sits in this browser&rsquo;s storage. The
+          server never receives it — only your address and signatures. That also means no one can recover it for
+          you, and any script that gets onto this page can read it. Export it somewhere safe, and keep it to
+          small amounts.
+        </p>
+      </div>
     </div>
   )
 }

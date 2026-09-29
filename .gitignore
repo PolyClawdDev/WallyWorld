@@ -22,3 +22,6 @@ screenshots/
 # Scratch space for reading vendor sources and unpacked packages while
 # verifying an integration. Holds tens of megabytes and nothing we author.
 .probe/
+
+# Server output from locally started dev and verification processes.
+logs/

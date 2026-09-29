@@ -19,6 +19,18 @@
 export const SIWS_STATEMENT =
   'Sign in to Voxels. This proves you control this wallet. It is not a transaction, it costs no fees, and it cannot move funds.'
 
+/**
+ * Fixed wording for the *account link* challenge, which is a different thing
+ * from signing in and must therefore be different bytes: a sign-in signature
+ * cannot be replayed as a link, nor a link signature as a sign-in.
+ *
+ * It lives here rather than in the server's `identity/claim.ts` because the
+ * client has to rebuild the exact text it is about to sign — the same reason
+ * the sign-in statement is here.
+ */
+export const LINK_STATEMENT =
+  'Link this wallet to your Voxels account. This proves you control this wallet. It is not a transaction, it costs no fees, and it cannot move funds.'
+
 export const SIWS_VERSION = '1'
 
 /** Longest sign-in window the client will accept from the server. */
@@ -80,9 +92,12 @@ export type SiwsCheck = { ok: true; fields: SiwsFields } | { ok: false; reason: 
  */
 export function checkSiwsFields(
   candidate: unknown,
-  expected: { domain: string; uri: string; address: string; chainId: string },
+  expected: { domain: string; uri: string; address: string; chainId: string; statement?: string },
   now = Date.now(),
 ): SiwsCheck {
+  // Defaults to the sign-in wording, so an existing caller cannot be handed a
+  // link challenge and sign it thinking it was a sign-in.
+  const statement = expected.statement ?? SIWS_STATEMENT
   if (!candidate || typeof candidate !== 'object') return { ok: false, reason: 'malformed sign-in challenge' }
   const f = candidate as Record<string, unknown>
 
@@ -90,7 +105,7 @@ export function checkSiwsFields(
   if (f.uri !== expected.uri) return { ok: false, reason: 'challenge URI is not this site' }
   if (f.address !== expected.address) return { ok: false, reason: 'challenge is for a different wallet address' }
   if (f.chainId !== expected.chainId) return { ok: false, reason: 'challenge is for a different Solana cluster' }
-  if (f.statement !== SIWS_STATEMENT) return { ok: false, reason: 'challenge statement was altered' }
+  if (f.statement !== statement) return { ok: false, reason: 'challenge statement was altered' }
   if (f.version !== SIWS_VERSION) return { ok: false, reason: 'unsupported challenge version' }
   if (!looksLikeNonce(f.nonce)) return { ok: false, reason: 'challenge nonce is malformed' }
   if (!looksLikeAddress(f.address)) return { ok: false, reason: 'challenge address is malformed' }

@@ -533,13 +533,24 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
     return send(res, 200, { receipts: listReceipts(wallet).map(receiptView) })
   }
 
-  /* ---- payouts: permanently unavailable -------------------------------- */
+  /* ---- payouts: still unavailable, for the current reasons -------------
+   *
+   * This string is the one the player reads: the wallet panel prefers it over
+   * its own fallback. It used to say gold was "accumulated by the browser",
+   * which stopped being true when `money/ledger.ts` landed, and a stale reason
+   * implies the remaining blockers were solved. Each clause below is checkable
+   * against code: `money/ledger.ts` (append-only double-entry, bigint base
+   * units), `money/provenance.ts` (`hunt_verified` is the only redeemable
+   * origin), `treasury/config.ts` (five keys, no defaults, `TREASURY_SIGNER`
+   * unavailable), `treasury/withdrawals.ts` (`submitWithdrawal` returns
+   * `no_signer`), and `hunt/rewards.ts`'s header for the caveat.
+   * -------------------------------------------------------------------- */
   if (method === 'GET' && path === '/api/payouts/status') {
     return send(res, 200, {
       enabled: PAYOUTS_ENABLED,
-      status: 'UNAVAILABLE · NO VERIFIED ADAPTER CONFIGURED',
+      status: 'UNAVAILABLE · NO TREASURY SIGNER, NO RATE, NO MINT',
       reason:
-        'Gold is accumulated by the browser and is therefore client-asserted, so it cannot authorise a payment out of a treasury. A real payout needs server-authoritative gameplay, a custodied treasury with key management, idempotent reconciliation against on-chain confirmation, and legal review. No WALLY token mint exists.',
+        'Gold is server-authoritative now: it lives in an append-only double-entry ledger in whole base units, so it is no longer "counted by your browser". Only gold with hunt_verified provenance is even eligible to be redeemed — gifts, duel winnings and imported demo gold never are. What is still missing is everything on the payout side, and none of it is a switch: there is no treasury signing key and no code in this process that could use one; the five withdrawal settings have no values and no defaults, so /api/withdrawals/quote answers 409 naming each one; submission returns no_signer; and no WALLY token mint exists. One caveat that is not hidden: hunt combat still runs in the browser. The server proves the reward amount, the species, that each animal pays at most once, and a bounded per-session ceiling. It does not prove a fight happened.',
     })
   }
 

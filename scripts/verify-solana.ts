@@ -509,8 +509,16 @@ async function main() {
   const payout = await api('/api/payouts/status')
   check('payout status reports disabled', payout.body?.enabled === false)
   check('status string says unavailable', /UNAVAILABLE/.test(String(payout.body?.status)))
-  check('reason names the forgeable client state', /client-asserted|browser/i.test(String(payout.body?.reason)))
-  check('no mint is named', !/[1-9A-HJ-NP-Za-km-z]{32,44}/.test(String(payout.body?.reason)))
+  // The reason has to describe the position as it stands, not as it stood
+  // before the ledger existed. Two halves, and both are required: what is
+  // actually blocking a payout, and the caveat that must not be dropped.
+  const reason = String(payout.body?.reason)
+  check('reason no longer claims the browser counts the gold', !/accumulated by the browser/i.test(reason))
+  check('reason says the ledger is server-held', /server-authoritative|double-entry/i.test(reason))
+  check('reason names the missing treasury signer', /treasury signing key|no signer|no_signer/i.test(reason))
+  check('reason names the absent withdrawal configuration', /withdrawal settings|no defaults/i.test(reason))
+  check('reason keeps the browser-combat caveat', /does not prove a fight happened/i.test(reason))
+  check('no mint is named', !/[1-9A-HJ-NP-Za-km-z]{32,44}/.test(reason))
   check('payout attempts are refused', (await api('/api/payouts/claim', { method: 'POST', token, body: {} })).status === 501)
 
   /* ------------------------------------------------------------ hardening */

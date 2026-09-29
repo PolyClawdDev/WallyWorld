@@ -143,13 +143,35 @@ no configuration value that enables it; it is hardcoded off in
 `src/server/config.ts`, and `POST /api/payouts/*` answers `501`.
 
 This is a deliberate refusal, not an unfinished feature. Paying users *out* of a
-treasury is a different proposition from letting them pay *in*:
+treasury is a different proposition from letting them pay *in*.
 
-- **The gold counter is client-asserted.** The whole simulation runs in the
-  browser, so gold is trivially forgeable. Wiring a forgeable number to a funded
-  treasury is an open faucet, and it would be drained. Fixing this means moving
-  combat, loot, and progression to server-authoritative simulation — the client
-  would submit intent and the server would decide outcomes.
+What *used* to be the first reason on this list — "the gold counter is
+client-asserted" — no longer is, and saying so would be out of date. Balances
+now live in `src/server/money/ledger.ts` as append-only double-entry records in
+integer base units, hunt rewards are priced by the server and issued as
+single-use per-animal tokens (`src/server/hunt/rewards.ts`), and only the
+`hunt_verified` provenance is redeemable at all (`src/server/money/provenance.ts`).
+Gifts, duel winnings and gold imported from the old browser-side demo never are.
+
+What is genuinely still missing:
+
+- **Combat is still simulated in the browser.** This is the honest limit of the
+  current design and the reason the rest of the list matters. The server proves
+  the reward amount, the species, that each animal pays at most once, and a
+  bounded per-session ceiling — it does **not** prove a fight happened, because
+  it does not run the fight. Closing that gap means moving wildlife and
+  abilities to server-authoritative simulation. The header of
+  `src/server/hunt/rewards.ts` states this in the same terms; no user-facing
+  copy may claim more than it does.
+- **There is no treasury signer.** `TREASURY_SIGNER.available` is `false` and
+  this process holds no key and no code that could use one, so
+  `submitWithdrawal` returns `no_signer`. That is a custody decision, not a
+  configuration gap.
+- **Withdrawal configuration does not exist.** Five values in
+  `src/server/treasury/config.ts` — reward rate, minimum, per-player limit,
+  campaign budget, fee reserve — have no values and deliberately no defaults,
+  so `POST /api/withdrawals/quote` answers `409 missing_configuration` naming
+  each one. A rate of zero would be an invented exchange rate too.
 - **A treasury needs custody.** Paying out requires a key that can move funds,
   which means key management, hardware or KMS signing, spend limits enforced
   outside the application, and monitoring. This repository deliberately holds no

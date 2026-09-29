@@ -14,7 +14,7 @@
  * Secure to work across the dev ports, which plain http cannot do.
  * ------------------------------------------------------------------ */
 
-import { API_BASE_URL } from './cluster'
+import { API_BASE_URL, API_IS_SAME_ORIGIN, API_ORIGIN, RPC_PROXY_URL } from './cluster'
 import type { Profile } from '../shared/profile'
 import type { SiwsFields } from '../shared/siws'
 
@@ -78,7 +78,7 @@ async function call<T>(path: string, options: { method?: string; body?: unknown;
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     })
   } catch {
-    throw new ApiError(0, 'network_error', `Cannot reach the Voxels API at ${API_BASE_URL}. Is \`npm run server\` running?`)
+    throw new ApiError(0, 'network_error', `Cannot reach the Voxels API at ${API_ORIGIN}. Is \`npm run server\` running?`)
   }
 
   const text = await response.text()
@@ -163,6 +163,92 @@ export type Health = {
 }
 
 export const fetchHealth = () => call<Health>('/api/health')
+
+/* ------------------------------------------------------------------ *
+ * Is this origin actually serving the Voxels API?
+ *
+ * By default the client addresses its own page origin, which is right for
+ * every deployment that serves the game and the API together and right for the
+ * dev server, which proxies `/api`. It is wrong for a static host — Vercel,
+ * Netlify, GitHub Pages, `python -m http.server` — which answers `/api/rpc`
+ * with its own 404 page. @solana/web3.js turns a non-2xx into
+ * `new Error(`${status} ${statusText}: ${body}`)`, so the player was shown a
+ * chunk of somebody else's 404 page ("404 : The page could not be found
+ * NOT_FOUND arn1::…") with no hint that it was a deployment problem.
+ *
+ * So the API is identified before it is trusted: `/api/health` must answer
+ * with JSON carrying this server's own `cluster` and `chainId`. Anything else
+ * is a misconfiguration, and it is reported as one, naming the URL that was
+ * tried.
+ * ------------------------------------------------------------------ */
+
+export type ApiProbe =
+  | { ok: true; cluster: string; chainId: string }
+  | { ok: false; kind: 'unreachable' | 'not_the_api'; detail: string }
+
+/** First line of a foreign error page, for the report. Never more than this. */
+const snippet = (text: string) =>
+  text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120)
+
+/**
+ * Which URLs the probe is talking about.
+ *
+ * Defaulted from the module constants, which is what the app uses, and passed
+ * explicitly by `scripts/test-client-config.ts` so several deployment shapes
+ * can be exercised in one process.
+ */
+export type ApiTarget = { base: string; origin: string; sameOrigin: boolean; rpcUrl: string }
+
+const defaultTarget = (): ApiTarget => ({
+  base: API_BASE_URL,
+  origin: API_ORIGIN,
+  sameOrigin: API_IS_SAME_ORIGIN,
+  rpcUrl: RPC_PROXY_URL,
+})
+
+function misconfigured(target: ApiTarget, what: string): { ok: false; kind: 'not_the_api'; detail: string } {
+  const where = target.sameOrigin
+    ? `This page was served from ${target.origin}, and with no VITE_API_BASE_URL set the client asks that same origin for the API. It is serving the game files but not the API.`
+    : `VITE_API_BASE_URL points the client at ${target.origin}, and nothing there is answering as the Voxels API.`
+  return {
+    ok: false,
+    kind: 'not_the_api',
+    detail:
+      `Tried ${target.rpcUrl} and ${target.origin}/api/health. ${what} ${where} ` +
+      'This is a configuration problem, not a wallet problem: either run the API on this origin (`npm run server`, which the dev server proxies to), or rebuild with VITE_API_BASE_URL set to wherever the API is deployed.',
+  }
+}
+
+export async function probeApi(target: ApiTarget = defaultTarget()): Promise<ApiProbe> {
+  let response: Response
+  try {
+    response = await fetch(`${target.base}/api/health`, { headers: { Accept: 'application/json' } })
+  } catch (error) {
+    return {
+      ok: false,
+      kind: 'unreachable',
+      detail: `Tried ${target.origin}/api/health and the request did not complete (${error instanceof Error ? error.message : String(error)}). Is the API running, and does CORS allow this page?`,
+    }
+  }
+
+  const text = await response.text()
+  if (!response.ok) {
+    return misconfigured(target, `It answered ${response.status}${text ? ` ("${snippet(text)}")` : ''} instead of the Voxels health record.`)
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    return misconfigured(target, `It answered 200 with something that is not JSON ("${snippet(text)}").`)
+  }
+
+  const body = (parsed ?? {}) as Partial<Health>
+  if (typeof body.cluster !== 'string' || typeof body.chainId !== 'string') {
+    return misconfigured(target, 'It answered with JSON that is not a Voxels health record.')
+  }
+  return { ok: true, cluster: body.cluster, chainId: body.chainId }
+}
 
 export const fetchPayoutStatus = () =>
   call<{ enabled: false; status: string; reason: string }>('/api/payouts/status')

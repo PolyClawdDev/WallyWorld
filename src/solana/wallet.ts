@@ -23,6 +23,7 @@ import {
   fetchProfile,
   loadSession,
   logout,
+  probeApi,
   requestChallenge,
   saveProfile as putProfile,
   saveSession,
@@ -46,6 +47,12 @@ export type WalletState = {
   clusterCheck: ClusterCheck | null
   /** Set when the RPC itself is misconfigured, e.g. mainnet without a provider URL. */
   configError: string | null
+  /**
+   * Set when the origin the client addresses is not serving the Voxels API at
+   * all. Distinct from `configError`, which is about the RPC settings: this one
+   * means the request never reached this project.
+   */
+  apiError: string | null
   /** Present only after a verified wallet signature. */
   session: { wallet: string; token: string } | null
   signingIn: boolean
@@ -65,6 +72,7 @@ const initial: WalletState = {
   balanceError: null,
   clusterCheck: null,
   configError: RPC.ok ? null : RPC.problem,
+  apiError: null,
   session: null,
   signingIn: false,
   profile: null,
@@ -174,8 +182,18 @@ export async function initWallet(): Promise<void> {
   if (initialised) return
   initialised = true
 
+  // Identify the API before any chain read is attempted. A page served from a
+  // static host answers `/api/rpc` with its own 404 page, and web3.js would
+  // surface that as a bare `404 : …` that reads like a wallet fault. Naming the
+  // URL that was tried is the difference between a dead end and a fix.
   if (RPC.ok) {
-    void verifyCluster().then(clusterCheck => set({ clusterCheck }))
+    void probeApi().then(probe => {
+      if (!probe.ok) {
+        set({ apiError: probe.detail })
+        return
+      }
+      void verifyCluster().then(clusterCheck => set({ clusterCheck }))
+    })
   }
 
   const found = await waitForPhantom()

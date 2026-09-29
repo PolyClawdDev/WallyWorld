@@ -249,3 +249,27 @@
   cursor: not-allowed;
 }
 .sol-disabled-block .primary:disabled:hover { transform: none; background: #2a3340; }
+
+/* ------------------------------------------------------------------ *
+ * The browser-held wallet.
+ *
+ * The secret field is a real textarea rather than styled text so the
+ * player can select it with the keyboard when the clipboard is blocked.
+ * It wraps, because a 88-character base58 key running off the edge of a
+ * panel is how a key gets half-copied.
+ * ------------------------------------------------------------------ */
+.emb-export { border-color: #d5a64b88; }
+.emb-format .primary, .emb-format .ghost { flex: 1 1 0; }
+.emb-secret {
+  width: 100%;
+  box-sizing: border-box;
+  resize: vertical;
+  padding: 9px;
+  background: #0f1820;
+  border: 1px solid #d5a64b55;
+  color: #e5ddc8;
+  font: 11px/1.5 "DM Mono", monospace;
+  word-break: break-all;
+}
+.emb-secret:focus { outline: none; border-color: #d5a64b; }
+.emb-secret::placeholder { color: #5d6b6c; }

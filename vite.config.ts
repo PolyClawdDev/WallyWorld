@@ -32,11 +32,12 @@ export default defineConfig({
   // to discover them lazily, the dev server re-optimises and forces a full page
   // reload at that moment, throwing away wherever the player was standing.
   // Naming them here gets it over with at startup.
-  // `@noble/curves/ed25519` is deliberately not listed: the root install is
-  // v2, which no longer exports that specifier, so naming it here stops the
-  // dev server booting at all. The copy actually used is the v1 one nested
-  // under @solana/web3.js, and Vite picks that up while optimising web3.js.
+  // `@noble/curves/ed25519` (no extension) is deliberately not listed: the
+  // root install is v2, whose export map only has `./ed25519.js`, so naming
+  // the extensionless specifier stops the dev server booting at all. The
+  // explicit `.js` form below is the one v2 publishes, and the embedded
+  // wallet signs with it.
   optimizeDeps: {
-    include: ['buffer', '@solana/web3.js', '@solana/spl-token', 'bs58'],
+    include: ['buffer', '@solana/web3.js', '@solana/spl-token', 'bs58', '@noble/curves/ed25519.js'],
   },
 })

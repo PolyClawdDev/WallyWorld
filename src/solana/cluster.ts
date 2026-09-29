@@ -37,34 +37,58 @@ export const IS_MAINNET = CLUSTER === 'mainnet-beta'
 /**
  * Where the browser talks to this world's API.
  *
- * A baked `VITE_API_BASE_URL=http://127.0.0.1:8787` is the default in local
- * `.env` files. That is correct only when the page itself was loaded from
- * loopback. If a friend opens `http://192.168.x.x:5173`, sending them to
- * *their* 127.0.0.1 is a different computer — they never join this world.
+ * Two rules, in this order:
  *
- * In the browser we therefore use the page origin (Vite proxies `/api` and
- * `/ws` to the API on this machine) whenever the configured URL is loopback
- * and the page is not. An explicit non-loopback `VITE_API_BASE_URL` still
- * wins, for a real deploy. The QuickNode URL never belongs here.
+ *   1. An explicit *non-loopback* `VITE_API_BASE_URL` wins. That is a real
+ *      deployment naming its own API, and it is the only way this client will
+ *      ever address a host other than the one the page came from.
+ *   2. Otherwise the client uses the page origin, expressed as the empty
+ *      prefix, so every request is a same-origin relative `/api/...`. In dev
+ *      the Vite server proxies `/api` and `/ws` to the API on this machine.
+ *
+ * A baked `VITE_API_BASE_URL=http://127.0.0.1:8787` — the default in local
+ * `.env` files — is therefore ignored in the browser. It is correct only on the
+ * machine that built it: a friend who opens `http://192.168.x.x:5173` would be
+ * sent to *their* loopback, which is a different computer, and the proxy makes
+ * the absolute URL unnecessary even on this one.
+ *
+ * What this cannot do is know whether the page origin actually serves an API.
+ * A static host answers `/api/rpc` with its own 404 page, and @solana/web3.js
+ * quotes that page back verbatim as `404 : …`. `probeApi()` in `api.ts` is what
+ * turns that into a named configuration error instead of a bare 404.
  */
 function resolveApiBaseUrl(): string {
   const configured = (viteEnv.VITE_API_BASE_URL ?? '').trim().replace(/\/+$/, '')
   if (typeof window !== 'undefined' && window.location?.hostname) {
     if (configured) {
       try {
-        const apiHost = new URL(configured).hostname
-        const pageHost = window.location.hostname
-        if (!(isLoopbackHostname(apiHost) && !isLoopbackHostname(pageHost))) return configured
+        if (!isLoopbackHostname(new URL(configured).hostname)) return configured
       } catch {
         /* ignore an unparseable override and fall through to the page origin */
       }
     }
-    return window.location.origin.replace(/\/+$/, '')
+    return ''
   }
   return configured || 'http://127.0.0.1:8787'
 }
 
+/**
+ * Prefix for every API request. Empty means "same origin as this page", which
+ * is the default, so `${API_BASE_URL}/api/gold` is a relative `/api/gold`.
+ */
 export const API_BASE_URL = resolveApiBaseUrl()
+
+/**
+ * The same base, always absolute, for the two things that cannot take a
+ * relative URL: `@solana/web3.js`'s `Connection`, which parses its endpoint,
+ * and error text, which has to name the host the player's browser actually
+ * tried.
+ */
+export const API_ORIGIN: string =
+  API_BASE_URL || (typeof window !== 'undefined' ? window.location.origin.replace(/\/+$/, '') : 'http://127.0.0.1:8787')
+
+/** True when the API is assumed to live on the page's own origin. */
+export const API_IS_SAME_ORIGIN = API_BASE_URL === ''
 
 export function wsBaseUrl(apiBase = API_BASE_URL): string {
   if (apiBase.startsWith('https:')) return apiBase.replace(/^https/, 'wss')
@@ -77,7 +101,7 @@ export function wsBaseUrl(apiBase = API_BASE_URL): string {
 }
 
 /** The backend's JSON-RPC proxy. Holds no credential, so it is safe in the bundle. */
-export const RPC_PROXY_URL = `${API_BASE_URL}/api/rpc`
+export const RPC_PROXY_URL = `${API_ORIGIN}/api/rpc`
 
 const RPC_OVERRIDE = (viteEnv.VITE_SOLANA_RPC_URL ?? '').trim()
 
@@ -198,7 +222,9 @@ export function fundsLabel(walletConnected: boolean): FundsLabel {
   return {
     mode,
     short: 'DEMO · NO REAL FUNDS',
-    long: `No wallet connected, and the app is pointed at ${CLUSTER}. Nothing in this session can send or receive value.`,
+    // Specifically "Phantom", not "no wallet": every player now has a real
+    // browser-held keypair, so claiming there is no wallet would be false.
+    long: `Phantom is not connected, and the app is pointed at ${CLUSTER}. Nothing in this session can send or receive value.`,
   }
 }
 

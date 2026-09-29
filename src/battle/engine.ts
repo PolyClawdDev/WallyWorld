@@ -577,9 +577,20 @@ export function createBattle(deps: BattleDeps) {
       // and it sweeps the step so a thin wall cannot be jumped over.
       const hitWall = !p.ghost && !nav.lineOfSight(fromX, fromZ, p.position.x, p.position.z, 0.15, SHOT_CLEARANCE)
       const spent = p.travelled >= p.maxDistance || (p.ghost && p.position.y <= 0.4)
-      const home = p.returning && p.returnTo && p.position.distanceTo(p.returnTo.position) < 1.2
+      // Caught, measured on the ground plane. A returning shot keeps the height
+      // it was born at — the muzzle, better than two metres up — while
+      // `returnTo.position` is the catcher's feet, so a straight distance can
+      // never fall under this threshold and the glaive would hover on its owner
+      // for the rest of the session. The return steering is planar for the same
+      // reason, so the plane is the honest place to ask whether it arrived.
+      const home =
+        p.returning &&
+        p.returnTo &&
+        Math.hypot(p.position.x - p.returnTo.position.x, p.position.z - p.returnTo.position.z) < 1.2
 
-      if (consumed || hitWall || home || (spent && !p.returnTo)) {
+      // A spent return leg expires too. Without it a shot whose owner blinked
+      // out of reach mid-flight has no ending left to reach.
+      if (consumed || hitWall || home || (spent && (p.returning || !p.returnTo))) {
         p.onEnd(p.position.clone(), consumed)
         p.bolt.end()
         projectiles.splice(i, 1)
@@ -682,15 +693,20 @@ export function createBattle(deps: BattleDeps) {
     }
   }
 
+  /** Sentinels are built from their own meshes, so they free their own materials. */
+  function retireSentinel(sentinel: Sentinel) {
+    scene.remove(sentinel.group)
+    sentinel.group.traverse(node => {
+      const mesh = node as THREE.Mesh
+      if (mesh.isMesh) (mesh.material as THREE.Material).dispose?.()
+    })
+  }
+
   function stepSentinels(dt: number, now: number) {
     for (let i = sentinels.length - 1; i >= 0; i--) {
       const sentinel = sentinels[i]
       if (now >= sentinel.until) {
-        scene.remove(sentinel.group)
-        sentinel.group.traverse(node => {
-          const mesh = node as THREE.Mesh
-          if (mesh.isMesh) (mesh.material as THREE.Material).dispose?.()
-        })
+        retireSentinel(sentinel)
         sentinels.splice(i, 1)
         continue
       }
@@ -1394,6 +1410,36 @@ export function createBattle(deps: BattleDeps) {
     pingBattle()
   }
 
+  /**
+   * Every visual and timer the player owns, ended in one place.
+   *
+   * Each of these used to be retired only where it succeeded or expired, so any
+   * path that skipped that moment — dying mid-cast above all — left the visual
+   * parented to the world with nothing left that could ever remove it. Death
+   * and teardown both come through here so neither can drift from the other.
+   */
+  function clearTransientEffects() {
+    projectiles.forEach(projectile => projectile.bolt.end())
+    projectiles.length = 0
+    zones.forEach(zone => zone.handle.end())
+    zones.length = 0
+    sentinels.forEach(retireSentinel)
+    sentinels.length = 0
+    // Delayed jobs carry damage as well as visuals: a telegraph that lands
+    // after its caster died would hit for a player who is no longer there.
+    pending.length = 0
+    burns.forEach(burn => burn.flag?.end())
+    burns.clear()
+    marks.forEach(mark => mark.flag?.end())
+    marks.clear()
+    rooted.forEach(flag => flag.end())
+    rooted.clear()
+    anchor?.flag.end()
+    anchor = null
+    channel?.beam.end()
+    channel = null
+  }
+
   function stopEverything(now: number) {
     clearOrder()
     stopBasicAttack()
@@ -1886,12 +1932,17 @@ export function createBattle(deps: BattleDeps) {
         if (ground) issueAttackMove(ground)
         return
       }
-      // An enemy under the cursor is selected, open ground is a walk order.
-      // Clicking still never starts a fight on its own: that needs the right
-      // button or attack-move.
-      selected = alive(hover) ? hover : null
-      if (selected) playSound('select')
-      else if (ground) issueMove(ground)
+      /* A living animal under the cursor is attacked, open ground is a walk
+       * order. Both buttons run the *same* `issueAttack`, so approach, range,
+       * facing, cooldowns, aggro, loot and XP cannot drift apart depending on
+       * which one started the fight. Attacking also selects, so the HUD plate
+       * behaves as it did when the left button only selected. */
+      if (alive(hover)) {
+        issueAttack(hover)
+        return
+      }
+      selected = null
+      if (ground) issueMove(ground)
       pingBattle()
     },
 
@@ -1959,11 +2010,15 @@ export function createBattle(deps: BattleDeps) {
       if (channel) endChannel()
     },
     onPlayerDied() {
-      stopEverything(performance.now())
-      burns.forEach(burn => burn.flag?.end())
-      burns.clear()
-      marks.forEach(mark => mark.flag?.end())
-      marks.clear()
+      const now = performance.now()
+      stopEverything(now)
+      // A cast committed a moment before the killing blow still has its release
+      // pending; dropping it here is what stops the spell — and its visual —
+      // from arriving after the caster is already on the respawn screen.
+      cast = null
+      actionLockUntil = now
+      rig.stop()
+      clearTransientEffects()
     },
     onRespawn() {
       resource = maxResourceAt(kit, progress.level)
@@ -2000,23 +2055,8 @@ export function createBattle(deps: BattleDeps) {
     },
 
     dispose() {
-      projectiles.forEach(projectile => projectile.bolt.end())
-      projectiles.length = 0
-      zones.forEach(zone => zone.handle.end())
-      zones.length = 0
-      sentinels.forEach(sentinel => scene.remove(sentinel.group))
-      sentinels.length = 0
-      pending.length = 0
-      burns.forEach(burn => burn.flag?.end())
-      burns.clear()
-      marks.forEach(mark => mark.flag?.end())
-      marks.clear()
-      rooted.forEach(flag => flag.end())
-      rooted.clear()
-      anchor?.flag.end()
-      anchor = null
-      channel?.beam.end()
-      channel = null
+      clearTransientEffects()
+      cast = null
       orderMarker?.end()
       reticle.end()
       preview.end()
