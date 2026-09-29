@@ -1,21 +1,21 @@
 # ------------------------------------------------------------------
 # Voxels — Render Blueprint.
 #
-# NOT DEPLOYED. Nothing in this repository has ever run on Render: there
-# is no Render account, no API key and no provisioned resource. This file
-# is a complete, reviewable description of what to create, so that
-# deploying is one `render.yaml` sync plus the secrets listed at the
-# bottom of this comment — and so the cost is visible before anyone
-# agrees to it rather than after.
+# Being deployed for the first time. A Render account and a Blueprint now
+# exist; this file is what they read. Cross-network play has still not been
+# observed by anyone, so until two people on two different networks have
+# actually met in the town, "it deploys" and "it works" are different
+# claims — docs/going-public.md has the checks that tell them apart.
 #
 # RENDER IS A CHOICE, NOT A REQUIREMENT
-# The application needs four things: a long-lived Node process that can
-# hold WebSocket connections, a managed Postgres, a worker process, and
-# somewhere to serve static files. Fly.io, Railway, Hetzner with Docker
-# Compose, or a plain VPS all provide those. Everything Render-specific
-# here lives in this file and in a handful of environment variables; the
-# application code reads `PORT`, `DATABASE_URL` and `X-Forwarded-*`,
-# which is the same contract every one of those platforms offers.
+# The application needs three things: a long-lived Node process that can
+# hold WebSocket connections, durable storage for its two SQLite files,
+# and somewhere to serve static files. Fly.io, Railway, Hetzner with
+# Docker Compose, or a plain VPS all provide those. Everything
+# Render-specific here lives in this file and in a handful of environment
+# variables; the application code reads `PORT`, `DATABASE_URL` and
+# `X-Forwarded-*`, which is the same contract every one of those
+# platforms offers.
 #
 # THIS IS A MAINNET DEPLOYMENT
 # SOLANA_CLUSTER and VITE_SOLANA_CLUSTER are both mainnet-beta, chosen
@@ -112,10 +112,14 @@ services:
     # /api/live answers from the process alone, while /api/ready reports
     # the database and is what a human or an uptime monitor should watch.
     healthCheckPath: /api/live
-    # Long enough to tell every connected player the world is restarting,
-    # void open duels, return both stakes, and close the pool. Render's
-    # default is 30s; the app's own drain budget is WALLY_SHUTDOWN_GRACE_MS.
-    maxShutdownDelaySeconds: 60
+    # NO maxShutdownDelaySeconds HERE. Render rejects the whole Blueprint with
+    # "max shutdown delay is not supported for services with a disk", and the
+    # disk below is what makes the data durable, so the disk wins.
+    #
+    # The drain still completes: Render's default grace is 30s and the app's own
+    # budget is WALLY_SHUTDOWN_GRACE_MS=25000, which fits inside it with room to
+    # spare. Keep that value under 30000 or a restart will be killed mid-drain,
+    # which is how a duel ends with both stakes still held in escrow.
     envVars:
       - key: NODE_ENV
         value: production
