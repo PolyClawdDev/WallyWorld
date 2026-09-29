@@ -1,8 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isWorldReady, npcAtScreen } from './worldBridge'
-import { embeddedWallet, subscribeEmbeddedWallet } from './solana/embeddedWallet'
-import { fetchSolLamports } from './solana/rpc'
 
 /* ------------------------------------------------------------------ *
  * The pouch. Nothing here custodies, sends, or receives value, and no
@@ -54,19 +52,11 @@ const coinArt = disc(
   litFace('h', 'g', 's'),
 )
 
-/* Demo SOL coin: three slanted bars, drawn here, not imported from anywhere. */
-const solArt = disc(
-  { o: '#161a2e', d: '#474d76', h: '#636aa0', s: '#2f3358', c: '#8ff0f5', p: '#c3aff0' },
-  (dx, dy) => {
-    for (const band of [{ centre: -3, key: 'c' }, { centre: 0, key: 'p' }, { centre: 3, key: 'c' }]) {
-      const local = dy - band.centre
-      if (Math.abs(local) > 1) continue
-      if (Math.abs(dx - (local < 0 ? -1 : 1)) <= 3.4) return band.key
-    }
-    return null
-  },
-  litFace('h', 'd', 's'),
-)
+/*
+ * The SOL coin art was here. It was drawn for a fake "Demo SOL Coin" pouch
+ * item, which is gone, and the real balance is now a figure beside the address
+ * in the wallet block rather than a coin in the inventory.
+ */
 
 /*
  * The Wally and Ember shard art lived here. Both were invented tokens with no
@@ -91,9 +81,6 @@ type ItemDef = {
 const items: Record<ItemId, ItemDef> = {
   gold: { id: 'gold', name: 'Town Gold', symbol: 'GOLD', decimals: 0, art: coinArt, note: 'Earned by hunting · held by the server' },
 }
-
-/** Lamports per SOL. Display divisor only; the balance stays an integer. */
-const LAMPORTS_PER_SOL = 1_000_000_000n
 
 const SLOT_COUNT = 20
 const STORE_KEY = 'wally-pouch-v1'
@@ -218,42 +205,12 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
   )
 
   /*
-   * The real balance of the wallet in this browser, read through the RPC proxy.
-   * A fresh wallet reads 0 and goes up when someone deposits to that address,
-   * which is the whole point: the address is a genuine mainnet address.
-   *
-   * Read-only by construction. There is no transaction signer in this app, so
-   * nothing here can move the balance; the only way it leaves is the player
-   * importing the key into a wallet of their own.
-   *
-   * `null` is "not known", not zero. An unreachable RPC and an empty wallet are
-   * different facts, and rendering the first as 0 would be telling the player
-   * something false about their own money.
+   * The real SOL balance was shown here, next to the gold, and it was the wrong
+   * place for it. The pouch is game inventory, so a chain balance sitting in it
+   * reads as something the game can stake or spend — and it cannot: there is no
+   * transaction signer in this app at all. It now sits beside the address in
+   * the wallet block below, where it is plainly the player's own money.
    */
-  const [solLamports, setSolLamports] = useState<bigint | null>(null)
-  const [solAddress, setSolAddress] = useState<string | null>(() => embeddedWallet()?.address ?? null)
-
-  useEffect(() => subscribeEmbeddedWallet(() => setSolAddress(embeddedWallet()?.address ?? null)), [])
-
-  useEffect(() => {
-    if (!solAddress) { setSolLamports(null); return }
-    let cancelled = false
-    const read = async () => {
-      try {
-        const lamports = await fetchSolLamports(solAddress)
-        if (!cancelled) setSolLamports(lamports)
-      } catch {
-        // Swallowed on purpose: a failed read must not clear a balance we
-        // already showed, and it must not be reported as zero either.
-        if (!cancelled) setSolLamports(current => current)
-      }
-    }
-    void read()
-    // Polled because a deposit happens outside this app entirely. There is no
-    // event here to subscribe to.
-    const timer = window.setInterval(() => { void read() }, 20_000)
-    return () => { cancelled = true; window.clearInterval(timer) }
-  }, [solAddress])
 
   const setDragState = (next: DragState | null) => { dragRef.current = next; setDrag(next) }
 
@@ -411,11 +368,6 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
         <PixelIcon art={items.gold.art} />
         <div><strong>{formatUnits(goldHeld, items.gold.decimals)}</strong><small>GOLD</small></div>
         <em>EARNED</em>
-      </div>
-      <div className="pouch-bal">
-        <PixelIcon art={solArt} />
-        <div><strong>{solLamports === null ? '—' : formatUnits(solLamports, 9)}</strong><small>SOL</small></div>
-        <em>{solLamports === null ? (solAddress ? 'READING' : 'NO WALLET') : 'ON CHAIN'}</em>
       </div>
     </div>
     <div className="pouch-grid" role="group" aria-label="Pouch inventory grid">

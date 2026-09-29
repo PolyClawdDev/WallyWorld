@@ -34,6 +34,8 @@ import {
   type ExportedSecret,
 } from './embeddedWallet'
 import { claimAccountWithEmbeddedWallet, embeddedClaimState, subscribeEmbeddedClaim } from './embeddedIdentity'
+import { fetchSolLamports } from './rpc'
+import { formatSol } from './units'
 
 /* ------------------------------------------------------------------ *
  * What this key is for, and the one clause that must never be softened:
@@ -193,6 +195,35 @@ export function EmbeddedWalletBlock() {
 
   const relink = useCallback(() => { void claimAccountWithEmbeddedWallet() }, [])
 
+  /*
+   * Read-only. `null` is "not known", never 0: an unreachable RPC and an empty
+   * wallet are different facts, and showing the first as the second would tell
+   * the player something false about their own money. Polled because a deposit
+   * is made from outside this app entirely, so there is no event to hear.
+   */
+  const [lamports, setLamports] = useState<bigint | null>(null)
+  const [reading, setReading] = useState(false)
+  const address = wallet?.address ?? null
+
+  useEffect(() => {
+    if (!address) { setLamports(null); return }
+    let cancelled = false
+    const read = async () => {
+      setReading(true)
+      try {
+        const next = await fetchSolLamports(address)
+        if (!cancelled) setLamports(next)
+      } catch {
+        // Leaves any balance already shown in place rather than blanking it.
+      } finally {
+        if (!cancelled) setReading(false)
+      }
+    }
+    void read()
+    const timer = window.setInterval(() => { void read() }, 20_000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [address])
+
   if (!wallet) return null
 
   return (
@@ -208,6 +239,23 @@ export function EmbeddedWalletBlock() {
           <code title={wallet.address}>{truncateAddress(wallet.address, 6, 6)}</code>
           <CopyButton value={wallet.address} label="Copy" />
           <a href={explorerAddress(wallet.address)} target="_blank" rel="noopener noreferrer">↗</a>
+        </div>
+      </div>
+
+      {/*
+        * This readout used to sit in the pouch, beside the gold, and that was a
+        * mistake: the pouch is game inventory, so a real chain balance in it
+        * read as something the game could spend. It cannot. This is the
+        * player's own wallet and there is no transaction signer in this app.
+        * Next to the address it states what it is.
+        */}
+      <div className="sol-row">
+        <span>Balance</span>
+        <div>
+          <code>{lamports === null ? '—' : `${formatSol(lamports)} SOL`}</code>
+          <small>{lamports === null
+            ? (reading ? 'reading…' : 'could not read the chain')
+            : 'yours, not the game\u2019s'}</small>
         </div>
       </div>
 
