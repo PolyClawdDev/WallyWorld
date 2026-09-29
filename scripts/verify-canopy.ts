@@ -18,7 +18,9 @@
  *   5. CAMERA      — the same question for the third-person orbit, swept over
  *                    yaw, zoom and pitch, before and after the canopy pull-in.
  *   6. ROUTES      — can you still walk from the plaza to every region and
- *                    every duel ring, and how much longer is the trip?
+ *                    every duel ring, and how much longer is the trip? And is
+ *                    each ring clear ground: nothing solid in it or its run-up,
+ *                    no crown over it?
  *   7. RESOURCES   — every geometry, material and texture created against how
  *                    many dispose() frees.
  *
@@ -293,6 +295,33 @@ for (const [label, x, z] of destinations) {
   console.log(`${label.padEnd(16)} ${walked.toFixed(1).padStart(6)}m over ${direct.toFixed(1).padStart(6)}m direct  (+${((walked / direct - 1) * 100).toFixed(1)}%)`)
 }
 
+/* --------------------- 6b. the duel rings are empty --------------------- *
+ * Routable is not the same as fightable. North Copse had a clear route to its
+ * centre while six boles stood in the ring, the nearest 3.9m from the middle,
+ * because the ring keep-out only applied to trees planted outside the hunting
+ * regions and that ring sits inside one. Two distances, two questions: nothing
+ * SOLID may reach into the ring or its run-up, and no CROWN may reach over the
+ * ring, since that is what the lens and the aim look through.
+ * ----------------------------------------------------------------------- */
+const RING_RUN_UP = 6
+console.log()
+console.log('=== 6b. duel rings ===')
+let ringIntrusions = 0
+for (const ring of DUEL_RINGS) {
+  const reach = (x: number, z: number, radius: number) => ring.radius - (Math.hypot(x - ring.x, z - ring.z) - radius)
+  const solid = (root.userData.obstacles as Array<{ x: number; z: number; r: number }>)
+    .map(o => reach(o.x, o.z, o.r) + RING_RUN_UP)
+    .filter(into => into > 0)
+  const leaf = canopy.crowns.map(c => reach(c.x, c.z, c.crownRadius)).filter(into => into > 0)
+  ringIntrusions += solid.length + leaf.length
+  const worst = (list: number[]) => (list.length ? `${Math.max(...list).toFixed(2)}m in` : '—')
+  console.log(
+    `${ring.id.padEnd(14)} solid in ring+${RING_RUN_UP}m ${String(solid.length).padStart(3)} (${worst(solid)})` +
+      `   crowns over ring ${String(leaf.length).padStart(3)} (${worst(leaf)})`,
+  )
+}
+console.log(ringIntrusions === 0 ? 'ok: every duel ring is clear ground under open sky.' : 'FAIL: something stands in a duel ring.')
+
 /* ---------------------------- 7. resources ------------------------------ */
 const geometries = new Set<THREE.BufferGeometry>()
 const materials = new Set<THREE.Material>()
@@ -318,7 +347,9 @@ for (const [label, all] of [['geometries', geometries], ['materials', materials]
   console.log(`${label.padEnd(12)} created ${String(all.size).padStart(4)}   freed ${String(freed).padStart(4)}   LEAKED ${all.size - freed}`)
 }
 
-const failed = violations > 0 || insideAfter > 0 || firstPerson > 0
+const failed = violations > 0 || insideAfter > 0 || firstPerson > 0 || ringIntrusions > 0
 console.log()
-console.log(failed ? 'FAIL: something can stand inside a tree.' : 'ok: nothing the player or camera can reach is inside a tree.')
+console.log(failed
+  ? 'FAIL: something can stand inside a tree, or stands in a duel ring.'
+  : 'ok: nothing the player or camera can reach is inside a tree, and the duel rings are clear.')
 process.exit(failed ? 1 : 0)

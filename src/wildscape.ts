@@ -318,6 +318,36 @@ const GROVE_AREA = 420
  */
 const TRUNK_FLOOR = 5
 
+/**
+ * Widest the random squash in `plantAt` can make a tree, as a multiplier.
+ *
+ * The roll is 0.92 to 1.08 and it is applied as x*squash, z/squash, so the
+ * widest either axis gets is 1/0.92. Used where a keep-out has to hold for the
+ * tree that is about to be planted, before its squash has been rolled.
+ */
+const MAX_SQUASH = 1 / 0.92
+
+/**
+ * Metres outside a duel ring kept free of anything solid.
+ *
+ * A duel is not fought standing still on the mark: both players circle, retreat
+ * and get knocked back, and the ring edge is not a wall. Six metres is the
+ * run-up the ring's own navigation allowance already assumed.
+ */
+const RING_RUN_UP = 6
+
+/**
+ * Is something solid of this radius clear of every duel ring and its run-up?
+ *
+ * Trees are not the only thing scattered across the same ground: boulders come
+ * out of the same region loop and never pass through `plantAt`, and a knee-high
+ * rock on the rim of a ring is something to trip over in a fight where neither
+ * player chose the footing.
+ */
+function clearOfRings(x: number, z: number, radius: number) {
+  return !DUEL_RINGS.some(ring => Math.hypot(x - ring.x, z - ring.z) - radius < ring.radius + RING_RUN_UP)
+}
+
 export function createWildscape() {
   const root = new THREE.Group()
   root.name = 'wildscape'
@@ -381,6 +411,24 @@ export function createWildscape() {
     const floor = clearing <= high ? Math.max(low, clearing) : low
     const scale = floor + rng() * (high - floor)
     const radius = metrics.canopyRadius * scale
+    /* Duel rings keep their own clearance, and this is the only place that can
+     * enforce it: the ring test used to live solely in the predicate for trees
+     * planted OUTSIDE the hunting regions, and North Copse sits inside one — so
+     * it had six boles standing in the ring, the nearest 3.9m from the centre,
+     * two of them thickets whose leaves reach the ground. That is the "trees in
+     * the pvp area" complaint exactly.
+     *
+     * The two halves ask different questions and get different distances. What
+     * is SOLID has to stay out of the ring AND its run-up, because that is what
+     * a duellist walks into. A CROWN only has to stay off the ring itself: it
+     * begins at TRUNK_CORRIDOR overhead, so it is not in anybody's way at eye
+     * height, but it is what the third-person lens and the aim look through.
+     * A tree may therefore still stand just outside with its branches stopping
+     * at the rim, which is why the copse still reads as a copse. */
+    const bole = metrics.solidRadiusBelow(TRUNK_CORRIDOR / scale) * scale * MAX_SQUASH + 0.2
+    if (!clearOfRings(x, z, bole)) return false
+    const crown = radius * MAX_SQUASH
+    if (DUEL_RINGS.some(ring => Math.hypot(x - ring.x, z - ring.z) - crown < ring.radius)) return false
     for (const other of crowns) {
       const gap = Math.max(TRUNK_FLOOR, (other.crownRadius + radius) * separation)
       if (Math.hypot(other.x - x, other.z - z) < gap) return false
@@ -466,6 +514,7 @@ export function createWildscape() {
     /* --- boulders ------------------------------------------------------ */
     for (const spot of scatter(region, Math.round(area / rule.rock), rng, 2)) {
       const size = 0.7 + spot.roll * 1.6
+      if (!clearOfRings(spot.x, spot.z, size * 0.6)) continue
       // Three stacked slabs, shrinking: a voxel boulder rather than a polyhedron.
       batch.box([size, size * 0.5, size * 0.9], [spot.x, size * 0.22, spot.z], STONE, { rotY: spot.roll * 3 })
       batch.box([size * 0.72, size * 0.42, size * 0.66], [spot.x + 0.1, size * 0.62, spot.z - 0.08], STONE_DARK, { rotY: spot.roll * 5 })
