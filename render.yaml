@@ -31,8 +31,10 @@
 #   - Gold still cannot be redeemed for tokens. That is blocked on a
 #     treasury signing key and a token mint, not on the cluster, so
 #     mainnet does not enable a payout.
-#   - NPC_PAYEE_ADDRESS must be an address you control. The value in the
-#     local .env is a throwaway devnet fixture. Empty keeps payments off.
+#   - NPC service payments are off on every deployment and NPC_PAYEE_ADDRESS
+#     no longer switches them on. There is nothing in the client that can
+#     sign a transfer, so /api/health reports paymentsEnabled: false
+#     whatever is set. Leaving the variable empty is the honest setting.
 #
 # WHAT COSTS MONEY (verified against render.com/pricing, current as of
 # this file's commit — re-check before committing spend):
@@ -178,11 +180,12 @@ services:
         value: 64
       - key: WALLY_SHUTDOWN_GRACE_MS
         value: 25000
-      # MAINNET. A payment approved in Phantom is real, irreversible SOL. The
-      # client shows a brass MAINNET chip and the demo labelling switches off.
-      # The browser-held key in localStorage signs identity only — there is no
-      # transaction signer for it — so it holds nothing unless a player funds
-      # that address themselves, and the panel says so.
+      # MAINNET. Each player's browser-held address is a real mainnet address,
+      # so SOL sent to it is real. The client shows a brass MAINNET chip and the
+      # demo labelling switches off. That key signs identity messages only —
+      # there is no transaction signer anywhere in the build — so the address
+      # holds nothing unless a player funds it themselves, and the panel says
+      # so, including that only they can move it back out.
       # SOLANA_RPC_URL_MAINNET_BETA below is required: the app refuses to boot
       # on mainnet against the rate-limited public endpoint.
       - key: SOLANA_CLUSTER
@@ -194,10 +197,10 @@ services:
         sync: false
       - key: SOLANA_RPC_URL_MAINNET_BETA
         sync: false
-      # Public key only. Payments stay off while it is empty, which is the
-      # right setting for launch. Do NOT paste the value from the local .env:
-      # that is a throwaway devnet fixture keypair, and this deployment is
-      # mainnet. A real payee address has to be one you control.
+      # Public key only, and it no longer switches anything on: payments are
+      # off on every deployment because no client can sign a transfer. Leave
+      # it empty. Do NOT paste the value from the local .env — that is a
+      # throwaway devnet fixture keypair and this deployment is mainnet.
       - key: NPC_PAYEE_ADDRESS
         sync: false
     # Durable storage for the two SQLite files. Without this, a container
@@ -222,8 +225,8 @@ services:
   # 60 seconds and sweeps expired sessions itself — see the interval timers and
   # the comment about `npm run worker` being a process an operator can forget
   # to start, in src/server/index.ts. Payment reconciliation is the job class
-  # that really wants a worker, and payments are off while NPC_PAYEE_ADDRESS
-  # is empty.
+  # that really wants a worker, and payments are off on every deployment
+  # because nothing in the client can sign a transfer.
   #
   # Restore the worker when src/server/store/ moves to Postgres. At that point
   # both services can reach one database and the 50ms world tick stops sharing
@@ -285,4 +288,3 @@ services:
 #     plan: 0.1c-256mb # $6/mo. `free` expires 30 days after creation.
 #     region: oregon
 #     ipAllowList: [] # Private network only.
-Q

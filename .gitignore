@@ -16,6 +16,11 @@ scripts/.fixtures/
 dist-mainnet/
 dist-dev
 
+# Per-task build output and before/after captures written by verification
+# passes. Regenerated on demand and not worth a diff.
+dist-wood/
+.baseline/
+
 # Screenshots written by the verification scripts on every run.
 screenshots/
 
