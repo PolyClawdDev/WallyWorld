@@ -13,8 +13,13 @@ import { serveDist } from './serve-dist.mjs'
  * Against its own static build, not the shared dev server: other agents are
  * editing this repo at the same time and every save they make pushes an HMR
  * reload that destroys the page in the middle of a run.
+ *
+ * Built with NODE_ENV=development and no --mode flag. `--mode development` on
+ * its own is not enough: vite build decides `import.meta.env.DEV` from
+ * NODE_ENV first, so a --mode build still ships a production bundle, and the
+ * window.__wally probe every check below reads is compiled out of it.
  */
-execFileSync('npx', ['vite', 'build', '--mode', 'development', '--outDir', 'dist-dev', '--logLevel', 'warn'], {
+execFileSync('npx', ['vite', 'build', '--outDir', 'dist-dev', '--logLevel', 'warn'], {
   stdio: 'inherit',
   env: { ...process.env, NODE_ENV: 'development' },
 })
@@ -38,14 +43,17 @@ const browser = await puppeteer.launch({
   executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   headless: 'new',
   protocolTimeout: 240000,
-  args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--no-sandbox'],
+  // Deliberately NO --use-angle=swiftshader: it renders this world at 3fps,
+  // which turns every wait below into a coin toss against its own timeout.
+  args: ['--no-sandbox', '--ignore-gpu-blocklist', '--enable-gpu-rasterization'],
 })
 
 /*
- * Software WebGL renders at a few frames a second, and the HUD snapshot is
- * only rewritten once per rendered frame. Anything that reads the snapshot
- * has to wait for a frame first; anything inside a loop reads the engine's
- * own live getters instead, or it will spin forever.
+ * The HUD snapshot is only rewritten once per rendered frame, and a headless
+ * tab can be throttled to a handful of frames a second whatever the GPU is
+ * doing. Anything that reads the snapshot has to wait for a frame first;
+ * anything inside a loop reads the engine's own live getters instead, or it
+ * will spin forever.
  */
 const settle = (page, frames = 3) =>
   page.evaluate(
@@ -109,7 +117,28 @@ async function shimBuffer(page) {
  * running here; its CORS refusals are noise for a combat run, not findings. */
 const unrelated = /favicon|Failed to load resource|api\/rpc|CORS policy|127\.0\.0\.1:8787|ERR_CONNECTION_REFUSED/i
 
-async function enterWorld(page, wizardIndex = 0, { fresh = true } = {}) {
+/*
+ * Press a button by its label, and throw if there is no such button.
+ *
+ * `clickText` returning false was the whole reason this harness stopped
+ * verifying anything: the landing button was renamed from "Enter the world" to
+ * "Enter world", the click silently found nothing, and the run died much later
+ * waiting for a world that had never been asked to load. A gate that cannot
+ * find its own front door has to say so at the door.
+ *
+ * Each press waits for its button rather than sleeping a fixed span, because
+ * the wayfinder sheet builds a three.js character preview before it paints.
+ */
+async function press(page, text) {
+  await page.waitForFunction(
+    t => [...document.querySelectorAll('button')].some(b => b.textContent.includes(t)),
+    { timeout: 60000 },
+    text,
+  )
+  if (!(await clickText(page, text))) throw new Error(`no button labelled "${text}"`)
+}
+
+async function enterWorld(page, wizardIndex = 0, { fresh = true, name = 'VERIFY' } = {}) {
   const errors = []
   await shimBuffer(page)
   page.on('pageerror', e => { if (!unrelated.test(String(e))) errors.push(String(e)) })
@@ -121,16 +150,27 @@ async function enterWorld(page, wizardIndex = 0, { fresh = true } = {}) {
     await page.evaluate(() => localStorage.removeItem('wally.progression.v1'))
     await page.reload({ waitUntil: 'networkidle0' })
   }
-  await clickText(page, 'Enter the world')
-  await sleep(200)
+  await press(page, 'Enter world')
+  await page.waitForSelector('#wayfinder-name', { timeout: 60000 })
   for (let i = 0; i < wizardIndex; i++) {
     await page.evaluate(() => document.querySelector('[aria-label="Next character"]').click())
     await sleep(60)
   }
-  await clickText(page, 'Continue with')
-  await sleep(250)
-  await clickText(page, 'Enter Voxels')
-  await page.waitForFunction('!!window.__wally && window.__wally.wildlife.animals.length > 0', { timeout: 30000 })
+  /*
+   * Naming the wayfinder is part of entry now. The box is a controlled React
+   * input, so assigning `.value` paints a character and leaves the component's
+   * state empty; going through the prototype setter React patched, then posting
+   * the input event its onChange listens for, is what actually names anybody.
+   */
+  await page.evaluate(chosen => {
+    const input = document.querySelector('#wayfinder-name')
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    setter.call(input, chosen)
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  }, name)
+  await press(page, 'Continue with')
+  await press(page, 'Enter Voxels')
+  await page.waitForFunction('!!window.__wally && window.__wally.wildlife.animals.length > 0', { timeout: 120000 })
   await page.waitForSelector('.cbt-bar', { timeout: 15000 })
   await sleep(900)
   return errors
@@ -148,30 +188,65 @@ const screenOf = (page, x, z, y = 0.9) =>
 const put = (page, x, z) => page.evaluate(([px, pz]) => window.__wally.player.position.set(px, 0, pz), [x, z])
 
 /**
- * Move the player next to a live animal of the given species. The camera eases
- * toward its new position over several frames, and at software-WebGL frame
- * rates that is most of a second, so wait for it before anyone projects a
- * world point onto the screen.
+ * Move the player next to a live animal of the given species, standing
+ * somewhere with a clear shot at it.
+ *
+ * The clear shot is the whole point. This used to drop the character `gap`
+ * metres due east of the first animal of that species and leave it there,
+ * which was fine when the harness was written and is not now that the wood has
+ * thickened: a quarter of those spots have a trunk in the line, and a bolt
+ * dies against a trunk by design — `canSee` in the engine refuses the shot
+ * with the same 1.6m clearance used here. A ranged character would then stand
+ * there declining to fire through a tree while this file reported a broken
+ * basic attack. Melee never noticed, because it walks up to what it is
+ * hitting, and there was only ever one animal, so the failure arrived as MOTH
+ * passing and the other three failing against the same blocked reindeer.
+ *
+ * So: ring the animal, take the first standing position that can see it, and
+ * try the next animal rather than testing the scenery.
  */
 async function standBy(page, species, gap = 6) {
   const found = await page.evaluate(([id, g]) => {
     const w = window.__wally
-    const animal = w.wildlife.animals.find(a => a.species.id === id && a.state !== 'dead')
-    if (!animal) return null
-    const p = animal.group.position
-    // Somewhere open, so the character is not shoved out from under the cursor.
-    const spot = w.nav.nearestOpen(p.x + g, p.z) ?? { x: p.x + g, z: p.z }
-    w.player.position.set(spot.x, 0, spot.z)
-    w.battle.pressStop()
-    return { index: w.wildlife.animals.indexOf(animal), x: p.x, z: p.z, hp: animal.hp, max: animal.species.maxHp }
+    for (const animal of w.wildlife.animals) {
+      if (animal.species.id !== id || animal.state === 'dead') continue
+      const p = animal.group.position
+      let spot = null
+      for (const range of [g, g * 0.8, g * 0.6]) {
+        for (let a = 0; a < 16 && !spot; a++) {
+          const angle = (a / 16) * Math.PI * 2
+          const c = { x: p.x + Math.cos(angle) * range, z: p.z + Math.sin(angle) * range }
+          // Open ground, so the character is not shoved out from under the
+          // cursor, and a clear line, so the shot is about the ability.
+          if (w.nav.blocked(c.x, c.z)) continue
+          if (!w.nav.lineOfSight(c.x, c.z, p.x, p.z, 0.1, 1.6)) continue
+          spot = c
+        }
+        if (spot) break
+      }
+      if (!spot) continue
+      w.player.position.set(spot.x, 0, spot.z)
+      w.battle.pressStop()
+      return {
+        index: w.wildlife.animals.indexOf(animal),
+        x: p.x,
+        z: p.z,
+        hp: animal.hp,
+        max: animal.species.maxHp,
+        stood: +Math.hypot(spot.x - p.x, spot.z - p.z).toFixed(1),
+      }
+    }
+    return null
   }, [species, gap])
+  // The camera eases toward its new position over several frames, so wait for
+  // it before anyone projects a world point onto the screen.
   if (found) await settle(page, 8)
   return found
 }
 
 /** Put the cursor on a live animal and confirm the world agrees before clicking. */
-async function aimAt(page, index) {
-  for (let attempt = 0; attempt < 4; attempt++) {
+async function aimAt(page, index, tries = 4) {
+  for (let attempt = 0; attempt < tries; attempt++) {
     const at = await page.evaluate(i => {
       const a = window.__wally.wildlife.animals[i]
       return { x: a.group.position.x, z: a.group.position.z, y: a.species.height * 0.5 }
@@ -184,6 +259,35 @@ async function aimAt(page, index) {
       return w.getHover() === w.wildlife.animals[i]
     }, index)
     if (locked) return point
+    await settle(page, 3)
+  }
+  return null
+}
+
+/**
+ * Right-click a live animal and confirm the engine bound an attack order to
+ * that animal, retrying the whole aim-and-click if it did not.
+ *
+ * Aiming and clicking have to be one attempt. `aimAt` proves the cursor is on
+ * the animal and hands the pixel back; by the time the caller clicked it, the
+ * animal had walked — 46 pixels, measured — so the click landed on open ground
+ * and issued a move order. The character then strolled to that spot and stood
+ * there while its quarry wandered off, and this file called that a basic
+ * attack that does not work. Melee never saw it: at three metres an animal
+ * fills enough of the screen to absorb the drift, which is why MOTH passed and
+ * the three ranged characters did not.
+ */
+async function rightClickAnimal(page, index) {
+  for (let attempt = 0; attempt < 6; attempt++) {
+    const point = await aimAt(page, index, 2)
+    if (point) {
+      await page.mouse.click(point.x, point.y, { button: 'right' })
+      const bound = await page.evaluate(
+        i => window.__wally.battle.attackOrderTarget() === window.__wally.wildlife.animals[i],
+        index,
+      )
+      if (bound) return point
+    }
     await settle(page, 3)
   }
   return null
@@ -604,22 +708,46 @@ if (want('controls')) {
     'a shift-drag over the world is a camera turn, not a move order',
   )
 
+  /*
+   * The camera angles are a commanded pair and an eased pair: a key moves
+   * `yawWanted`, and the render loop walks `yaw` toward it over the frames
+   * that follow. Reading `yaw` in the same turn as the keypress reads the
+   * camera before it has had a single frame to move — which is why every zoom
+   * check above reads `zoomWanted`. So ask both questions: the key commands a
+   * turn, and the commanded turn then actually arrives.
+   */
   const yawArrow = await ctl.evaluate(() => {
     const w = window.__wally
-    const before = w.camState().yaw
+    const before = w.camState().yawWanted
     for (let i = 0; i < 5; i++) window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft' }))
-    return { before: +before.toFixed(3), after: +w.camState().yaw.toFixed(3) }
+    return { before: +before.toFixed(3), commanded: +w.camState().yawWanted.toFixed(3) }
   })
-  check(Math.abs(yawArrow.after - yawArrow.before) > 0.3, 'the arrow keys turn the camera', `${yawArrow.before} → ${yawArrow.after}`)
+  await settle(ctl, 20)
+  yawArrow.arrived = await ctl.evaluate(() => +window.__wally.camState().yaw.toFixed(3))
+  check(Math.abs(yawArrow.commanded - yawArrow.before) > 0.3, 'the arrow keys turn the camera', `${yawArrow.before} → ${yawArrow.commanded}`)
+  check(Math.abs(yawArrow.arrived - yawArrow.commanded) < 0.05, 'the commanded turn reaches the camera', `eased to ${yawArrow.arrived} of ${yawArrow.commanded}`)
 
-  const recentred = await ctl.evaluate(async () => {
+  const recentred = await ctl.evaluate(() => {
     const w = window.__wally
     w.player.rotation.y = 1.1
     window.dispatchEvent(new KeyboardEvent('keydown', { key: ' ' }))
-    await new Promise(r => setTimeout(r, 100))
-    return { yaw: +w.camState().yaw.toFixed(3), facing: +(w.player.rotation.y + Math.PI).toFixed(3) }
+    const cam = w.camState()
+    const want = w.player.rotation.y + Math.PI
+    // Recentring takes the congruent angle nearest the current yaw rather than
+    // the raw one, so that a drag which wound the orbit past a full turn is not
+    // unwound. That makes this a comparison between angles, not numbers.
+    return {
+      off: +Math.abs(Math.atan2(Math.sin(want - cam.yawWanted), Math.cos(want - cam.yawWanted))).toFixed(4),
+      yawWanted: +cam.yawWanted.toFixed(3),
+      pitchWanted: +cam.pitchWanted.toFixed(3),
+      facing: +want.toFixed(3),
+    }
   })
-  check(Math.abs(recentred.yaw - recentred.facing) < 0.01, 'Space recentres the camera behind the character', JSON.stringify(recentred))
+  await settle(ctl, 20)
+  recentred.arrived = await ctl.evaluate(() => +window.__wally.camState().yaw.toFixed(3))
+  check(recentred.off < 0.01, 'Space recentres the camera behind the character', JSON.stringify(recentred))
+  check(recentred.pitchWanted === 0, 'Space drops the tilt back to the default framing', String(recentred.pitchWanted))
+  check(Math.abs(recentred.arrived - recentred.yawWanted) < 0.05, 'the recentred angle reaches the camera', `${recentred.arrived} of ${recentred.yawWanted}`)
 
   /* ---- right-click ground walks a route that goes around a building ---- */
   const around = await ctl.evaluate(async () => {
@@ -801,7 +929,7 @@ if (want('controls')) {
   check(!!engaged, 'found a reindeer to fight')
   const deerScreen = await aimAt(ctl, engaged.index)
   check(!!deerScreen, 'the free cursor can be put on an animal at range')
-  await ctl.mouse.click(deerScreen.x, deerScreen.y, { button: 'right' })
+  await rightClickAnimal(ctl, engaged.index)
   await sleep(300)
   const engageOrder = await ctl.evaluate(() => ({
     order: window.__wally.battle.currentOrder(),
@@ -832,6 +960,21 @@ if (want('controls')) {
       laterHp: animal.hp,
       approached,
       order: w.battle.currentOrder(),
+      // Why it did not connect, if it did not: the engine refuses to fire at
+      // something it cannot see, and abandons a chase it is not winning.
+      bound: !!w.battle.attackOrderTarget(),
+      distance: +w.player.position.distanceTo(animal.group.position).toFixed(1),
+      reach: w.battle.kit.basic.range,
+      visible: w.nav.lineOfSight(
+        w.player.position.x,
+        w.player.position.z,
+        animal.group.position.x,
+        animal.group.position.z,
+        0.1,
+        1.6,
+      ),
+      animalState: animal.state,
+      notice: w.battleState.notice?.text ?? null,
     }
   }, engaged.index)
   console.log('basic loop:', JSON.stringify(loop))
@@ -855,35 +998,60 @@ if (want('controls')) {
      so this needs a fresh one of its own. */
   const attackMove = await ctl.evaluate(async () => {
     const w = window.__wally
-    const animal = w.wildlife.animals.find(a => a.state !== 'dead' && a.species.id !== 'CHICKEN')
-    if (!animal) return { noTarget: true }
-    // Stand somewhere with a clear view: acquisition needs line of sight, and
-    // dropping the character behind a wall tests the wall, not attack-move.
-    const at = animal.group.position
-    let spot = null
-    for (let a = 0; a < 16 && !spot; a++) {
-      const angle = (a / 16) * Math.PI * 2
-      const c = { x: at.x + Math.cos(angle) * 10, z: at.z + Math.sin(angle) * 10 }
-      if (w.nav.blocked(c.x, c.z)) continue
-      if (!w.nav.lineOfSight(c.x, c.z, at.x, at.z, 0.15, 1.6)) continue
-      spot = c
+    const V = w.player.position.constructor
+    /*
+     * Two things have to hold before this tests attack-move at all. Acquisition
+     * needs line of sight, so dropping the character behind a wall tests the
+     * wall. And the goal has to be somewhere it can walk to: an unroutable
+     * click is refused outright, the order never starts, and from out here that
+     * is indistinguishable from failing to acquire. Ask both questions of the
+     * whole herd rather than of whichever animal happens to be first.
+     */
+    let chosen = null
+    for (const candidate of w.wildlife.animals) {
+      if (candidate.state === 'dead' || candidate.species.id === 'CHICKEN') continue
+      const p = candidate.group.position
+      const open = w.nav.blocked(p.x, p.z) ? w.nav.nearestOpen(p.x, p.z) : { x: p.x, z: p.z }
+      if (!open) continue
+      const goal = new V(open.x, 0, open.z)
+      for (let a = 0; a < 16 && !chosen; a++) {
+        const angle = (a / 16) * Math.PI * 2
+        const c = { x: p.x + Math.cos(angle) * 10, z: p.z + Math.sin(angle) * 10 }
+        if (w.nav.blocked(c.x, c.z)) continue
+        if (!w.nav.lineOfSight(c.x, c.z, p.x, p.z, 0.15, 1.6)) continue
+        if (!w.nav.findPath(new V(c.x, 0, c.z), goal)) continue
+        chosen = { animal: candidate, spot: c, goal }
+      }
+      if (chosen) break
     }
-    if (!spot) return { noTarget: true }
+    if (!chosen) return { noTarget: true }
+    const { animal, spot, goal } = chosen
+    const at = animal.group.position
     w.player.position.set(spot.x, 0, spot.z)
     w.battle.armAttackMove()
     const armed = w.battle.isAttackMoveArmed()
-    w.battle.primaryClick(animal.group.position.clone(), null)
+    w.battle.primaryClick(goal.clone(), null)
     const orders = []
     const start = performance.now()
+    let acquired = false
     while (performance.now() - start < 9000) {
       orders.push(w.battle.currentOrder())
-      if (w.battle.currentOrder() === 'attack') break
+      /* An attack-move that finds something KEEPS the attackMove order — that
+       * is how it carries on to the goal once the thing is dead — so the
+       * acquisition shows up as a bound attack target, never as an order that
+       * turns into 'attack'. Watching for the order was watching for something
+       * the engine deliberately never does. */
+      if (w.battle.attackOrderTarget()) {
+        acquired = true
+        break
+      }
       await new Promise(r => setTimeout(r, 100))
     }
     return {
       armed,
       target: animal.species.id,
-      acquired: w.battle.currentOrder() === 'attack',
+      acquired,
+      bound: w.battle.attackOrderTarget()?.species.id ?? null,
       orders: [...new Set(orders)],
       hp: Math.round(w.vitals.hp),
       distance: +Math.hypot(w.player.position.x - at.x, w.player.position.z - at.z).toFixed(1),
@@ -926,10 +1094,22 @@ if (want('controls')) {
   check(afterEsc.spentResource <= 0 && afterEsc.cd <= 0, 'a cancelled aim spends nothing and starts no cooldown', `resource ${afterEsc.spentResource}, cooldown ${afterEsc.cd.toFixed(2)}s`)
 
   /* Clicking or right-clicking the HUD must not also command the world. */
-  const hudClick = await ctl.evaluate(() => {
+  const hudClick = await ctl.evaluate(async () => {
     const w = window.__wally
     w.battle.pressStop()
-    return { pos: [w.player.position.x, w.player.position.z], order: w.battle.currentOrder() }
+    /* Take the baseline only once the character has come to rest. The resource
+     * test above empties the pool through every slot, and CINDER's E is a dash;
+     * a character still sliding out of one reads from out here as a HUD click
+     * that moved the world. */
+    let last = [w.player.position.x, w.player.position.z]
+    for (let i = 0; i < 40; i++) {
+      await new Promise(r => setTimeout(r, 100))
+      const now = [w.player.position.x, w.player.position.z]
+      const moved = Math.hypot(now[0] - last[0], now[1] - last[1])
+      last = now
+      if (moved < 0.01) break
+    }
+    return { pos: last, order: w.battle.currentOrder() }
   })
   const portraitBox = await ctl.evaluate(() => {
     const r = document.querySelector('.cbt-portrait').getBoundingClientRect()
@@ -974,6 +1154,10 @@ if (want('controls')) {
     await new Promise(r => setTimeout(r, 300))
     return { cost, spent, cd: +cd.toFixed(2), spentAgain }
   })
+  /* A committed cast reads 'casting' while its windup runs and 'cooldown'
+   * once that resolves. Both mean the slot is spoken for, but only the second
+   * is what this check is about, so wait the windup out rather than race it. */
+  await ctl.waitForFunction(() => window.__wally.battleState.slots.Q.state !== 'casting', { timeout: 10000 })
   await settle(ctl, 3)
   gating.state = await ctl.evaluate(() => window.__wally.battleState.slots.Q.state)
   console.log('gating:', JSON.stringify(gating))
@@ -1019,7 +1203,12 @@ if (want('controls')) {
     const animal = w.wildlife.animals.find(a => a.species.id === 'CHICKEN' && a.state !== 'dead')
     if (!animal) return { skipped: true }
     const killsBefore = w.huntState.kills
-    const goldBefore = Number((document.querySelector('.gold-chip').textContent || '').replace(/[^\d]/g, ''))
+    // Everything that was alive going in, so the count can be checked against
+    // the deaths that actually happened. The three-metre burst below is wide
+    // enough to catch a second bird standing in the same flock, and that is a
+    // real second kill, not a double count — the claim under test is that no
+    // ONE death is counted twice.
+    const living = w.wildlife.animals.filter(a => a.state !== 'dead')
     const now = performance.now()
     // Fire twelve overlapping hits into the same frame window, the way a burn,
     // a chain and a projectile can all land together.
@@ -1029,12 +1218,16 @@ if (want('controls')) {
     return {
       killsBefore,
       killsAfter: w.huntState.kills,
-      goldBefore,
+      died: living.filter(a => a.state === 'dead').length,
       dead: animal.state === 'dead',
     }
   })
   check(killOnce.skipped || killOnce.dead, 'the animal dies')
-  check(killOnce.skipped || killOnce.killsAfter === killOnce.killsBefore + 1, 'a kill is counted exactly once under overlapping damage', `${killOnce.killsBefore} → ${killOnce.killsAfter}`)
+  check(
+    killOnce.skipped || killOnce.killsAfter - killOnce.killsBefore === killOnce.died,
+    'a kill is counted exactly once under overlapping damage',
+    `${killOnce.died} died, counter ${killOnce.killsBefore} → ${killOnce.killsAfter}`,
+  )
 
   check(errors.length === 0, 'no page errors during the combat pass', errors.slice(0, 3).join(' | ') || 'clean')
   await ctl.close()
@@ -1102,7 +1295,8 @@ if (want('kits')) {
     const shot = await aimAt(p, near.index)
     check(!!shot, `${id} can put the cursor on its quarry`)
     const beforeBasic = await animalHp(p, near.index)
-    await p.mouse.click(shot.x, shot.y, { button: 'right' })
+    const ordered = await rightClickAnimal(p, near.index)
+    check(!!ordered, `${id} right-clicking its quarry binds an attack order`)
     // Windup plus projectile travel takes many frames, and software rendering
     // gives only a few frames a second, so wait for the hit rather than guess.
     const basic = await p.evaluate(async (i, hp0) => {
