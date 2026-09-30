@@ -43,6 +43,8 @@ import {
   RECONNECT_MAX_MS,
   STALE_CONNECTION_MS,
   type C2S,
+  type DuelId,
+  type DuelSnapshot,
   type S2C,
 } from '../shared/pvp'
 import type { PublicLoadout } from '../shared/pvp'
@@ -162,6 +164,43 @@ function repairSession(detail: string) {
       : `The stored session had expired at ${API_ORIGIN}. Asking for a new one.`
 }
 
+/* ------------------------------------------------------------------ *
+ * What may be installed as "the duel you are in".
+ *
+ * Only a fight that is still happening. An `ended` snapshot is news that
+ * the fight is over, not a fight to be in, and treating it as one is what
+ * left both fighters frozen: `pvpState.duel` stayed set, so the world
+ * pinned each player to their last ring position, stopped sending poses,
+ * and disabled the movement engine — while the server, for its part, had
+ * gone back to accepting them. Nothing on screen could clear it either,
+ * because the duel HUD has no button in the `ended` phase and the result
+ * card had already been dismissed.
+ *
+ * `finishedDuelId` is the other half: it makes a stale frame harmless. Once
+ * a duel has settled, no later message about it — a `combat` frame that was
+ * already in flight, a snapshot replayed after a reconnect — can put the
+ * player back into it.
+ * ------------------------------------------------------------------ */
+
+let finishedDuelId: DuelId | null = null
+
+function liveDuel(snapshot: DuelSnapshot | null | undefined): DuelSnapshot | null {
+  if (!snapshot) return null
+  if (snapshot.duelId === finishedDuelId) return null
+  if (snapshot.phase === 'ended') {
+    finishedDuelId = snapshot.duelId
+    return null
+  }
+  return snapshot
+}
+
+/** Puts the player back in the world, whatever ended the duel. */
+function leaveDuelState(duelId: DuelId | null) {
+  if (duelId) finishedDuelId = duelId
+  pvpState.duel = null
+  pvpState.surrenderAsk = false
+}
+
 function apply(msg: S2C) {
   lastServerMessageAt = Date.now()
   switch (msg.t) {
@@ -178,7 +217,7 @@ function apply(msg: S2C) {
       pvpState.self = msg.self
       pvpState.others = msg.others
       pvpState.incomingDisabled = msg.incomingDisabled
-      pvpState.duel = msg.active
+      pvpState.duel = liveDuel(msg.active)
       pvpState.invite = msg.pending.find(i => !i.youAreChallenger) ?? null
       pvpState.outgoing = msg.pending.find(i => i.youAreChallenger) ?? null
       retries = 0
@@ -208,19 +247,36 @@ function apply(msg: S2C) {
       if (pvpState.outgoing?.challengeId === msg.challengeId) pvpState.outgoing = null
       if (pvpState.composer && msg.reason === 'accepted') pvpState.composer = null
       break
-    case 'duel':
-      pvpState.duel = msg.snapshot
+    case 'duel': {
+      const live = liveDuel(msg.snapshot)
+      pvpState.duel = live
+      if (!live) {
+        // Deliberately not clearing `invite`/`outgoing` here. A snapshot of a
+        // duel that is over arrives after the result, by which time a rematch
+        // invitation may already be on screen, and throwing it away would make
+        // the rematch button look broken.
+        pvpState.surrenderAsk = false
+        break
+      }
       pvpState.inspect = null
       pvpState.composer = null
       pvpState.invite = null
       pvpState.outgoing = null
       break
-    case 'combat':
-      pvpState.duel = msg.snapshot
+    }
+    case 'combat': {
+      const live = liveDuel(msg.snapshot)
+      pvpState.duel = live
+      if (!live) pvpState.surrenderAsk = false
       break
+    }
     case 'result':
       pvpState.result = msg.result
-      pvpState.surrenderAsk = false
+      // The result IS the end of the duel as far as this client is concerned.
+      // Leaving `duel` set here and waiting for a button to clear it is what
+      // made "Rematch" — the primary action on the result card — a way to
+      // freeze yourself in a fight that was already over.
+      leaveDuelState(msg.result.duelId)
       break
     case 'journal':
       pvpState.journal = msg.entries

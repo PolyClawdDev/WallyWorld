@@ -240,6 +240,20 @@ export class DuelSim {
   step(now: number): { events: CombatEvent[]; ended: DuelEnd | null } {
     const carried = this.events
     this.events = []
+    if (this.phase === 'ended') return { events: carried, ended: this.end }
+
+    /*
+     * Giving up and dropping out are resolved before the phase is looked at.
+     * They used to be checked only inside the `active` branch, which meant a
+     * fighter who closed their laptop during `preparing` or the countdown was
+     * invisible: their opponent sat in front of a "Ready" button waiting on
+     * somebody who was never coming back, and the only thing that eventually
+     * moved was the 45-second prepare timeout. A duel must have the same exit
+     * in every phase it can be in.
+     */
+    const abandoned = this.resolveAbandonment(now)
+    if (abandoned) return { events: [...carried, ...abandoned.events], ended: abandoned.ended }
+
     if (this.phase === 'preparing') return { events: carried, ended: null }
     if (this.phase === 'countdown') {
       if (now - this.countdownAt >= COUNTDOWN_MS) {
@@ -248,28 +262,13 @@ export class DuelSim {
       }
       return { events: carried, ended: null }
     }
-    if (this.phase !== 'active') return { events: carried, ended: this.end }
 
     this.tick += 1
     const dt = COMBAT_TICK_MS / 1000
 
-    if (this.surrender) {
-      const loser = this.fighter(this.surrender)!
-      const winner = this.other(this.surrender)!
-      return this.finish({ kind: 'forfeit', winnerId: winner.id, loserId: loser.id, reason: 'Surrendered' }, now)
-    }
-
     if (now - this.startedAt >= DUEL_CAP_MS) {
       return this.finish({ kind: 'draw', winnerId: null, loserId: null, reason: 'Fight reached the 3-minute cap' }, now)
     }
-
-    const goneA = !this.a.connected && this.a.disconnectAt !== null && now - this.a.disconnectAt >= RECONNECT_GRACE_MS
-    const goneB = !this.b.connected && this.b.disconnectAt !== null && now - this.b.disconnectAt >= RECONNECT_GRACE_MS
-    if (goneA && goneB) {
-      return this.finish({ kind: 'void', winnerId: null, loserId: null, reason: 'Both players abandoned the duel' }, now)
-    }
-    if (goneA) return this.finish({ kind: 'forfeit', winnerId: this.b.id, loserId: this.a.id, reason: 'Disconnected past the reconnect window' }, now)
-    if (goneB) return this.finish({ kind: 'forfeit', winnerId: this.a.id, loserId: this.b.id, reason: 'Disconnected past the reconnect window' }, now)
 
     this.tickFighter(this.a, this.b, dt, now)
     this.tickFighter(this.b, this.a, dt, now)
@@ -343,6 +342,29 @@ export class DuelSim {
     this.startedAt = data.startedAt
     Object.assign(this.a, data.a)
     Object.assign(this.b, data.b)
+  }
+
+  /**
+   * Whether either fighter has stopped fighting, in any phase.
+   *
+   * Returns null when both are still in it. `disconnectAt` is only set by
+   * `setConnected`, so a fighter who never dropped can never be reaped here,
+   * and a fighter who dropped and came back has it cleared.
+   */
+  private resolveAbandonment(now: number) {
+    if (this.surrender) {
+      const loser = this.fighter(this.surrender)!
+      const winner = this.other(this.surrender)!
+      return this.finish({ kind: 'forfeit', winnerId: winner.id, loserId: loser.id, reason: 'Surrendered' }, now)
+    }
+    const goneA = !this.a.connected && this.a.disconnectAt !== null && now - this.a.disconnectAt >= RECONNECT_GRACE_MS
+    const goneB = !this.b.connected && this.b.disconnectAt !== null && now - this.b.disconnectAt >= RECONNECT_GRACE_MS
+    if (goneA && goneB) {
+      return this.finish({ kind: 'void', winnerId: null, loserId: null, reason: 'Both players abandoned the duel' }, now)
+    }
+    if (goneA) return this.finish({ kind: 'forfeit', winnerId: this.b.id, loserId: this.a.id, reason: 'Disconnected past the reconnect window' }, now)
+    if (goneB) return this.finish({ kind: 'forfeit', winnerId: this.a.id, loserId: this.b.id, reason: 'Disconnected past the reconnect window' }, now)
+    return null
   }
 
   private finish(end: DuelEnd, now: number) {

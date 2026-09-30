@@ -2,7 +2,7 @@ import * as THREE from 'three'
 import { animateCharacter, createWizard, wizards } from '../characters'
 import { createCharacterNameplate, displayNameFor, type CharacterNameplate } from '../nameplate'
 import { send } from './net'
-import { pvpState } from './store'
+import { isDuelLocked, pvpState } from './store'
 import { DUEL_RINGS } from '../shared/zones'
 import type { PublicPresence } from '../shared/pvp'
 
@@ -153,6 +153,48 @@ export function listRemotes() {
   }))
 }
 
+/* ------------------------------------------------------------------ *
+ * Letting go of a duel order when the window does.
+ *
+ * Overworld movement is held in a key set that `main.tsx` clears on blur
+ * and on `visibilitychange`, so alt-tabbing cannot leave a key down. Duel
+ * movement is not held here at all: "walk to this point" and "attack" are
+ * standing orders on the server, and nothing expires them. A player who
+ * alt-tabs, opens a panel, or answers a message mid-fight therefore left
+ * their wizard walking and swinging at an opponent they could no longer
+ * see — a latched input in the one place it costs gold.
+ *
+ * `stop` is the frame the protocol already has for this, and the server
+ * already refuses it outside an active duel, so this cannot do anything
+ * else by accident.
+ * ------------------------------------------------------------------ */
+
+let inputReleaseBound = false
+
+function releaseDuelInput() {
+  const duel = pvpState.duel
+  if (!duel || !isDuelLocked()) return
+  // The same counter `main.tsx` uses, so the two cannot disagree about which
+  // order came last.
+  const holder = window as unknown as { __pvpSeq?: number }
+  holder.__pvpSeq = (holder.__pvpSeq ?? 0) + 1
+  send({ t: 'input', duelId: duel.duelId, seq: holder.__pvpSeq, kind: 'stop' })
+}
+
+function bindInputRelease() {
+  if (inputReleaseBound || typeof window === 'undefined') return
+  inputReleaseBound = true
+  window.addEventListener('blur', releaseDuelInput)
+  document.addEventListener('visibilitychange', releaseDuelInput)
+}
+
+function unbindInputRelease() {
+  if (!inputReleaseBound || typeof window === 'undefined') return
+  inputReleaseBound = false
+  window.removeEventListener('blur', releaseDuelInput)
+  document.removeEventListener('visibilitychange', releaseDuelInput)
+}
+
 export type LocalCorrection = { x: number; z: number }
 
 /**
@@ -171,6 +213,7 @@ export function updatePvpWorld(scene: THREE.Scene, dt: number, now: number, loca
   sprinting: boolean
 }): LocalCorrection | null {
   markDuelRings(scene)
+  bindInputRelease()
   const seen = new Set<string>()
   for (const other of pvpState.others) {
     if (pvpState.muted.has(other.playerId)) continue
@@ -190,7 +233,12 @@ export function updatePvpWorld(scene: THREE.Scene, dt: number, now: number, loca
     remote.group.rotation.y += delta * blend
     animateCharacter(remote.group, now)
   }
-  if (now - lastPose > 80 && !pvpState.duel) {
+  // `isDuelLocked` rather than "is there a duel object": the simulation owns
+  // this wizard's position only while the fight is actually happening. Gating
+  // on the object's mere existence meant a duel that had finished but not been
+  // cleared went on suppressing every pose this client would have sent, so the
+  // player stood frozen in everyone else's town as well as their own.
+  if (now - lastPose > 80 && !isDuelLocked()) {
     lastPose = now
     send({ t: 'pose', x: local.x, z: local.z, facing: local.facing, anim: local.anim, sprinting: local.sprinting })
   }
@@ -198,7 +246,7 @@ export function updatePvpWorld(scene: THREE.Scene, dt: number, now: number, loca
   // The server's copy of this player is the one everybody else sees. When the
   // two have diverged this far, the local view is the wrong one by definition.
   const self = pvpState.self
-  if (!pvpState.duel && self && Math.hypot(self.x - local.x, self.z - local.z) > DESYNC_SNAP_DISTANCE) {
+  if (!isDuelLocked() && self && Math.hypot(self.x - local.x, self.z - local.z) > DESYNC_SNAP_DISTANCE) {
     return { x: self.x, z: self.z }
   }
   return null
@@ -206,7 +254,10 @@ export function updatePvpWorld(scene: THREE.Scene, dt: number, now: number, loca
 
 export function applyDuelPose(player: THREE.Object3D, you: string) {
   const duel = pvpState.duel
-  if (!duel) return false
+  // Same gate, and for the sharper reason: this function is the thing that
+  // pins the player object, so a stale duel here is not a cosmetic problem,
+  // it is a wizard that cannot be moved by anything.
+  if (!duel || !isDuelLocked()) return false
   const mine = duel.a.playerId === you ? duel.a : duel.b
   player.position.x = mine.x
   player.position.z = mine.z
@@ -222,6 +273,19 @@ export function disposePvpWorld(scene: THREE.Scene) {
   remotes.clear()
   if (rings) {
     scene.remove(rings)
+    // The ring markers are built once and never rebuilt, so they were never
+    // handed back either: removing the group leaves its geometries and
+    // materials on the GPU, and a second mount allocates a fresh set.
+    rings.traverse(node => {
+      const mesh = node as THREE.Mesh
+      if (!mesh.isMesh) return
+      mesh.geometry.dispose()
+      const material = mesh.material
+      if (Array.isArray(material)) material.forEach(one => one.dispose())
+      else material.dispose()
+    })
     rings = null
   }
+  unbindInputRelease()
+  lastPose = 0
 }

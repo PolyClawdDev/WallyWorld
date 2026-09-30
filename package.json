@@ -40,6 +40,8 @@
     "verify:hardening": "node scripts/verify-hardening.mjs",
     "verify:restart": "node scripts/verify-restart.mjs",
     "verify:multiplayer": "node scripts/verify-multiplayer.mjs",
+    "verify:duel-lifecycle": "node scripts/verify-duel-lifecycle.mjs",
+    "verify:duel-abandon": "node scripts/verify-duel-abandon.mjs",
     "verify:heartbeat": "tsx scripts/verify-heartbeat.mjs",
     "verify:combat": "tsx scripts/verify-combat.mjs",
     "verify:camera": "node scripts/verify-camera.mjs",

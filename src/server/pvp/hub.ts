@@ -24,7 +24,7 @@ import {
   type PublicPresence,
   type S2C,
 } from '../../shared/pvp'
-import { isInTown, ringById, ringStarts, TOWN_RESPAWN } from '../../shared/zones'
+import { isInTown, ringStarts, TOWN_RESPAWN } from '../../shared/zones'
 import { ROOM_CAPACITY } from '../config'
 import { walletFromAuthHeader } from '../auth'
 import { newChatId, systemLine, vetChat } from '../chat/chat'
@@ -287,6 +287,10 @@ export function attachLive(tokenHeader: string | undefined, conn: WsConn): Live 
     if (lives.get(account.player_id) === live) {
       rememberPosition(live.playerId, live, Date.now())
       lives.delete(account.player_id)
+      // Per-connection scratch, and the only thing holding it was this
+      // connection. Left behind it is one entry per player this process has
+      // ever seen, for as long as the process lives.
+      lastPoseAt.delete(account.player_id)
       const duelId = duelByPlayer.get(account.player_id)
       if (duelId) duels.get(duelId)?.setConnected(account.player_id, false, Date.now())
     }
@@ -774,31 +778,71 @@ function onAccept(live: Live, challengeId: string) {
   broadcastPresence()
 }
 
-function onLeave(live: Live, duelId: string) {
-  const sim = duels.get(duelId)
-  if (!sim) return
-  if (sim.phase !== 'ended') return
-  duelByPlayer.delete(sim.snapshot(live.playerId).a.playerId)
-  duelByPlayer.delete(sim.snapshot(live.playerId).b.playerId)
-  const liveA = lives.get(sim.snapshot(live.playerId).a.playerId)
-  const liveB = lives.get(sim.snapshot(live.playerId).b.playerId)
-  const ring = ringById(sim.ring.id)
-  const exits = ring ? ringStarts(ring) : [{ x: 40, z: 40 }, { x: -40, z: -40 }]
-  // Both fighters are placed by the server, so the budget clock restarts with
-  // them: the walk out of the ring is measured from the exit, not from
-  // wherever each of them was standing when the challenge was accepted.
-  const now = Date.now()
-  if (liveA) {
-    liveA.state = 'exploring'
-    placeLive(liveA, exits[0], now)
-  }
-  if (liveB) {
-    liveB.state = 'exploring'
-    placeLive(liveB, exits[1], now)
+/**
+ * Takes a finished duel apart, with no client in the loop.
+ *
+ * This is the half that used to be missing, and it was the whole of the
+ * freeze. Ending a duel was effectively something the *client* did:
+ * `closeDuel` settled the gold and sent a result, and everything else — the
+ * `dueling` presence state, the `duelByPlayer` entry, the occupied ring, the
+ * simulation itself — waited for a `leave` frame, which only arrived if the
+ * player happened to press "Leave Arena". Press "Rematch" instead, or
+ * reload, or drop, and both fighters were left with this server refusing
+ * their poses and their own client pinning them to the ring. Neither could
+ * ever move again, which is exactly what two players fighting each other
+ * reported.
+ *
+ * So the transition lives here. `leave` is now an acknowledgement rather
+ * than the mechanism, and the final `ended` snapshot is what tells each
+ * client the fight is over — sent independently of the result card, so
+ * losing one frame cannot strand anybody.
+ */
+function retireDuel(sim: DuelSim, now: number, note?: string) {
+  const snap = sim.snapshot('x')
+  for (const view of [snap.a, snap.b]) {
+    duelByPlayer.delete(view.playerId)
+    const live = lives.get(view.playerId)
+    if (!live) continue
+    live.state = 'exploring'
+    live.anim = 'idle'
+    live.facing = view.facing
+    // The simulation had the last word on where these two are standing, so
+    // the overworld record follows it rather than teleporting anyone out.
+    // Moving them would be a correction the client has to be dragged
+    // through, and a correction fighting the speed clamp is its own freeze.
+    // The budget clock restarts here for the same reason: measured from
+    // where each of them stood when the challenge was accepted, the first
+    // step out of the ring would read as a jump.
+    placeLive(live, { x: view.x, z: view.z }, now)
+    send(live, { t: 'duel', snapshot: sim.snapshot(view.playerId) })
+    if (note) send(live, { t: 'error', code: 'settlement', detail: note })
   }
   freeRing(sim.ring.id)
-  duels.delete(duelId)
+  duels.delete(sim.duelId)
   broadcastPresence()
+}
+
+/**
+ * The client saying it has closed the result card.
+ *
+ * By the time this arrives the duel is normally already retired, which is
+ * the point — it is no longer load-bearing. What is left is the defensive
+ * case: a client holding a snapshot this process no longer has must still
+ * be able to get itself marked as out of the duel, or a lost frame would be
+ * a trap again.
+ */
+function onLeave(live: Live, duelId: string) {
+  const sim = duels.get(duelId)
+  if (!sim) {
+    if (!duelByPlayer.has(live.playerId) && (live.state === 'dueling' || live.state === 'preparing')) {
+      live.state = 'exploring'
+      placeLive(live, live, Date.now())
+      broadcastPresence()
+    }
+    return
+  }
+  if (sim.phase !== 'ended') return
+  retireDuel(sim, Date.now())
 }
 
 function pushDuel(sim: DuelSim) {
@@ -844,11 +888,23 @@ function outcomeKind(end: DuelEnd, you: PlayerId): DuelOutcomeKind {
   return you === end.winnerId ? 'victory' : 'defeat'
 }
 
-const settledDuels = new Set<string>()
+/**
+ * Duels this process has already settled, and when.
+ *
+ * `closeDuel` is reachable from the combat tick, from a prepare timeout and
+ * from a shutdown drain, and the escrow must move exactly once however many
+ * of those fire. The timestamp is what stops this being a set that only
+ * grows: a long-lived instance would otherwise keep one entry per duel for
+ * the life of the process.
+ */
+const settledDuels = new Map<string, number>()
+
+/** How long a settled duel id is remembered, purely to keep settlement idempotent. */
+const SETTLED_MEMORY_MS = 10 * 60 * 1000
 
 function closeDuel(sim: DuelSim, end: DuelEnd, now: number) {
   if (settledDuels.has(sim.duelId)) return
-  settledDuels.add(sim.duelId)
+  settledDuels.set(sim.duelId, now)
   const snap = sim.snapshot(sim.snapshot('x').a.playerId)
   const aId = snap.a.playerId
   const bId = snap.b.playerId
@@ -856,7 +912,14 @@ function closeDuel(sim: DuelSim, end: DuelEnd, now: number) {
     ? settleEscrow({ duelId: sim.duelId, aId, bId, stake: sim.stake, kind: 'payout', winnerId: end.winnerId, now })
     : settleEscrow({ duelId: sim.duelId, aId, bId, stake: sim.stake, kind: end.kind === 'void' ? 'void' : 'refund', now })
 
-  if (!settlement.ok) return
+  if (!settlement.ok) {
+    // A settlement that will not go through must not also strand two players
+    // in a ring. The duel row is deliberately left open, so the next boot's
+    // `recoverOpenDuels` voids it and returns both stakes; what cannot wait
+    // for a restart is the two people standing in it.
+    retireDuel(sim, now, `The duel could not be settled (${settlement.reason}). Both stakes are still held and are returned automatically.`)
+    return
+  }
 
   const settlementId = newId('s')
   settleEscrowRow.run({ status: end.kind, now, settlement_id: settlementId, duel_id: sim.duelId })
@@ -874,7 +937,13 @@ function closeDuel(sim: DuelSim, end: DuelEnd, now: number) {
   })
 
   const draw = end.kind === 'draw' || end.kind === 'void'
-  recordOutcome(end.winnerId, end.loserId, draw, now)
+  // A draw has no winner and no loser, so the two ids have to come from the
+  // fighters. Passing the outcome's nulls straight through recorded a drawn
+  // duel against nobody, and the D column never moved. A `void` is left
+  // uncounted on purpose: a server restart or an abandoned ring is not a
+  // result either of them fought to.
+  if (end.kind === 'draw') recordOutcome(aId, bId, true, now)
+  else if (!draw) recordOutcome(end.winnerId, end.loserId, false, now)
 
   for (const id of [aId, bId]) {
     const youWon = end.winnerId === id
@@ -908,6 +977,10 @@ function closeDuel(sim: DuelSim, end: DuelEnd, now: number) {
     const account = accountByPlayer(id)
     if (live && account) sendTo(id, { t: 'you', self: presenceOf(live, account), gold })
   }
+
+  // Settled is not the same as over. Everything that keeps these two inside
+  // a duel comes apart here, whether or not either of them touches a button.
+  retireDuel(sim, now)
 }
 
 setInterval(() => {
@@ -1052,6 +1125,9 @@ setInterval(() => {
   }
   sweepPositions(now)
   sweepRespawns(now)
+  for (const [duelId, at] of settledDuels) {
+    if (now - at > SETTLED_MEMORY_MS) settledDuels.delete(duelId)
+  }
 }, HEARTBEAT_INTERVAL_MS).unref()
 
 /**

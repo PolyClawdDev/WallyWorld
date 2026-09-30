@@ -30,6 +30,10 @@ const UI = process.env.UI_TARGET ?? 'http://127.0.0.1:5211'
 const CHROME = process.env.CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const EXIT = process.env.DUEL_EXIT ?? 'rematch'
 const SHOTS = process.env.SHOT_DIR ?? 'screenshots'
+// `screenshots/` is gitignored, so it is absent in a fresh checkout and the
+// run would otherwise die on the first capture — after the duel, with both
+// browsers still open and nothing reported.
+mkdirSync(SHOTS, { recursive: true })
 
 const failures = []
 const check = (name, ok, detail = '') => {
@@ -104,12 +108,6 @@ const ui = page => page.evaluate('window.__wally.pvpUi()')
 const pvpSend = (page, msg) => page.evaluate(m => window.__wally.pvpSend(m), msg)
 const locked = page => page.evaluate('typeof window.__pvpLocked === "function" ? window.__pvpLocked() : null')
 
-const nudge = page =>
-  page.evaluate(() => {
-    const p = window.__wally.player.position
-    window.__wally.pvpSend({ t: 'pose', x: p.x + 30, z: p.z, facing: 0, anim: 'run', sprinting: false })
-  })
-
 function seedGold(playerId, amount) {
   return new Promise((resolve, reject) => {
     const child = spawn('npx', ['tsx', 'scripts/seed-gold.ts', playerId, String(amount)], {
@@ -124,15 +122,34 @@ function seedGold(playerId, amount) {
   })
 }
 
+/**
+ * Walks to a world point at a speed the server will actually agree to.
+ *
+ * Asserting the destination outright does not work and is worth spelling
+ * out, because it is the same shape as the bug being hunted: the server
+ * clamps anything faster than a run, the client snaps itself back once the
+ * two disagree by more than `DESYNC_SNAP_DISTANCE`, and the two
+ * corrections then fight each other for as long as you keep asking. So
+ * this asks for one short hop at a time — under the snap threshold, so
+ * nothing ever disagrees enough to snap — and waits for the server's copy
+ * to arrive before asking for the next.
+ */
 async function standAt(page, x, z) {
-  const arrived = await until(async () => {
+  const HOP = 8
+  for (let attempt = 0; attempt < 120; attempt++) {
+    const self = await page.evaluate('window.__wally.pvp().self')
+    if (!self) { await sleep(250); continue }
+    const gap = Math.hypot(self.x - x, self.z - z)
+    if (gap < 2) return self
+    const step = Math.min(HOP, gap)
+    const nx = self.x + ((x - self.x) / gap) * step
+    const nz = self.z + ((z - self.z) / gap) * step
     await page.evaluate((gx, gz) => {
       window.__wally.player.position.set(gx, window.__wally.player.position.y, gz)
-    }, x, z)
-    const self = await page.evaluate('window.__wally.pvp().self')
-    return self && Math.hypot(self.x - x, self.z - z) < 3 ? self : null
-  }, 90_000, 250)
-  return arrived ?? page.evaluate('window.__wally.pvp().self')
+    }, nx, nz)
+    await sleep(350)
+  }
+  return page.evaluate('window.__wally.pvp().self')
 }
 
 /**
@@ -187,21 +204,29 @@ async function main() {
     }, 60_000)
     check('each browser sees the other in presence', Boolean(sawEachOther))
 
-    const FIELD_A = { x: 88, z: 28 }
-    const FIELD_B = { x: 88, z: 33 }
-    await standAt(pageA, FIELD_A.x, FIELD_A.z)
-    await standAt(pageB, FIELD_B.x, FIELD_B.z)
-
-    for (const id of [idA, idB]) await seedGold(id, 200)
+    const SEED = 200
+    // Measured against what each side held BEFORE the credit, and waited for on
+    // both sides. Reading a balance that the credit has not reached yet gives a
+    // baseline the conservation sum is then measured against, and a wrong
+    // baseline invents a conservation failure that is not there.
+    const openingA = (await ui(pageA)).gold?.available ?? 0
+    const openingB = (await ui(pageB)).gold?.available ?? 0
+    for (const id of [idA, idB]) await seedGold(id, SEED)
     const funded = await until(async () => {
-      await nudge(pageA)
-      await nudge(pageB)
       const a = (await ui(pageA)).gold?.available ?? 0
       const b = (await ui(pageB)).gold?.available ?? 0
-      return a > 0 && b > 0 ? { a, b } : null
+      return a >= openingA + SEED && b >= openingB + SEED ? { a, b } : null
     }, 30_000, 500)
-    await standAt(pageA, FIELD_A.x, FIELD_A.z)
-    await standAt(pageB, FIELD_B.x, FIELD_B.z)
+    check('both credits landed before anything was staked', Boolean(funded))
+
+    const FIELD_A = { x: 88, z: 28 }
+    const FIELD_B = { x: 88, z: 33 }
+    const restA = await standAt(pageA, FIELD_A.x, FIELD_A.z)
+    const restB = await standAt(pageB, FIELD_B.x, FIELD_B.z)
+    check('both fighters walked out of town to open ground',
+      Boolean(restA && restB) && Math.hypot(restA.x - FIELD_A.x, restA.z - FIELD_A.z) < 4 && Math.hypot(restB.x - FIELD_B.x, restB.z - FIELD_B.z) < 4,
+      `A ${restA?.x?.toFixed(1)},${restA?.z?.toFixed(1)} · B ${restB?.x?.toFixed(1)},${restB?.z?.toFixed(1)}`)
+
     const goldA = funded?.a ?? 0
     const goldB = funded?.b ?? 0
     const stake = Math.max(1, Math.min(10, goldA, goldB))
@@ -282,8 +307,12 @@ async function main() {
     check('B is out of the duel client-side', !uiB.duel)
     check('A is no longer duel-locked', (await locked(pageA)) === false)
     check('B is no longer duel-locked', (await locked(pageB)) === false)
-    check('the server no longer calls A a duellist', moveA.self?.state === 'exploring', moveA.self?.state)
-    check('the server no longer calls B a duellist', moveB.self?.state === 'exploring', moveB.self?.state)
+    // Not "is exploring": after a rematch the honest answer is `challenged`,
+    // because the rematch invitation is real and pending. What must be gone is
+    // the duel itself.
+    const freeState = state => state === 'exploring' || state === 'challenged'
+    check('the server no longer calls A a duellist', freeState(moveA.self?.state), moveA.self?.state)
+    check('the server no longer calls B a duellist', freeState(moveB.self?.state), moveB.self?.state)
 
     await pageA.screenshot({ path: `${SHOTS}/duel-a-after-${EXIT}.png` })
     await pageB.screenshot({ path: `${SHOTS}/duel-b-after-${EXIT}.png` })
