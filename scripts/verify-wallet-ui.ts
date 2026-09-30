@@ -316,6 +316,16 @@ async function main() {
   const warning = await panelText(page)
   check('it warns before revealing anything', /Anyone who sees it owns this wallet/i.test(warning))
   check('it says there is no seed phrase for this key', /There is no seed phrase for this wallet/i.test(warning))
+  // The owner of this world pasted a mainnet key into a chat window because
+  // the warning read as boilerplate. These two clauses are the ones that stop
+  // that happening again, so they are asserted rather than trusted to survive
+  // the next copy edit.
+  check('it names the places a key must never be pasted', /never paste it/i.test(warning) && /chat/i.test(warning) && /screenshot/i.test(warning))
+  check('it says nobody will ever ask for the key', /Nobody will ever ask you for this key/i.test(warning))
+  check(
+    'and names the developers and support as people who will not ask',
+    /not the Voxels developers/i.test(warning) && /not support/i.test(warning),
+  )
   check('nothing is revealed until the second click', await page.evaluate(() => {
     const box = document.querySelector('.emb-secret') as HTMLTextAreaElement | null
     return box === null || box.value.length === 0
@@ -331,6 +341,16 @@ async function main() {
     return { length: value.length, base58: /^[1-9A-HJ-NP-Za-km-z]{86,88}$/.test(value) }
   })
   check('a base58 secret key of the right length is shown', exported.base58, `${exported.length} chars`)
+  // Not decoration: the revealed key has to be legible as dangerous at a
+  // glance, which is a thing the DOM can be asked about.
+  check(
+    'the revealed key is dressed as a hazard rather than an ordinary field',
+    await page.evaluate(() => {
+      const frame = document.querySelector('.emb-danger')
+      const field = document.querySelector('.emb-secret')
+      return !!frame && !!field && frame.contains(field) && /SECRET KEY ON SCREEN/i.test((frame as HTMLElement).innerText)
+    }),
+  )
   await clickText(page, 'JSON array')
   await sleep(250)
   const asJson = await page.evaluate(() => {
@@ -417,7 +437,35 @@ async function main() {
   check('the payout block is present', payout.text.includes('GOLD → TOKEN REWARDS'))
   check('it is labelled unavailable', payout.text.includes('UNAVAILABLE'))
   check('the payout button exists and is disabled', payout.hasButton && payout.disabled)
-  check('it states plainly that no WALLY mint exists', /no WALLY token mint exists/i.test(payout.text))
+
+  // The block now leads with a list of absences and keeps the full reason —
+  // the server's, which wins over the client's fallback — one click below.
+  // The summary is asserted where it is read, and the reason is asserted
+  // after opening the disclosure, because none of it may quietly go missing.
+  check('every blocker is named in the summary, with no room to read it as pending', [
+    'TREASURY SIGNING KEY',
+    'NONE',
+    'WITHDRAWAL SETTINGS',
+    'NO VALUES',
+    'WALLY TOKEN MINT',
+    'DOES NOT EXIST',
+    'VERIFIED HUNTS ONLY',
+  ].every(fragment => payout.text.toUpperCase().includes(fragment)))
+  check(
+    'the caveat that a hunt fight cannot be proved is on the face of the block',
+    /PROOF A HUNT FIGHT HAPPENED/i.test(payout.text) && /NOT PROVEN/i.test(payout.text),
+  )
+
+  check('the reason is reachable without leaving the panel', await waitForText(page, 'Why this cannot be switched on'))
+  await clickText(page, 'Why this cannot be switched on')
+  await sleep(300)
+  const why = await panelText(page)
+  check('it states plainly that no WALLY mint exists', /no WALLY token mint exists/i.test(why))
+  check('it still says there is no treasury signing key', /no treasury signing key/i.test(why))
+  check('it still says the withdrawal settings have no values', /withdrawal settings have no values/i.test(why))
+  check('it still says the server cannot prove a fight happened', /does not watch the fight/i.test(why) && /cannot prove one happened/i.test(why))
+  check('and that this is not a switch anyone can flip', /not a setting anyone can switch on/i.test(why))
+  await page.screenshot({ path: `${SHOTS}/${LABEL}-8-payout-why.png` })
 
   /* ------------------------------------------------- credential check */
   console.log('\nNo credential in the page')

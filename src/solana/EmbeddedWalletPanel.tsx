@@ -46,6 +46,98 @@ import { formatSol } from './units'
 const STORAGE_WARNING =
   'This key signs your identity, and nothing else \u2014 the game never spends from it, so the address holds nothing unless you send funds to it yourself. It is kept in this browser\u2019s storage, which means anything that can run scripts on this page, and anyone with access to this computer and browser profile, can read it. So if you do fund it, keep it to small amounts: this is not a hardware wallet and not a place for savings.'
 
+/* ------------------------------------------------------------------ *
+ * Pixel glyphs.
+ *
+ * The pouch above draws its item icons as SVG rects, one per pixel, and
+ * these blocks sit directly under it, so they are drawn the same way at
+ * the same size. `Wallet.tsx` has its own copy of this renderer; it is
+ * private to the pouch and stays that way, so this is a second small one
+ * rather than a change to a file the pouch owns.
+ * ------------------------------------------------------------------ */
+
+const GLYPH_PALETTE: Record<string, string> = {
+  K: '#d5a64b', // brass
+  d: '#8a5a1e', // brass, in shadow
+  B: '#ffd0be', // bone, for the hazard marks
+  i: '#2a0e07', // ember ink, for a mark on an ember plate
+}
+
+const GLYPHS = {
+  key: [
+    '............',
+    '....KKK.....',
+    '...K...K....',
+    '...K...K....',
+    '...K...d....',
+    '....KKd.....',
+    '.....K......',
+    '.....K......',
+    '.....KK.....',
+    '.....K......',
+    '.....Kd.....',
+    '............',
+  ],
+  coin: [
+    '............',
+    '....dddd....',
+    '...dKKKKd...',
+    '..dKKKKKKd..',
+    '..dKKddKKd..',
+    '..dKKddKKd..',
+    '..dKKddKKd..',
+    '..dKKKKKKd..',
+    '...dKKKKd...',
+    '....dddd....',
+    '............',
+    '............',
+  ],
+  skull: [
+    '............',
+    '...BBBBBB...',
+    '..BBBBBBBB..',
+    '..BBiBBiBB..',
+    '..BBiBBiBB..',
+    '..BBBBBBBB..',
+    '...BBBBBB...',
+    '...B.BB.B...',
+    '...BBBBBB...',
+    '............',
+    '............',
+    '............',
+  ],
+  /* The same mark inked dark, for when it sits on the ember plate itself. */
+  skullInk: [
+    '............',
+    '...iiiiii...',
+    '..iiiiiiii..',
+    '..ii.ii.ii..',
+    '..ii.ii.ii..',
+    '..iiiiiiii..',
+    '...iiiiii...',
+    '...i.ii.i...',
+    '...iiiiii...',
+    '............',
+    '............',
+    '............',
+  ],
+} as const
+
+export function PixelGlyph({ glyph }: { glyph: keyof typeof GLYPHS }) {
+  const cells: React.ReactNode[] = []
+  GLYPHS[glyph].forEach((row, y) => {
+    for (let x = 0; x < row.length; x++) {
+      const color = GLYPH_PALETTE[row[x]]
+      if (color) cells.push(<rect key={`${x}-${y}`} x={x} y={y} width="1" height="1" fill={color} />)
+    }
+  })
+  return (
+    <svg className="pixel-icon sol-glyph" viewBox="0 0 12 12" shapeRendering="crispEdges" aria-hidden="true">
+      {cells}
+    </svg>
+  )
+}
+
 function useEmbedded() {
   return useSyncExternalStore(subscribeEmbeddedWallet, embeddedWallet, embeddedWallet)
 }
@@ -84,20 +176,61 @@ function ExportDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="sol-confirm emb-export">
-      <div className="sol-confirm-head">EXPORT SECRET KEY</div>
+      <div className="sol-block-head">
+        <span className="sol-buckle bad" aria-hidden="true" />
+        <div>
+          <strong className="sol-confirm-head">EXPORT SECRET KEY</strong>
+          <small>{revealed ? 'the key itself is on screen' : 'the key itself, not your address'}</small>
+        </div>
+      </div>
       {!revealed ? (
         <>
-          <p className="sol-fine">
-            This reveals the key itself, not your address. Anyone who sees it owns this wallet permanently and
-            irreversibly — there is no way to change it, revoke it or get it back. Make sure nobody can see your
-            screen, and never paste it into a chat, a form, a support ticket, or anything that offers to
-            &ldquo;validate&rdquo; it.
-          </p>
-          <p className="sol-fine">
-            There is no seed phrase for this wallet, because this key was generated at random rather than derived
-            from one. Twelve words would not restore it, so none are shown.
-          </p>
-          <p className="sol-fine">{STORAGE_WARNING}</p>
+          {/*
+            * Three separate rules rather than one paragraph, because these are
+            * things a player has to carry out of this dialog and act on later,
+            * and the first two are the ones that get people robbed. They were
+            * a clause each in the middle of prose before, which is how a key
+            * ends up pasted into a chat window by an owner who read the text.
+            */}
+          <ul className="emb-rules">
+            <li className="never">
+              <i aria-hidden="true">!</i>
+              <span>
+                <strong>Nobody will ever ask you for this key.</strong>
+                Not the Voxels developers, not support, not a moderator, not an admin, not a giveaway or an
+                airdrop, not anyone offering to fix your account. Anyone who asks is trying to rob you, however
+                convincing they sound and whoever they claim to be.
+              </span>
+            </li>
+            <li className="never">
+              <i aria-hidden="true">!</i>
+              <span>
+                <strong>Never paste it anywhere but a wallet you trust.</strong>
+                Not into a chat, a direct message, an email, a support request, a bug report, a web form, or
+                anything that offers to &ldquo;validate&rdquo; or &ldquo;verify&rdquo; it. Do not photograph it
+                or screenshot it. Sending it once is giving the wallet away for good.
+              </span>
+            </li>
+            <li>
+              <i aria-hidden="true">!</i>
+              <span>
+                Anyone who sees it owns this wallet permanently and irreversibly — there is no way to change it,
+                revoke it or get it back. Check that nobody can see your screen, and that you are not sharing or
+                recording it.
+              </span>
+            </li>
+            <li>
+              <i aria-hidden="true">·</i>
+              <span>
+                There is no seed phrase for this wallet, because this key was generated at random rather than
+                derived from one. Twelve words would not restore it, so none are shown.
+              </span>
+            </li>
+          </ul>
+          <div className="sol-note">
+            <PixelGlyph glyph="key" />
+            <p className="sol-fine">{STORAGE_WARNING}</p>
+          </div>
           <div className="sol-actions">
             <button type="button" className="primary" onClick={() => setRevealed(exportEmbeddedSecret())}>
               I understand — show the key
@@ -107,24 +240,41 @@ function ExportDialog({ onClose }: { onClose: () => void }) {
         </>
       ) : (
         <>
-          <div className="sol-actions emb-format">
-            <button type="button" className={format === 'base58' ? 'primary' : 'ghost'} onClick={() => setFormat('base58')}>
-              Base58
-            </button>
-            <button type="button" className={format === 'json' ? 'primary' : 'ghost'} onClick={() => setFormat('json')}>
-              JSON array
-            </button>
+          {/*
+            * The revealed value is wrapped in its own hazard-banded frame so it
+            * cannot be mistaken for an ordinary read-only field. It is still a
+            * plain textarea: the player has to be able to select it with the
+            * keyboard when the clipboard is blocked, and backing the key up is
+            * the entire point of this dialog.
+            */}
+          <div className="emb-danger">
+            <div className="emb-danger-head">
+              <PixelGlyph glyph="skullInk" />
+              <span>SECRET KEY ON SCREEN — THIS IS THE WHOLE WALLET</span>
+            </div>
+            <div className="sol-actions emb-format">
+              <button type="button" className={format === 'base58' ? 'primary' : 'ghost'} onClick={() => setFormat('base58')}>
+                Base58
+              </button>
+              <button type="button" className={format === 'json' ? 'primary' : 'ghost'} onClick={() => setFormat('json')}>
+                JSON array
+              </button>
+            </div>
+            <textarea className="emb-secret" readOnly rows={format === 'base58' ? 3 : 6} value={format === 'base58' ? revealed.base58 : revealed.jsonArray} spellCheck={false} />
+            <p className="sol-fine">
+              {format === 'base58'
+                ? 'Base58 is what a wallet\u2019s \u201cimport private key\u201d field expects.'
+                : 'The 64-byte array is what the Solana CLI reads from a keypair file.'}
+              {' '}It is the key for <code>{revealed.address}</code> on {CLUSTER}.
+            </p>
+            <p className="sol-fine">
+              <strong>It belongs in a password manager or on paper, and nowhere else.</strong> Not in a chat, a
+              message, an email, a support ticket or a screenshot. Hide it as soon as you have it.
+            </p>
           </div>
-          <textarea className="emb-secret" readOnly rows={format === 'base58' ? 3 : 6} value={format === 'base58' ? revealed.base58 : revealed.jsonArray} spellCheck={false} />
-          <p className="sol-fine">
-            {format === 'base58'
-              ? 'Base58 is what a wallet\u2019s \u201cimport private key\u201d field expects.'
-              : 'The 64-byte array is what the Solana CLI reads from a keypair file.'}
-            {' '}It is the key for <code>{revealed.address}</code> on {CLUSTER}.
-          </p>
           <div className="sol-actions">
             <CopyButton value={format === 'base58' ? revealed.base58 : revealed.jsonArray} label="Copy to clipboard" />
-            <button type="button" className="ghost" onClick={() => { setRevealed(null); onClose() }}>Hide and close</button>
+            <button type="button" className="ghost danger" onClick={() => { setRevealed(null); onClose() }}>Hide and close</button>
           </div>
         </>
       )}
@@ -151,8 +301,14 @@ function ImportForm({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="sol-confirm">
-      <div className="sol-confirm-head">IMPORT A SECRET KEY</div>
+    <div className="sol-confirm emb-import">
+      <div className="sol-block-head">
+        <span className="sol-buckle" aria-hidden="true" />
+        <div>
+          <strong className="sol-confirm-head">IMPORT A SECRET KEY</strong>
+          <small>replaces the wallet this browser holds</small>
+        </div>
+      </div>
       <p className="sol-fine">
         Paste a Solana secret key — base58, or the 64-number JSON array from a keypair file. It replaces the wallet
         this browser is using now, so export that one first if you still want it.
@@ -170,7 +326,10 @@ function ImportForm({ onClose }: { onClose: () => void }) {
         <button type="button" className="primary" onClick={submit} disabled={!text.trim()}>Import this key</button>
         <button type="button" className="ghost" onClick={() => { setText(''); onClose() }}>Cancel</button>
       </div>
-      <p className="sol-fine">{STORAGE_WARNING}</p>
+      <div className="sol-note">
+        <PixelGlyph glyph="key" />
+        <p className="sol-fine">{STORAGE_WARNING}</p>
+      </div>
     </div>
   )
 }
@@ -229,8 +388,16 @@ export function EmbeddedWalletBlock() {
   return (
     <div className="sol-block">
       <div className="sol-block-head">
-        <span>THIS BROWSER&rsquo;S WALLET</span>
-        <b className={IS_MAINNET ? 'sol-cluster-live' : 'sol-on'}>{CLUSTER.toUpperCase()}</b>
+        <span className="sol-buckle" aria-hidden="true" />
+        <div>
+          <strong>THIS BROWSER&rsquo;S WALLET</strong>
+          <small>the game cannot spend from it</small>
+        </div>
+        {/* The cluster plate stays brass on mainnet and cyan elsewhere: it
+            names a network, and ember is kept for faults. */}
+        <b className={IS_MAINNET ? 'sol-plate cluster' : 'sol-plate on'}>
+          <i aria-hidden="true" />{CLUSTER.toUpperCase()}
+        </b>
       </div>
 
       <div className="sol-row">
@@ -262,11 +429,11 @@ export function EmbeddedWalletBlock() {
       <div className="sol-row">
         <span>Account</span>
         <div>
-          {claim.phase === 'linked' ? <b className="sol-on">LINKED</b>
-            : claim.phase === 'working' ? <b>LINKING…</b>
-            : claim.phase === 'conflict' ? <b className="sol-warn">NEEDS A DECISION</b>
-            : claim.phase === 'failed' ? <b className="sol-warn">NOT LINKED</b>
-            : <b className="sol-off">—</b>}
+          {claim.phase === 'linked' ? <b className="sol-plate on"><i aria-hidden="true" />LINKED</b>
+            : claim.phase === 'working' ? <b className="sol-plate"><i aria-hidden="true" />LINKING…</b>
+            : claim.phase === 'conflict' ? <b className="sol-plate warn"><i aria-hidden="true" />NEEDS A DECISION</b>
+            : claim.phase === 'failed' ? <b className="sol-plate warn"><i aria-hidden="true" />NOT LINKED</b>
+            : <b className="sol-plate off"><i aria-hidden="true" />—</b>}
         </div>
       </div>
 
@@ -290,11 +457,19 @@ export function EmbeddedWalletBlock() {
         </p>
       )}
 
-      <p className="sol-fine">
-        A real Solana keypair, generated in this browser and kept here, so it is the same wallet every time you come
-        back. {wallet.imported ? 'It was imported from a key you pasted in.' : 'Nothing was sent to the server to make it — the server only ever saw the address and one signature.'}
-      </p>
-      <p className="sol-fine">{STORAGE_WARNING}</p>
+      {/* The same two facts as before, pressed into the leather like the
+          pouch's own note rather than set as body copy. */}
+      <div className="sol-note">
+        <PixelGlyph glyph="key" />
+        <p className="sol-fine">
+          A real Solana keypair, generated in this browser and kept here, so it is the same wallet every time you come
+          back. {wallet.imported ? 'It was imported from a key you pasted in.' : 'Nothing was sent to the server to make it — the server only ever saw the address and one signature.'}
+        </p>
+      </div>
+      <div className="sol-note">
+        <PixelGlyph glyph="skull" />
+        <p className="sol-fine">{STORAGE_WARNING}</p>
+      </div>
 
       {dialog === 'export' && <ExportDialog onClose={() => setDialog('none')} />}
       {dialog === 'import' && <ImportForm onClose={() => setDialog('none')} />}
@@ -318,7 +493,7 @@ export function EmbeddedWalletBlock() {
         <div className="sol-actions">
           <button type="button" className="primary" onClick={() => setDialog('export')}>Export secret key</button>
           <button type="button" className="ghost" onClick={() => setDialog('import')}>Import a key</button>
-          <button type="button" className="ghost" onClick={() => setDialog('forget')}>Delete</button>
+            <button type="button" className="ghost danger" onClick={() => setDialog('forget')}>Delete</button>
         </div>
       )}
     </div>
