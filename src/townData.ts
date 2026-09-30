@@ -75,6 +75,16 @@ export type BuildingSpec = {
   accent?: string
   /** Extra timber/plaster tone for courses and gable ends. Falls back to the wall. */
   trim?: string
+  /**
+   * Built by its own renderer instead of the standard box-and-pyramid.
+   *
+   * One value so far: `zcash`, which builds Sable's premises as a struck coin
+   * in src/zcashHouse.ts. `wall`, `roof` and `trim` are ignored for a landmark
+   * — it brings its own palette — but `width`, `depth` and `sign` still mean
+   * exactly what they mean everywhere else, because navigation and the map read
+   * them without knowing or caring how the building is drawn.
+   */
+  landmark?: 'zcash'
 }
 
 /**
@@ -96,7 +106,11 @@ export const buildingSpecs: BuildingSpec[] = [
   { name: 'Town Hall', kind: 'hall', x: 17, z: 16, width: 11, depth: 9, height: 26, wall: '#626b70', roof: '#39444d', sign: 'HALL', accent: '#9580b8', trim: '#e5ddc8' },
   { name: 'Bakery', kind: 'bakery', x: -17, z: -17, width: 10, depth: 8, height: 10, wall: '#8a6a55', roof: '#57434a', sign: 'BAKERY', accent: '#d9a35c', trim: '#e5ddc8' },
   { name: 'Stable', kind: 'stable', x: 17, z: -17, width: 11, depth: 8, height: 8, wall: '#6d594b', roof: '#4a3d39', sign: 'STABLE', accent: '#9a7046' },
-  { name: 'Potion Shop', kind: 'apothecary', x: 50, z: -16, width: 12, depth: 9, height: 17, wall: '#5c6e68', roof: '#3d4d4d', sign: 'ALCHEMY', accent: '#7bc9ce', trim: '#e5ddc8' },
+  /* Sable's. The shielded-transfer desk is here, so the house is a coin — see
+   * src/zcashHouse.ts, including what such a building is obliged to say. The
+   * height is the top of that coin rather than an eaves line, and the footprint
+   * is unchanged: the coin overhangs it eight metres up, where nothing walks. */
+  { name: 'Potion Shop', kind: 'apothecary', x: 50, z: -16, width: 12, depth: 9, height: 23, wall: '#5c6e68', roof: '#3d4d4d', sign: 'ALCHEMY', accent: '#7bc9ce', trim: '#e5ddc8', landmark: 'zcash' },
   { name: 'Workshop', kind: 'smithy', x: 50, z: 18, width: 13, depth: 10, height: 15, wall: '#765a46', roof: '#4e3d38', sign: 'FORGE', accent: '#e37c42' },
   { name: 'Market Hall', kind: 'market', x: 72, z: 0, width: 14, depth: 12, height: 21, wall: '#68655d', roof: '#45494a', sign: 'MARKET', accent: '#d5a64b', trim: '#e5ddc8' },
   { name: 'Post Office', kind: 'post', x: 50, z: 50, width: 12, depth: 9, height: 13, wall: '#78645c', roof: '#4b4145', sign: 'POST', accent: '#9580b8', trim: '#e5ddc8' },

@@ -14,7 +14,7 @@ import {
 } from './wildlife'
 import type { WildRegion } from './wildlife'
 import { DUEL_RINGS, WORLD_HALF, townBuildings, townPaving, townPlaza } from './shared/zones'
-import { perimeterTrees } from './townData'
+import { buildingSpecs, perimeterTrees } from './townData'
 import { createBatch, disposeMaterial } from './voxelBuild'
 import type { Surface } from './voxelBuild'
 import { createTreeField, inFoliage, treeMetrics } from './treeArt'
@@ -348,6 +348,55 @@ function clearOfRings(x: number, z: number, radius: number) {
   return !DUEL_RINGS.some(ring => Math.hypot(x - ring.x, z - ring.z) - radius < ring.radius + RING_RUN_UP)
 }
 
+/**
+ * Metres of clear approach in front of a landmark building.
+ *
+ * A landmark is built to be seen from down the street — that is the whole of
+ * why it is one — and the Zcash house had a birch standing at x=50.0 against a
+ * door at x=50, with a second one lined up eleven metres behind it. Neither was
+ * illegally placed: both cleared the building skirt and the paving by the rules
+ * that existed, which only ever asked about walking into things, never about
+ * looking at them.
+ */
+const LANDMARK_APPROACH = 20
+
+/**
+ * The strip in front of each landmark that stays empty, derived from the
+ * buildings rather than typed out, so a second landmark gets the same courtesy
+ * without anybody remembering to add it here.
+ *
+ * Every door in town is on the −z face, which is what makes one rectangle per
+ * landmark enough. Widened three metres past the footprint because a tree at
+ * the corner of the frame blocks the frontage as effectively as one in the
+ * middle of it.
+ */
+const landmarkFronts = buildingSpecs
+  .filter(spec => spec.landmark)
+  .map(spec => ({
+    x: spec.x,
+    halfWidth: spec.width / 2 + 3,
+    near: spec.z - spec.depth / 2,
+    far: spec.z - spec.depth / 2 - LANDMARK_APPROACH,
+  }))
+
+/**
+ * Is a plant of this radius clear of every landmark's approach?
+ *
+ * Tested against the CROWN rather than the bole, unlike the duel rings. On the
+ * ground a corridor only has to be walkable, but a landmark is looked at from
+ * eye height to well above it — the Zcash coin spans eight to twenty-three
+ * metres up, which is exactly the band a 13m canopy occupies — so foliage in
+ * the approach hides it just as completely as a trunk would.
+ */
+function clearOfLandmarkViews(x: number, z: number, radius: number) {
+  return !landmarkFronts.some(
+    front =>
+      Math.abs(x - front.x) < front.halfWidth + radius &&
+      z < front.near + radius &&
+      z > front.far - radius,
+  )
+}
+
 export function createWildscape() {
   const root = new THREE.Group()
   root.name = 'wildscape'
@@ -429,6 +478,7 @@ export function createWildscape() {
     if (!clearOfRings(x, z, bole)) return false
     const crown = radius * MAX_SQUASH
     if (DUEL_RINGS.some(ring => Math.hypot(x - ring.x, z - ring.z) - crown < ring.radius)) return false
+    if (!clearOfLandmarkViews(x, z, crown)) return false
     for (const other of crowns) {
       const gap = Math.max(TRUNK_FLOOR, (other.crownRadius + radius) * separation)
       if (Math.hypot(other.x - x, other.z - z) < gap) return false

@@ -20,7 +20,8 @@
  *   6. ROUTES      — can you still walk from the plaza to every region and
  *                    every duel ring, and how much longer is the trip? And is
  *                    each ring clear ground: nothing solid in it or its run-up,
- *                    no crown over it?
+ *                    no crown over it? Can each landmark be seen from the
+ *                    street it faces?
  *   7. RESOURCES   — every geometry, material and texture created against how
  *                    many dispose() frees.
  *
@@ -49,6 +50,7 @@ const { treeSpecies } = await import('../src/treeArt')
 const { createNavGrid } = await import('../src/battle/nav')
 const { wildRegions, insideRegion } = await import('../src/wildlife')
 const { DUEL_RINGS, TOWN_RESPAWN, WORLD_HALF } = await import('../src/shared/zones')
+const { buildingSpecs } = await import('../src/townData')
 
 type Crown = {
   id: string
@@ -322,6 +324,38 @@ for (const ring of DUEL_RINGS) {
 }
 console.log(ringIntrusions === 0 ? 'ok: every duel ring is clear ground under open sky.' : 'FAIL: something stands in a duel ring.')
 
+/* ------------------- 6c. a landmark can be seen ------------------------- *
+ * A landmark exists to be seen from down its own street, so the strip in front
+ * of it is measured the way the duel rings are. Against the CROWN, not the
+ * bole: the Zcash coin spans 8m to 23m up, which is the same band a 13m canopy
+ * occupies, so foliage in the approach hides it as completely as a trunk. The
+ * first version of that building had a birch at x=50.0 in front of a door at
+ * x=50, legally planted under every rule that existed.
+ * ----------------------------------------------------------------------- */
+const LANDMARK_APPROACH = 20
+console.log()
+console.log('=== 6c. landmark frontages ===')
+let frontageIntrusions = 0
+for (const spec of buildingSpecs.filter(one => one.landmark)) {
+  const halfWidth = spec.width / 2 + 3
+  const near = spec.z - spec.depth / 2
+  const blocking = canopy.crowns.filter(
+    crown =>
+      Math.abs(crown.x - spec.x) < halfWidth + crown.crownRadius &&
+      crown.z < near + crown.crownRadius &&
+      crown.z > near - LANDMARK_APPROACH - crown.crownRadius,
+  )
+  frontageIntrusions += blocking.length
+  const nearest = canopy.crowns
+    .filter(crown => Math.abs(crown.x - spec.x) < halfWidth && crown.z < near)
+    .reduce((closest, crown) => Math.min(closest, near - crown.z), Infinity)
+  console.log(
+    `${spec.name.padEnd(14)} ${String(spec.landmark).padEnd(6)} in the ${LANDMARK_APPROACH}m approach ${String(blocking.length).padStart(3)}` +
+      `   nearest plant on the axis ${nearest === Infinity ? 'none' : `${nearest.toFixed(1)}m out`}`,
+  )
+}
+console.log(frontageIntrusions === 0 ? 'ok: every landmark can be seen from its own street.' : 'FAIL: a landmark is behind a tree.')
+
 /* ---------------------------- 7. resources ------------------------------ */
 const geometries = new Set<THREE.BufferGeometry>()
 const materials = new Set<THREE.Material>()
@@ -347,9 +381,9 @@ for (const [label, all] of [['geometries', geometries], ['materials', materials]
   console.log(`${label.padEnd(12)} created ${String(all.size).padStart(4)}   freed ${String(freed).padStart(4)}   LEAKED ${all.size - freed}`)
 }
 
-const failed = violations > 0 || insideAfter > 0 || firstPerson > 0 || ringIntrusions > 0
+const failed = violations > 0 || insideAfter > 0 || firstPerson > 0 || ringIntrusions > 0 || frontageIntrusions > 0
 console.log()
 console.log(failed
-  ? 'FAIL: something can stand inside a tree, or stands in a duel ring.'
-  : 'ok: nothing the player or camera can reach is inside a tree, and the duel rings are clear.')
+  ? 'FAIL: something can stand inside a tree, or stands where the town has to stay clear.'
+  : 'ok: nothing reachable is inside a tree, the duel rings are clear, and the landmarks can be seen.')
 process.exit(failed ? 1 : 0)

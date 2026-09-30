@@ -15,6 +15,7 @@ import type { BuildingSpec } from './townData'
 import { registerWorld } from './worldBridge'
 import { compassHuntRegion, createWildlife, highHuntArea, isInTown, isSafeZone, speciesSpecs } from './wildlife'
 import { animateWildscape, createWildscape } from './wildscape'
+import { createZcashHouse } from './zcashHouse'
 import { createVitals } from './combat'
 import { huntState, pingHunt, resetHuntState } from './huntStore'
 import { HuntHud } from './huntHud'
@@ -150,6 +151,12 @@ function makeLabel(text: string, color = '#d5a64b') {
 }
 
 function createBuilding(root: THREE.Group, spec: BuildingSpec) {
+  // A landmark brings its own geometry and its own teardown; none of the
+  // box-and-pyramid below applies to it.
+  if (spec.landmark === 'zcash') {
+    root.add(createZcashHouse(spec))
+    return
+  }
   const g = new THREE.Group()
   const { x, z, width, depth, height } = spec
   voxel(g, [width + 0.5, 0.5, depth + 0.5], [x, 0.25, z], '#394247')
