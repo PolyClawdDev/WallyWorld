@@ -15,7 +15,7 @@ import type { BuildingSpec } from './townData'
 import { registerWorld } from './worldBridge'
 import { compassHuntRegion, createWildlife, highHuntArea, isInTown, isSafeZone, speciesSpecs } from './wildlife'
 import { animateWildscape, createWildscape } from './wildscape'
-import { createZcashHouse } from './zcashHouse'
+import { animateZcashHouse, createZcashHouse } from './zcashHouse'
 import { createVitals } from './combat'
 import { huntState, pingHunt, resetHuntState } from './huntStore'
 import { HuntHud } from './huntHud'
@@ -154,7 +154,11 @@ function createBuilding(root: THREE.Group, spec: BuildingSpec) {
   // A landmark brings its own geometry and its own teardown; none of the
   // box-and-pyramid below applies to it.
   if (spec.landmark === 'zcash') {
-    root.add(createZcashHouse(spec))
+    const house = createZcashHouse(spec)
+    root.add(house)
+    // Published on the town, because its coin turns: the frame loop needs a
+    // reference to it and the teardown needs somewhere to find its dispose.
+    root.userData.zcashHouse = house
     return
   }
   const g = new THREE.Group()
@@ -593,7 +597,9 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
     moon.castShadow = true
     moon.shadow.mapSize.set(1024, 1024)
     scene.add(moon)
-    scene.add(createTown())
+    const town = createTown()
+    scene.add(town)
+    const zcashHouse = town.userData.zcashHouse as THREE.Group | undefined
     const player = createWizard(wizard, 1.05, style)
     player.position.set(0, 0, 8)
     player.visible = !firstPerson.current
@@ -1175,6 +1181,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       }
       if (pvpState.playerId) applyDuelPose(player, pvpState.playerId)
       animateWildscape(wildscape, now)
+      animateZcashHouse(zcashHouse, dt)
       // The plate follows the committed target first and the cursor second, so
       // it stops flickering the moment you actually pick a fight.
       const engaged = battle?.attackOrderTarget() ?? battle?.selectedTarget() ?? null
@@ -1289,6 +1296,13 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       // or the eight canvas-textured sign boards.
       const disposeWildscape = wildscape.userData.dispose as (() => void) | undefined
       disposeWildscape?.()
+      // The town is never taken out of the scene, so the Zcash house's own
+      // 'removed' teardown never fires on a remount — and a wardrobe change
+      // remounts. Asked for by hand, like the wildscape above, or its two
+      // welded bodies and two canvas textures outlive the renderer holding
+      // them. Idempotent, so the removal path staying is not a double free.
+      const disposeZcashHouse = zcashHouse?.userData.dispose as (() => void) | undefined
+      disposeZcashHouse?.()
       renderer.dispose(); mount.current?.removeChild(renderer.domElement)
     }
   }, [wizard, style])

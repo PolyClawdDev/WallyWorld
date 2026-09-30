@@ -36,6 +36,26 @@ import type { Batch, Surface } from './voxelBuild'
  * brightest lettering on the building. The rule that follows from this
  * is short: if the coin is ever made bigger, the notice gets bigger
  * with it. They are one object.
+ *
+ * ---- why the coin is a second batch --------------------------------
+ *
+ * The coin TURNS, and the base does not, so the two cannot share a
+ * mesh. Everything static — base, door, lamps, chocks, uplights, window
+ * slits, notice and sign — stays welded into one batch. The coin gets a
+ * batch of its own, welded into a `THREE.Group` standing at the coin's
+ * centre and built at that group's ORIGIN, so its local +y is its own
+ * axis. Built at town coordinates instead, the group's origin would be
+ * the town's, and turning it would walk a fifteen-metre coin round the
+ * quarter rather than spin it where it stands.
+ *
+ * Measured, the cost of that is one extra draw call: thirteen meshes
+ * became fourteen. Only `GOLD_DEEP` is welded twice now — the cornice
+ * and the chocks keep it on the base side, the milled edge needs it on
+ * the coin side — and the coin's bright gold was never in the base to
+ * begin with. Boxes and triangles are unchanged at 948 and 11,376,
+ * because the same cubes are being welded either way. What does change
+ * is the teardown: `dispose()` now has two welded bodies to free, and
+ * freeing one of them is a leak rather than a fix.
  * ------------------------------------------------------------------ */
 
 /** Zcash's own gold and black, held apart from the town palette. */
@@ -69,6 +89,33 @@ const FACE_CELLS = 2
  * it, which is the one collision this building cannot have.
  */
 const BASE_TOP = 8
+
+/**
+ * Seconds for one full revolution of the coin.
+ *
+ * About the VERTICAL axis, which is the only axis that keeps the thing a coin:
+ * a coin stood on edge and spun on a table turns this way, the Ⓩ stays upright
+ * throughout, and both struck faces come round to the street in turn. Turned
+ * about its own thickness instead it would be a wheel, and the mark would spend
+ * half of every revolution upside down.
+ *
+ * Fourteen seconds after watching it at eight and at twenty. Eight is a
+ * fairground spinner — at 7.5m of radius the rim runs at 6m/s, faster than the
+ * player can sprint, and the edge-on flash arrives before the eye has finished
+ * reading the mark. Twenty is slow enough that a player crossing the plaza
+ * cannot tell it is moving at all. Fourteen puts the rim at about walking pace
+ * and gives each face roughly five seconds square-on to the street, which is
+ * long enough to read a trademark and short enough to be obviously alive.
+ *
+ * Nothing else is applied: no wobble, no bob, no easing. A struck coin on a
+ * mount has no reason to bounce, and easing a constant rotation only makes the
+ * edge-on moment — the one frame that has to look deliberate — linger.
+ */
+const REVOLUTION_SECONDS = 14
+const SPIN_RATE = (Math.PI * 2) / REVOLUTION_SECONDS
+/** Wrapped every turn, so a long session cannot drift the angle into a float
+ * range where a degree costs more precision than the spin has to give. */
+const FULL_TURN = Math.PI * 2
 
 /**
  * A lit panel of words, as a canvas on an unlit plane.
@@ -200,11 +247,20 @@ export function createZcashHouse(spec: BuildingSpec) {
   const { width: coinSpan } = emblemSize('ZCASH', COIN_CELL)
   const coinY = BASE_TOP + coinSpan / 2
   const faceDepth = FACE_CELLS * COIN_CELL
-  batch.plate(emblemPlate('ZCASH', [x, coinY, z - faceDepth / 2], COIN_CELL, { depth: FACE_CELLS, faceYaw: 0 }))
-  batch.plate(emblemPlate('ZCASH', [x, coinY, z + faceDepth / 2], COIN_CELL, { depth: FACE_CELLS, faceYaw: Math.PI }))
+  // The pivot stands at the coin's centre and everything below is built at its
+  // origin, so `coin.rotation.y` is the coin's own axis. See the header.
+  const coin = new THREE.Group()
+  coin.name = 'zcash-coin'
+  coin.position.set(x, coinY, z)
+  const coinBatch = createBatch()
+  coinBatch.plate(emblemPlate('ZCASH', [0, 0, -faceDepth / 2], COIN_CELL, { depth: FACE_CELLS, faceYaw: 0 }))
+  coinBatch.plate(emblemPlate('ZCASH', [0, 0, faceDepth / 2], COIN_CELL, { depth: FACE_CELLS, faceYaw: Math.PI }))
   // Proud of the rim, not flush with it. Set inside the mark's own outer ring
   // the milling was hidden behind black cells and the coin read as a wheel.
-  reeding(batch, x, coinY, z, coinSpan / 2 + 0.05, faceDepth * 2 + 0.12)
+  // It earns its keep twice over now: twice a revolution the faces go edge-on
+  // and the milled band is the whole coin, so the flash reads as a struck edge
+  // catching the light rather than as the coin having vanished.
+  reeding(coinBatch, 0, 0, 0, coinSpan / 2 + 0.05, faceDepth * 2 + 0.12)
   // Two chocks under the rim. A disc this size balanced on one cell of its own
   // edge reads as a mistake; a coin set into a mount reads as deliberate.
   for (const side of [-1, 1]) {
@@ -240,24 +296,58 @@ export function createZcashHouse(spec: BuildingSpec) {
   batch.box([4.7, 1.15, 0.24], [x, 4.05, front - 0.28], INK)
 
   const built = batch.build(group)
+  const coinBuilt = coinBatch.build(coin)
+  group.add(coin)
   for (const mesh of texts) group.add(mesh)
+
+  /**
+   * One turn of the coin, driven by the frame's own elapsed time.
+   *
+   * `dt` in seconds, never a frame count: this world's tick already clamps dt,
+   * and every time something in this project has been advanced per frame the
+   * speed has turned out to be a reading of the player's hardware.
+   *
+   * Allocates nothing. Assigning `rotation.y` writes through Euler's existing
+   * change hook into the object's existing quaternion; a new Euler or Vector3
+   * here would be sixty of them a second for the life of the session.
+   */
+  group.userData.spin = (dt: number) => {
+    coin.rotation.y = (coin.rotation.y + SPIN_RATE * dt) % FULL_TURN
+  }
 
   let disposed = false
   const dispose = () => {
     if (disposed) return
     disposed = true
+    // Both welded bodies. The base's batch and the coin's are separate owners
+    // of separate buffers, and freeing one of them is the leak, not the fix.
     built.dispose()
+    coinBuilt.dispose()
     for (const mesh of texts) {
       mesh.geometry.dispose()
       disposeMaterial(mesh.material as THREE.Material)
     }
   }
   group.userData.dispose = dispose
-  group.userData.boxes = built.boxes
-  group.userData.triangles = built.triangles
+  group.userData.boxes = built.boxes + coinBuilt.boxes
+  group.userData.triangles = built.triangles + coinBuilt.triangles
   // Same teardown signal the emblems use: removal from the graph. The case that
   // actually leaks is the world remounting on a wardrobe change and building a
   // second town over the first one's buffers.
   group.addEventListener('removed', dispose)
   return group
+}
+
+/**
+ * Advance the coin by one frame.
+ *
+ * Same shape as `animateWildscape`: the house is handed to the render loop as a
+ * plain Object3D, so the per-frame work hangs off `userData` and this is the
+ * typed door to it. Silently does nothing if the house is absent, which is what
+ * the loop wants — the town is built once and the loop should not have to know
+ * whether a landmark happens to move.
+ */
+export function animateZcashHouse(house: THREE.Object3D | null | undefined, dt: number) {
+  const spin = house?.userData.spin as ((dt: number) => void) | undefined
+  spin?.(dt)
 }
