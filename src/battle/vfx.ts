@@ -67,14 +67,36 @@ export function createVfx(scene: THREE.Scene, camera: THREE.Camera) {
     drift: number
   }
   const POOL = 16
+  /*
+   * The bitmap a float label is drawn into is wider than a damage number needs,
+   * because the same pool carries the level-up announcement and `LEVEL 15` at
+   * 54px monospace is 269px of glyphs. Drawn centred on the old 192px canvas it
+   * lost both ends off the edge and read as `EVEL 1`.
+   *
+   * WORLD_PER_PX is what keeps the widening invisible: the sprite is scaled from
+   * the bitmap at a fixed ratio, so a wider bitmap only means more transparent
+   * quad around the text, never a different glyph size.
+   */
+  const LABEL_W = 320
+  const LABEL_H = 96
+  const WORLD_PER_PX = 0.85 / 96
+  const LABEL_FONT = 54
+  const LABEL_OUTLINE = 9
+  /*
+   * One slot past the round robin, kept for announcements. A level-up has to
+   * outlive the damage numbers thrown in the same second — the round robin
+   * would redraw its bitmap sixteen labels later — and two levels in quick
+   * succession have to replace one another rather than rise through each other.
+   */
+  const ANNOUNCE = POOL
   const slots: Slot[] = []
-  for (let i = 0; i < POOL; i++) {
+  for (let i = 0; i <= POOL; i++) {
     const canvas = document.createElement('canvas')
-    canvas.width = 192
-    canvas.height = 96
+    canvas.width = LABEL_W
+    canvas.height = LABEL_H
     const texture = new THREE.CanvasTexture(canvas)
     const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false }))
-    sprite.scale.set(1.7, 0.85, 1)
+    sprite.scale.set(LABEL_W * WORLD_PER_PX, LABEL_H * WORLD_PER_PX, 1)
     sprite.visible = false
     sprite.renderOrder = 30
     root.add(sprite)
@@ -85,31 +107,41 @@ export function createVfx(scene: THREE.Scene, camera: THREE.Camera) {
   // per short window keeps them legible.
   const lastNumberAt = new Map<string, number>()
 
-  function number(text: string, at: THREE.Vector3, color: string, options?: { key?: string; scale?: number; gapMs?: number }) {
+  function number(
+    text: string,
+    at: THREE.Vector3,
+    color: string,
+    options?: { key?: string; scale?: number; gapMs?: number; announce?: boolean },
+  ) {
     const now = performance.now()
     const key = options?.key
     if (key) {
       if (now - (lastNumberAt.get(key) ?? -1e9) < (options?.gapMs ?? 260)) return
       lastNumberAt.set(key, now)
     }
-    const slot = slots[cursor++ % POOL]
+    const slot = options?.announce ? slots[ANNOUNCE] : slots[cursor++ % POOL]
     const ctx = slot.canvas.getContext('2d')!
-    ctx.clearRect(0, 0, 192, 96)
-    ctx.font = '800 54px monospace'
+    ctx.clearRect(0, 0, LABEL_W, LABEL_H)
+    ctx.font = `800 ${LABEL_FONT}px monospace`
+    // Anything still too long for the bitmap steps its font down. A label that
+    // has to shrink is ugly; a label with its first letter missing is a bug.
+    const room = LABEL_W - LABEL_OUTLINE * 2
+    const measured = ctx.measureText(text).width
+    if (measured > room) ctx.font = `800 ${Math.max(8, Math.floor((LABEL_FONT * room) / measured))}px monospace`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    ctx.lineWidth = 9
+    ctx.lineWidth = LABEL_OUTLINE
     ctx.strokeStyle = '#0b1017'
-    ctx.strokeText(text, 96, 48)
+    ctx.strokeText(text, LABEL_W / 2, LABEL_H / 2)
     ctx.fillStyle = color
-    ctx.fillText(text, 96, 48)
+    ctx.fillText(text, LABEL_W / 2, LABEL_H / 2)
     slot.texture.needsUpdate = true
     slot.from.copy(at)
     slot.life = 850
     slot.until = now + slot.life
     slot.drift = (Math.random() - 0.5) * 0.8
     const size = options?.scale ?? 1
-    slot.sprite.scale.set(1.7 * size, 0.85 * size, 1)
+    slot.sprite.scale.set(LABEL_W * WORLD_PER_PX * size, LABEL_H * WORLD_PER_PX * size, 1)
     slot.sprite.position.copy(at)
     slot.sprite.visible = true
     ;(slot.sprite.material as THREE.SpriteMaterial).opacity = 1

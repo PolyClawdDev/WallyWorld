@@ -1514,7 +1514,7 @@ export function createBattle(deps: BattleDeps) {
       )
       deps.onLevelUp?.(progress.level)
       scratch.copy(player.position).setY(4.2)
-      vfx.number(`LEVEL ${progress.level}`, scratch, kit.accent, { scale: 1.2 })
+      vfx.number(`LEVEL ${progress.level}`, scratch, kit.accent, { scale: 1.2, announce: true })
     } else {
       persistProgress()
     }
