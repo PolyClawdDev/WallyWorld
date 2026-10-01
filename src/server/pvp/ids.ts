@@ -70,7 +70,8 @@ const updateLoadout = db.prepare(`
 
 const updateIncoming = db.prepare('update pvp_accounts set incoming_off = @off, updated_at_ms = @now where player_id = @player_id')
 
-export function newId(prefix: 'p' | 'c' | 'd' | 'e' | 'j' | 's'): string {
+/** `a` is an arena instance, which outlives the `d` matches fought in it. */
+export function newId(prefix: 'a' | 'p' | 'c' | 'd' | 'e' | 'j' | 's'): string {
   return `${prefix}_${randomBytes(16).toString('hex')}`
 }
 

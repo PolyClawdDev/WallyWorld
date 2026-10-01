@@ -35,6 +35,9 @@ const SHOTS = process.env.SHOT_DIR ?? 'screenshots'
 // browsers still open and nothing reported.
 mkdirSync(SHOTS, { recursive: true })
 
+/** Matches `RECONNECT_GRACE_MS` in `src/shared/pvp.ts`. */
+const GRACE_MS = 15_000
+
 const failures = []
 const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'ok  ' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`)
@@ -280,16 +283,46 @@ async function main() {
     /* ---- and now the part nothing else tests ------------------------- */
     console.log(`\n  leaving the duel via "${EXIT}"`)
     if (EXIT === 'rematch') {
+      /*
+       * A rematch is no longer a way out and has not been since duels moved
+       * into their own arena instance: it is a second match on the same floor,
+       * with the same instance id and the session score carried over. So it is
+       * driven here and then left, because what this run is about is whether
+       * every path eventually leads out — and a path that goes deeper first is
+       * the one most likely to strand somebody.
+       */
       check('A finds the Rematch button', await clickText(pageA, 'Rematch'))
       check('B finds the Rematch button', await clickText(pageB, 'Rematch'))
+      const again = await until(async () => {
+        const d = (await ui(pageA)).duel
+        return d && d.arena.matchNumber === 2 ? d : null
+      }, 45_000)
+      check('a mutual rematch opens a second match in the same arena',
+        Boolean(again) && again.arena.id === duel.arena.id, again ? `match ${again.arena.matchNumber}` : 'no second match')
+      if (again) {
+        await pvpSend(pageB, { t: 'surrender', duelId: again.duelId })
+        await until(async () => (await ui(pageA)).result?.duelId === again.duelId, 30_000)
+      }
+      await clickText(pageA, 'Leave arena')
+      await clickText(pageB, 'Leave arena')
     } else if (EXIT === 'leave') {
-      check('A finds Leave Arena', await clickText(pageA, 'Leave Arena'))
-      check('B finds Leave Arena', await clickText(pageB, 'Leave Arena'))
+      check('A finds Leave arena', await clickText(pageA, 'Leave arena'))
+      check('B finds Leave arena', await clickText(pageB, 'Leave arena'))
     } else if (EXIT === 'reload') {
       await pageA.reload({ waitUntil: 'domcontentloaded' })
       await enterWorld(pageA, 'Ash')
     }
-    await sleep(2500)
+    /*
+     * Waited for rather than slept through. A reload leaves the other fighter
+     * in the reconnect grace window, and the arena is retired by a clock on the
+     * server — so the question is whether it happens at all, not whether it has
+     * happened by an arbitrary two and a half seconds.
+     */
+    await until(async () => {
+      const a = (await ui(pageA)).duel
+      const b = (await ui(pageB)).duel
+      return !a && !b
+    }, GRACE_MS + 25_000, 500)
 
     const uiA = await ui(pageA)
     const uiB = await ui(pageB)

@@ -42,8 +42,10 @@ import { progressFor } from './battle/progression'
 import { CombatHud } from './combatHud'
 import { PvpOverlay } from './pvp/ui'
 import { refreshPvpIdentity, send, startPvp, stopPvp } from './pvp/net'
-import { isDuelLocked, pvpState } from './pvp/store'
-import { applyDuelPose, disposePvpWorld, inspectRemote, listRemotes, pickRemote, reportRespawn, updatePvpWorld } from './pvp/world'
+import { isDuelLocked, isFighting, pvpState } from './pvp/store'
+import { applyDuelPose, disposePvpWorld, inspectRemote, listRemotes, pickRemote, releaseDuelInput, reportRespawn, updatePvpWorld } from './pvp/world'
+import { arenaStageReport, syncArenaStage } from './pvp/arenaStage'
+import { drainDuelCues } from './pvp/feedback'
 import { TOWN_RESPAWN } from './shared/zones'
 import { createCharacterNameplate, displayNameFor } from './nameplate'
 import { PixelWordmark } from './PixelWordmark'
@@ -86,6 +88,27 @@ const PITCH_MIN = -0.34
 const PITCH_MAX = 0.85
 /** Mouse travel, in pixels, before a shift+left press counts as a camera drag. */
 const ORBIT_SLOP = 4
+
+/**
+ * How the camera is framed when a duel starts, and only when one starts.
+ *
+ * The arena floor is 40 m across and the two marks are 24 m apart, which at
+ * the town's default 9.5 m boom puts your opponent as a speck at the top of
+ * the frame — a duel you cannot see the other half of. The floor is not the
+ * thing to shrink: its size is derived from the longest reach in any kit, so
+ * cutting it would let CINDER open by dropping a Meteor on somebody who has
+ * not moved yet. Framing is the fix.
+ *
+ * Applied once, on entry, with the player's own framing restored on the way
+ * out. Continuous auto-framing was the alternative and it fights the wheel:
+ * somebody who zooms in to read a telegraph should stay zoomed in.
+ *
+ * Both numbers are measured rather than guessed — `scripts/verify-duel-arena.mjs`
+ * projects both fighters through the live camera and asserts each is inside
+ * the viewport at the spawn marks, which is the widest the gap ever gets.
+ */
+const ARENA_CAM_ZOOM = 22
+const ARENA_CAM_PITCH = 0.4
 
 const buildings = [
   { name: 'THE HEARTH', sub: 'Your home', x: -15, z: 11, color: '#765b52', npc: '' },
@@ -577,7 +600,24 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
   // teleport the player back to spawn and drop their loot.
   useEffect(() => { handlers.current = { onNear, onGold, onAction } })
   useEffect(() => { nameRef.current = playerName }, [playerName])
-  useEffect(() => { pausedRef.current = paused; if (paused) keysRef.current.clear() }, [paused])
+  /*
+   * A panel opening is the third way a held input can be orphaned, and the
+   * only one no browser event announces: the map, the pouch and the journal
+   * are in this document, so the window keeps focus and the tab stays visible
+   * while the whole world view is behind a dialog. `blur` and
+   * `visibilitychange` cover the other two and fire for neither of these.
+   *
+   * Clearing the key set was already here. The duel's standing order — "walk
+   * to this point", "attack" — lives on the server and nothing expired it, so
+   * a player who opened the map mid-fight left their wizard walking and
+   * swinging at an opponent they could no longer see.
+   */
+  useEffect(() => {
+    pausedRef.current = paused
+    if (!paused) return
+    keysRef.current.clear()
+    releaseDuelInput()
+  }, [paused])
   useEffect(() => {
     if (!mount.current) return
     const scene = new THREE.Scene()
@@ -651,6 +691,23 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
     let last = performance.now()
     let nearbyNpc: string | null = null
     let walking = false
+    /** The match this client has already declared itself loaded for. */
+    let readyFor: string | null = null
+    /**
+     * The instance this client has been set up for, and everything the arena
+     * borrowed and has to give back: the camera framing, and the spot in the
+     * town the player was standing on.
+     *
+     * The server keeps its own copy of the pose and restores it — but the
+     * client owns this wizard's transform while it is in the town, so without
+     * this the player is only put back by the desync snap, which lands the
+     * position and silently keeps the arena's facing.
+     */
+    let framedArena: string | null = null
+    let townReturn: { zoom: number; pitch: number; yaw: number; x: number; z: number; facing: number } | null = null
+    /** Reused for every duel cue, so hit feedback allocates nothing per frame. */
+    const cueAt = new THREE.Vector3()
+    let lastWallCue = 0
     const drops: THREE.Group[] = []
     /** Each coin builds its own geometry and material, so each one frees them. */
     const retireDrop = (drop: THREE.Group) => {
@@ -861,10 +918,14 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       primeAudio()
       if (key === 'v') { firstPerson.current = !firstPerson.current; player.visible = !firstPerson.current }
       const liveDuel = pvpState.duel
-      if (liveDuel && liveDuel.phase === 'active' && (key === 'q' || key === 'w' || key === 'e' || key === 'r')) {
+      // `isFighting` rather than the duel's phase: an ability pressed while the
+      // arena is still loading, during the countdown or over the results panel
+      // is refused by the server, and sending it anyway would let a player
+      // believe the input was banked.
+      if (liveDuel && isFighting() && (key === 'q' || key === 'w' || key === 'e' || key === 'r')) {
         const seq = (window as unknown as { __pvpSeq?: number }).__pvpSeq = ((window as unknown as { __pvpSeq?: number }).__pvpSeq ?? 0) + 1
         send({ t: 'input', duelId: liveDuel.duelId, seq, kind: 'cast', slot: key.toUpperCase() as 'Q' | 'W' | 'E' | 'R', x: cursorGround?.x, z: cursorGround?.z, sprinting: keys.has('shift') })
-      } else if (!(liveDuel && liveDuel.phase !== 'ended')) {
+      } else if (!isDuelLocked()) {
         if (key === 'q') castSlot('Q')
         if (key === 'e') castSlot('E')
         if (key === 'r') castSlot('R')
@@ -960,8 +1021,10 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         return
       }
       const duel = pvpState.duel
-      if (duel && duel.phase !== 'ended') {
-        if (duel.phase !== 'active') return
+      if (duel && isDuelLocked()) {
+        // Standing in the arena, so the town's click-to-walk is not available
+        // whatever the phase — but an order is only sent while damage is live.
+        if (!isFighting()) return
         const seq = (window as unknown as { __pvpSeq?: number }).__pvpSeq = ((window as unknown as { __pvpSeq?: number }).__pvpSeq ?? 0) + 1
         if (e.button === 2 && cursorGround) {
           send({ t: 'input', duelId: duel.duelId, seq, kind: 'move', x: cursorGround.x, z: cursorGround.z, sprinting: keys.has('shift') })
@@ -1041,12 +1104,84 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       const held = (...names: string[]) => !pausedRef.current && names.some(name => keys.has(name))
       const kit = battle?.kit
       const speed = held('shift') ? kit?.stats.runSpeed ?? 5.6 : kit?.stats.moveSpeed ?? 3.2
+
+      /* --- the arena ------------------------------------------------------
+       * Everything below that reads `dueling` is a town system being held
+       * back. Inside a duel the server owns this wizard's position outright,
+       * so local movement, the town's collision grid, the world-edge clamp,
+       * the wildlife and the tree-dodging camera are not merely unnecessary,
+       * they are wrong: an arena is 512 m outside the world, and every one of
+       * them would drag the player back toward the town or bring a piece of
+       * it along. `nav` in particular is bypassed rather than consulted — its
+       * grid IS the town, which is what put pines in the duel area. */
+      const dueling = isDuelLocked()
+      const arenaView = pvpState.duel?.arena ?? null
+      const stage = syncArenaStage(scene, arenaView, now, [player])
+      /*
+       * The both-ready gate, answered by the client that has to do the
+       * loading. This is what makes "no damage during load" a fact rather
+       * than a hope: the server holds the match in `preparing` until both
+       * floors are up, and damage is impossible before `active`.
+       *
+       * Sent once per match — `readyFor` — so a stalled load does not spam
+       * the socket, and the server's prepare timeout still bounds the wait if
+       * this never arrives at all.
+       */
+      const loading = pvpState.duel
+      if (loading && arenaView?.phase === 'loading' && stage.ready && readyFor !== loading.duelId) {
+        readyFor = loading.duelId
+        send({ t: 'ready', duelId: loading.duelId })
+      }
+      const inArena = arenaView && arenaView.phase !== 'closed' ? arenaView : null
+      if (inArena && framedArena !== inArena.id) {
+        framedArena = inArena.id
+        townReturn = {
+          zoom: zoomWanted,
+          pitch: pitchWanted,
+          yaw: yawWanted,
+          x: player.position.x,
+          z: player.position.z,
+          facing: player.rotation.y,
+        }
+        /*
+         * Turned to look down the line between the two marks, not just pulled
+         * back. Whichever mark you are given, the camera sits at `yaw` from the
+         * player and looks back along it, so the opponent is dead ahead when
+         * yaw is half a turn from the way this fighter is facing. Without this
+         * the arena inherited the yaw the player happened to be using in town,
+         * and one of the two spawns put the opponent behind the lens —
+         * `verify-duel-arena.mjs` caught exactly that, projecting the opponent
+         * to clip y of -4.5 on the mark that faced the wrong way.
+         */
+        const duel = pvpState.duel
+        const seat = duel ? (duel.a.playerId === duel.you ? duel.a : duel.b) : null
+        if (seat) yawWanted = Math.atan2(inArena.originX - seat.x, inArena.originZ - seat.z) + Math.PI
+        zoomWanted = ARENA_CAM_ZOOM
+        pitchWanted = ARENA_CAM_PITCH
+        // Snapped, not eased: this frame is behind a full-black veil, and an
+        // arena that swings into place is a cut dressed up as a camera move.
+        yaw = yawWanted
+        zoom = zoomWanted
+        pitch = pitchWanted
+      } else if (!inArena && framedArena) {
+        framedArena = null
+        if (townReturn) {
+          zoomWanted = zoom = townReturn.zoom
+          pitchWanted = pitch = townReturn.pitch
+          yawWanted = yaw = townReturn.yaw
+          player.position.x = townReturn.x
+          player.position.z = townReturn.z
+          player.rotation.y = townReturn.facing
+        }
+        townReturn = null
+      }
+
       // Off by default: the world is walked with the mouse. The arrow keys are
       // camera controls now, so they are deliberately not movement aliases.
       const dir = keyboardMove
         ? new THREE.Vector3((held('d') ? 1 : 0) - (held('a') ? 1 : 0), 0, (held('s') ? 1 : 0) - (held('w') ? 1 : 0))
         : new THREE.Vector3()
-      const manual = dir.lengthSq() > 0 && vitals.hp > 0
+      const manual = !dueling && dir.lengthSq() > 0 && vitals.hp > 0
       if (manual) {
         dir.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
         // Slide rather than step: walking into a wall at an angle now runs
@@ -1055,11 +1190,10 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         player.rotation.y = Math.atan2(dir.x, dir.z)
       }
       // A hit shoves you: the impulse decays inside vitals.update.
-      if (vitals.impulse.lengthSq() > 0.0004) {
+      if (!dueling && vitals.impulse.lengthSq() > 0.0004) {
         nav.slide(player.position, vitals.impulse.x * dt, vitals.impulse.z * dt)
       }
       if (!pausedRef.current) resolveCursor()
-      const dueling = isDuelLocked()
       const advanced = dueling ? undefined : battle?.update(dt, now, {
         cursorGround,
         hover: hover && hover.state !== 'dead' ? hover : null,
@@ -1070,11 +1204,24 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         safe: isSafeZone(player.position.x, player.position.z),
         paused: pausedRef.current,
       })
-      walking = manual || !!advanced?.moved
+      const mine = dueling && pvpState.duel
+        ? (pvpState.duel.a.playerId === pvpState.playerId ? pvpState.duel.a : pvpState.duel.b)
+        : null
+      walking = manual || !!advanced?.moved || mine?.anim === 'walk' || mine?.anim === 'run'
       refreshNameplate()
-      nav.resolve(player.position)
-      player.position.x = THREE.MathUtils.clamp(player.position.x, -96, 96); player.position.z = THREE.MathUtils.clamp(player.position.z, -96, 96)
+      if (!dueling) {
+        nav.resolve(player.position)
+        player.position.x = THREE.MathUtils.clamp(player.position.x, -96, 96); player.position.z = THREE.MathUtils.clamp(player.position.z, -96, 96)
+      }
       player.position.y = walking ? Math.abs(Math.sin(now * 0.012 * (speed / 3.2))) * 0.045 : Math.sin(now * 0.002) * 0.012
+      /*
+       * Before the camera, not after. The boom is built from `player.position`
+       * a few lines down, so applying the server's position afterwards — which
+       * is where this used to sit — framed the shot on where the wizard was
+       * last frame. Harmless for a metre of walking; a 512 m jump on the frame
+       * a duel starts, and a 512 m jump back on the frame it ends.
+       */
+      if (pvpState.playerId) applyDuelPose(player, pvpState.playerId)
       animateCharacter(player, now)
       scene.children.forEach(o => {
         if (o.userData.phase === undefined) return
@@ -1126,7 +1273,10 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
          * the corridor, or round the bole, and only shortens as a last resort
          * and never below its floor. Damped across frames, so a wood edge does
          * not lift and drop the lens once a step. See src/wildscape.ts. */
-        canopy?.springArm(desired, target, dt)
+        // Not in an arena: there is no wood 512 m outside the world, and the
+        // arm would be querying town trees against a lens that is nowhere near
+        // them. See the canopy section of src/wildscape.ts.
+        if (!dueling) canopy?.springArm(desired, target, dt)
         /* Looking ahead of the wayfinder is what makes the default framing read
          * as a street view, but it makes no sense from overhead: fade the lead
          * out, and raise the look point onto the wayfinder, as the camera
@@ -1140,7 +1290,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         // the way, so the lens is checked where it actually ended up as well —
         // and resolved by finishing the ease early, towards the vantage point the
         // arm already cleared, rather than by searching again from here.
-        canopy?.settle(camera.position, desired, target)
+        if (!dueling) canopy?.settle(camera.position, desired, target)
         camera.lookAt(streetLook)
       }
       // Backwards, because a collected coin leaves the list. It used to be only
@@ -1159,10 +1309,61 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         drops.splice(i, 1)
       }
 
+      /* --- duel: what the server says just happened ----------------------
+       * The server has always sent a `CombatEvent[]` with every combat frame
+       * and this client used to drop it, so a duel had no damage numbers and
+       * no flash when a blow landed — two players fought by watching a pair of
+       * HP counters. The events are drained here because this is the frame,
+       * and drawn through the same float-label pool the hunt uses. */
+      if (dueling) {
+        // The order engine is not running, so nothing else is advancing the
+        // labels this throws: without it the first number hangs in the air.
+        battle?.pumpEffects(dt, now)
+      }
+      for (const cue of drainDuelCues()) {
+        if (cue.kind === 'announce') {
+          battle?.floatText(cue.text, cueAt.set(player.position.x, 2.7, player.position.z), '#e9e2cc', {
+            announce: true,
+            scale: 1.15,
+          })
+          continue
+        }
+        if (cue.kind === 'boundary') {
+          // Throttled here rather than on the server: the wall reports every
+          // tick a fighter is pressed against it, which is the truth and also
+          // twenty sparks a second.
+          if (now - lastWallCue < 620) continue
+          lastWallCue = now
+          battle?.hitSpark(cueAt.set(cue.x, 0.9, cue.z), '#66d2e6', '#cff6fb', 1.5)
+          continue
+        }
+        if (cue.kind === 'cast') {
+          battle?.floatText(cue.name, cueAt.set(cue.x, 2.3, cue.z), cue.byMe ? '#cfe4e8' : '#b9a7c9', {
+            key: cue.byMe ? 'duel-cast-mine' : 'duel-cast-theirs',
+            gapMs: 300,
+            scale: 0.8,
+          })
+          continue
+        }
+        // Damage. Red on you, gold on them — the one distinction that has to
+        // be readable at a glance in the middle of a fight.
+        battle?.floatText(String(cue.amount), cueAt.set(cue.x, 1.75, cue.z), cue.onMe ? '#ff6f52' : '#ffd066', {
+          key: cue.onMe ? 'duel-dmg-mine' : 'duel-dmg-theirs',
+          gapMs: 90,
+          scale: cue.onMe ? 1.05 : 0.95,
+        })
+        battle?.hitSpark(cueAt.set(cue.x, 1.2, cue.z), cue.onMe ? '#e35e35' : '#f0b84d')
+      }
+
       /* --- hunt: wildlife, abilities, vitals, HUD ------------------------- */
       const safe = isSafeZone(player.position.x, player.position.z)
-      if (!isDuelLocked()) vitals.update(dt, now, safe)
-      wildlife.update(dt, now, player.position, camera, !isDuelLocked() && vitals.hp > 0 && !vitals.isInvulnerable(now))
+      if (!dueling) {
+        vitals.update(dt, now, safe)
+        // Not merely disarmed — not simulated. Left running, the wildlife would
+        // track a player standing 512 m outside the world and spawn toward
+        // them, which is a herd waiting in the arena when the duel ends.
+        wildlife.update(dt, now, player.position, camera, vitals.hp > 0 && !vitals.isInvulnerable(now))
+      }
       const correction = updatePvpWorld(scene, dt, now, {
         x: player.position.x,
         z: player.position.z,
@@ -1179,9 +1380,10 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         player.position.z = correction.z
         battle?.cancel()
       }
-      if (pvpState.playerId) applyDuelPose(player, pvpState.playerId)
-      animateWildscape(wildscape, now)
-      animateZcashHouse(zcashHouse, dt)
+      if (!dueling) {
+        animateWildscape(wildscape, now)
+        animateZcashHouse(zcashHouse, dt)
+      }
       // The plate follows the committed target first and the cursor second, so
       // it stops flickering the moment you actually pick a fight.
       const engaged = battle?.attackOrderTarget() ?? battle?.selectedTarget() ?? null
@@ -1250,6 +1452,38 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
         // real click would make them. Stripped from production builds.
         pvpSend: (msg: unknown) => send(msg as Parameters<typeof send>[0]),
         pvpClearError: () => { pvpState.error = null },
+        /*
+         * Everything the two-client verifier needs to make a claim about the
+         * arena numerically rather than by looking at a screenshot: what the
+         * stage did, what the town is doing behind it, where the fighters
+         * actually are, and what the frame costs.
+         */
+        arena: () => {
+          const view = pvpState.duel?.arena ?? null
+          const report = view ? { ...view } : null
+          return {
+            view: report,
+            stage: arenaStageReport(performance.now()),
+            locked: isDuelLocked(),
+            player: { x: player.position.x, y: player.position.y, z: player.position.z, facing: player.rotation.y },
+            // The town's own objects, so "no town geometry is visible" is a
+            // count and not an impression.
+            visibleTownObjects: scene.children.filter(child =>
+              child.visible && child !== player && child.name !== 'arena' && child.name !== 'combat-vfx',
+            ).length,
+            remotes: listRemotes(),
+            camera: { zoom, zoomWanted, pitch, pitchWanted, x: camera.position.x, y: camera.position.y, z: camera.position.z },
+            cost: {
+              calls: renderer.info.render.calls,
+              triangles: renderer.info.render.triangles,
+            },
+          }
+        },
+        /** Projects a world point through the live camera, in clip space. */
+        onScreen: (x: number, y: number, z: number) => {
+          const point = new THREE.Vector3(x, y, z).project(camera)
+          return { x: point.x, y: point.y, z: point.z, inView: Math.abs(point.x) <= 1 && Math.abs(point.y) <= 1 && point.z < 1 }
+        },
         pvpUi: () => ({
           connected: pvpState.connected,
           link: pvpState.link,

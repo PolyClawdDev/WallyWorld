@@ -2,9 +2,11 @@ import * as THREE from 'three'
 import { animateCharacter, createWizard, wizards } from '../characters'
 import { createCharacterNameplate, displayNameFor, type CharacterNameplate } from '../nameplate'
 import { send } from './net'
-import { isDuelLocked, pvpState } from './store'
+import { disposeArenaStage } from './arenaStage'
+import { clearDuelCues } from './feedback'
+import { isDuelLocked, isFighting, pvpState } from './store'
 import { DUEL_RINGS } from '../shared/zones'
-import type { PublicPresence } from '../shared/pvp'
+import type { DuelSnapshot, PublicPresence } from '../shared/pvp'
 
 type Remote = {
   id: string
@@ -41,6 +43,41 @@ const DESYNC_SNAP_DISTANCE = 12
  * machine — and, at a low enough frame rate, overshoots past the target.
  */
 const REMOTE_SMOOTHING = 9
+
+/**
+ * How far a remote may jump before it is moved rather than eased.
+ *
+ * Smoothing is for latency. A gap this size is not latency, it is a change
+ * of place: an opponent entering an arena 512 m outside the world, or coming
+ * back out of one. Eased, that draws a wizard skating across the whole map
+ * for half a second, through a town that is no longer being rendered.
+ */
+const REMOTE_SNAP_DISTANCE = 40
+
+/**
+ * The opponent, as presence would have described them.
+ *
+ * Inside an arena the fighters' positions do NOT come from presence. Presence
+ * reports where a duellist is standing in the TOWN, because that is where
+ * their overworld record stays for the whole duel — the arena is not a place
+ * in the town and publishing its coordinates would put both of them off the
+ * map for everybody else. The duel snapshot is the only frame that carries
+ * arena positions, and it goes to the two fighters and nobody else.
+ */
+function foeAsPresence(duel: DuelSnapshot): PublicPresence {
+  const foe = duel.a.playerId === duel.you ? duel.b : duel.a
+  return {
+    playerId: foe.playerId,
+    displayName: foe.displayName,
+    loadout: foe.loadout,
+    x: foe.x,
+    z: foe.z,
+    facing: foe.facing,
+    anim: foe.anim,
+    state: 'dueling',
+    inTown: false,
+  }
+}
 
 function syncRemote(scene: THREE.Scene, presence: PublicPresence) {
   let remote = remotes.get(presence.playerId)
@@ -171,9 +208,19 @@ export function listRemotes() {
 
 let inputReleaseBound = false
 
-function releaseDuelInput() {
+/**
+ * Cancels the standing order. Safe to call at any time.
+ *
+ * Exported because a third case fires neither `blur` nor `visibilitychange`:
+ * opening an in-page panel. The map, the pouch and the journal are all in
+ * this document, so the window keeps focus and the tab stays visible while
+ * the player's attention — and the whole world view — is somewhere else.
+ * `main.tsx` already clears its held-key set when a panel pauses the world;
+ * this is the duel's half of the same clearing.
+ */
+export function releaseDuelInput() {
   const duel = pvpState.duel
-  if (!duel || !isDuelLocked()) return
+  if (!duel || !isFighting()) return
   // The same counter `main.tsx` uses, so the two cannot disagree about which
   // order came last.
   const holder = window as unknown as { __pvpSeq?: number }
@@ -212,17 +259,36 @@ export function updatePvpWorld(scene: THREE.Scene, dt: number, now: number, loca
   anim: 'idle' | 'walk' | 'run' | 'attack' | 'cast' | 'hit' | 'down'
   sprinting: boolean
 }): LocalCorrection | null {
-  markDuelRings(scene)
   bindInputRelease()
+  const duel = pvpState.duel
   const seen = new Set<string>()
-  for (const other of pvpState.others) {
-    if (pvpState.muted.has(other.playerId)) continue
-    seen.add(other.playerId)
-    syncRemote(scene, other)
+  if (duel && isDuelLocked()) {
+    /*
+     * An arena has exactly two people in it. Everyone else is dropped rather
+     * than hidden, so a non-participant cannot be in the duel by having been
+     * missed — and their wizard is not sitting in the scene at a town
+     * position waiting to be drawn the moment something un-hides it.
+     */
+    const foe = foeAsPresence(duel)
+    seen.add(foe.playerId)
+    syncRemote(scene, foe)
+  } else {
+    // Built lazily, and deliberately never while an arena is up: the stage
+    // hides what is in the scene when the duel starts, so a group added after
+    // that would be the one piece of town left standing in the void.
+    markDuelRings(scene)
+    for (const other of pvpState.others) {
+      if (pvpState.muted.has(other.playerId)) continue
+      seen.add(other.playerId)
+      syncRemote(scene, other)
+    }
   }
   dropMissing(scene, seen)
   const blend = 1 - Math.exp(-REMOTE_SMOOTHING * dt)
   for (const remote of remotes.values()) {
+    if (remote.group.position.distanceTo(remote.target) > REMOTE_SNAP_DISTANCE) {
+      remote.group.position.copy(remote.target)
+    }
     remote.group.position.lerp(remote.target, blend)
     // Rotate the short way round, or a wizard turning past π spins all the
     // way back through every angle it did not take.
@@ -287,5 +353,10 @@ export function disposePvpWorld(scene: THREE.Scene) {
     rings = null
   }
   unbindInputRelease()
+  // The arena holds a floor, seven lights and the town's visibility record.
+  // Unmounting the world without this leaves every one of them on the GPU and
+  // leaves the town hidden if the unmount happened mid-duel.
+  disposeArenaStage()
+  clearDuelCues()
   lastPose = 0
 }

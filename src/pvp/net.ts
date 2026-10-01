@@ -43,12 +43,12 @@ import {
   RECONNECT_MAX_MS,
   STALE_CONNECTION_MS,
   type C2S,
-  type DuelId,
   type DuelSnapshot,
   type S2C,
 } from '../shared/pvp'
 import type { PublicLoadout } from '../shared/pvp'
 import { pushChatLine } from '../chat/store'
+import { clearDuelCues, queueDuelCues } from './feedback'
 import { forgetPresenceAuth, presenceAuthProblem, presenceTokenSync, resolvePresenceAuth } from './guest'
 import { pingPvp, pvpState } from './store'
 
@@ -165,40 +165,60 @@ function repairSession(detail: string) {
 }
 
 /* ------------------------------------------------------------------ *
- * What may be installed as "the duel you are in".
+ * What may be installed as "the arena you are in".
  *
- * Only a fight that is still happening. An `ended` snapshot is news that
- * the fight is over, not a fight to be in, and treating it as one is what
- * left both fighters frozen: `pvpState.duel` stayed set, so the world
- * pinned each player to their last ring position, stopped sending poses,
- * and disabled the movement engine — while the server, for its part, had
- * gone back to accepting them. Nothing on screen could clear it either,
- * because the duel HUD has no button in the `ended` phase and the result
- * card had already been dismissed.
+ * The test used to be the DUEL's phase: an `ended` snapshot was news that
+ * the fight was over, so it was refused, and `pvpState.duel` was cleared.
+ * That is no longer the same question. A match now settles while both
+ * fighters are still standing on the floor reading the result and deciding
+ * about another one, so `ended` is an ordinary state to be in and the
+ * server keeps owning both positions through it.
  *
- * `finishedDuelId` is the other half: it makes a stale frame harmless. Once
- * a duel has settled, no later message about it — a `combat` frame that was
- * already in flight, a snapshot replayed after a reconnect — can put the
- * player back into it.
+ * The state that means "you are out" is `arena.phase === 'closed'`, and the
+ * server sets it on exactly one path — `retireDuel` — which runs from every
+ * exit including a failed settlement and a shutdown drain. So that is the
+ * only thing this client treats as the end.
+ *
+ * Two staleness guards, for the two ways a late frame can lie:
+ *
+ *   `closedArenaId` makes a replay of an instance we have left harmless. A
+ *   `combat` frame already on the wire, or a snapshot resent after a
+ *   reconnect, cannot put the player back onto a floor that is gone.
+ *
+ *   `matchNumber` makes a replay of an earlier MATCH harmless. One instance
+ *   holds several, so a duel id is not enough: a frame from match one
+ *   arriving during match two would otherwise reinstate the old HP bars.
  * ------------------------------------------------------------------ */
 
-let finishedDuelId: DuelId | null = null
+let closedArenaId: string | null = null
 
 function liveDuel(snapshot: DuelSnapshot | null | undefined): DuelSnapshot | null {
   if (!snapshot) return null
-  if (snapshot.duelId === finishedDuelId) return null
-  if (snapshot.phase === 'ended') {
-    finishedDuelId = snapshot.duelId
+  if (snapshot.arena.id === closedArenaId) return null
+  if (snapshot.arena.phase === 'closed') {
+    leaveArenaState(snapshot.arena.id)
+    return null
+  }
+  const held = pvpState.duel
+  if (held && held.arena.id === snapshot.arena.id && snapshot.arena.matchNumber < held.arena.matchNumber) {
     return null
   }
   return snapshot
 }
 
-/** Puts the player back in the world, whatever ended the duel. */
-function leaveDuelState(duelId: DuelId | null) {
-  if (duelId) finishedDuelId = duelId
+/** Puts the player back in the world, whatever closed the arena. */
+function leaveArenaState(arenaId: string | null) {
+  if (arenaId) closedArenaId = arenaId
   pvpState.duel = null
+  /*
+   * The result is kept. Its buttons stop working when the instance goes, and
+   * the card says so, but clearing it here meant the one player who most needs
+   * to be told what happened never saw it: when an opponent drops for good, the
+   * match settles and the sweep retires the arena in the same tick, so the card
+   * appeared and was wiped inside 50ms. A new match clears it — see `duel`.
+   */
   pvpState.surrenderAsk = false
+  clearDuelCues()
 }
 
 function apply(msg: S2C) {
@@ -249,15 +269,11 @@ function apply(msg: S2C) {
       break
     case 'duel': {
       const live = liveDuel(msg.snapshot)
+      if (!live) break
       pvpState.duel = live
-      if (!live) {
-        // Deliberately not clearing `invite`/`outgoing` here. A snapshot of a
-        // duel that is over arrives after the result, by which time a rematch
-        // invitation may already be on screen, and throwing it away would make
-        // the rematch button look broken.
-        pvpState.surrenderAsk = false
-        break
-      }
+      // A new match in the same instance clears the last one's result card,
+      // so the rematch is not fought behind the numbers from the last round.
+      if (pvpState.result && pvpState.result.duelId !== live.duelId) pvpState.result = null
       pvpState.inspect = null
       pvpState.composer = null
       pvpState.invite = null
@@ -266,17 +282,24 @@ function apply(msg: S2C) {
     }
     case 'combat': {
       const live = liveDuel(msg.snapshot)
+      if (!live) break
       pvpState.duel = live
-      if (!live) pvpState.surrenderAsk = false
+      // Queued against the snapshot they arrived with, because that is where
+      // the blows landed; by the next frame both fighters have moved.
+      queueDuelCues(live, msg.events)
       break
     }
     case 'result':
+      /*
+       * The result is the end of the MATCH, not of the arena. `duel` is
+       * deliberately left alone: the server sends a `results` snapshot with
+       * it, both fighters stay on the floor, and what takes them off it is a
+       * `closed` snapshot — from a rematch neither wanted, a leave, a drop, or
+       * the results deadline. Every one of those is bounded on the server, so
+       * nothing here is waiting on a button.
+       */
       pvpState.result = msg.result
-      // The result IS the end of the duel as far as this client is concerned.
-      // Leaving `duel` set here and waiting for a button to clear it is what
-      // made "Rematch" — the primary action on the result card — a way to
-      // freeze yourself in a fight that was already over.
-      leaveDuelState(msg.result.duelId)
+      pvpState.surrenderAsk = false
       break
     case 'journal':
       pvpState.journal = msg.entries

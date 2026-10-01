@@ -45,6 +45,30 @@ export const DUEL_CAP_MS = 3 * 60 * 1000
 export const RECONNECT_GRACE_MS = 15_000
 export const OUT_OF_BOUNDS_MS = 5_000
 export const PREPARE_TIMEOUT_MS = 45_000
+
+/**
+ * How long two fighters may stand in the arena after a match.
+ *
+ * The results panel is the one place in the flow where nothing is being
+ * simulated and nobody is under any pressure to act, which is exactly the
+ * shape of state that strands people. So it has a deadline like every
+ * other phase: when it runs out the instance closes itself and both
+ * players are put back in the town whether or not either touched a button.
+ *
+ * Generous, because it is not a hurry-up — a rematch involves two people
+ * agreeing, and being thrown out of the arena while reading the numbers
+ * would be worse than the wait.
+ */
+export const RESULTS_TIMEOUT_MS = 90_000
+
+/**
+ * The fade over the scene swap, each way.
+ *
+ * Long enough to hide the town being taken down and the arena being put
+ * up, short enough that it reads as a cut rather than as a cinematic. The
+ * brief asked for "a brief fade in and out, no long cinematics".
+ */
+export const ARENA_FADE_MS = 380
 export const POSE_HZ = 12
 export const COMBAT_TICK_MS = 50
 export const INTERACT_RANGE = 18
@@ -296,10 +320,56 @@ export type DuelFighterView = {
   connected: boolean
 }
 
+/* ------------------------------------------------------------------ *
+ * The arena instance.
+ *
+ * A duel is one match. An arena instance can hold several: a mutual
+ * rematch is a new match with a new `duelId` and its own escrow, fought
+ * in the SAME instance, which is why the instance needs an identity and a
+ * phase of its own rather than being a property of the duel.
+ *
+ * `ArenaPhase` is the client's whole state machine. It is derived from the
+ * simulation's phase and the session's, and every one of its states has a
+ * bounded exit on the server — `loading` by the prepare timeout,
+ * `countdown` by its own length, `fighting` by the three-minute cap, and
+ * `results` by `RESULTS_TIMEOUT_MS`. `closed` is the one that means "you
+ * are out"; nothing else does, and the client must not infer it from the
+ * duel's phase, because a settled match with a results panel on screen is
+ * `ended` as a duel and very much still in the arena.
+ * ------------------------------------------------------------------ */
+
+export type ArenaPhase = 'loading' | 'countdown' | 'fighting' | 'results' | 'closed'
+
+/** Matches won in this instance. Reset by leaving it, not by a rematch. */
+export type ArenaSeries = { aWins: number; bWins: number; draws: number }
+
+export type ArenaView = {
+  /** Stable for the life of the instance, across every rematch in it. */
+  id: string
+  /**
+   * Instance origin, in world coordinates. The client puts the arena's
+   * root here so the server's fighter positions need no translation: what
+   * arrives in the snapshot is where the wizard goes.
+   */
+  originX: number
+  originZ: number
+  /** Where the wall stands, so the client can draw a boundary warning against it. */
+  boundaryRadius: number
+  /** 1 for the first match in this instance, 2 for the first rematch, and so on. */
+  matchNumber: number
+  phase: ArenaPhase
+  series: ArenaSeries
+  /** Who has asked for another match. Both true is what starts one. */
+  rematch: { a: boolean; b: boolean }
+  /** Deadline on the results phase. Null outside it. */
+  resultsEndsAtMs: number | null
+}
+
 export type DuelSnapshot = {
   duelId: DuelId
   challengeId: ChallengeId
   phase: DuelPhase
+  arena: ArenaView
   ringId: string
   ringName: string
   stake: number
@@ -319,6 +389,15 @@ export type DuelSnapshot = {
 
 export type DuelResultView = {
   duelId: DuelId
+  /** The instance this match was fought in, so a rematch can name it. */
+  arenaId: string
+  matchNumber: number
+  /**
+   * The running score in this instance, including the match just settled,
+   * from the reader's own side — like `yourDelta` and `yourBalance` beside it.
+   * `ArenaSeries` is a/b because a snapshot is symmetric; a result is not.
+   */
+  series: { yours: number; theirs: number; draws: number }
   kind: DuelOutcomeKind
   winnerId: PlayerId | null
   loserId: PlayerId | null
@@ -379,6 +458,16 @@ export type C2S =
   | { t: 'ready'; duelId: DuelId }
   | { t: 'input'; duelId: DuelId; seq: number; kind: CombatInputKind; x?: number; z?: number; slot?: 'Q' | 'W' | 'E' | 'R'; sprinting?: boolean }
   | { t: 'surrender'; duelId: DuelId }
+  /**
+   * "I want another match in this arena." Mutual: the instance starts a
+   * new match only once both fighters have one of these standing, and
+   * either may withdraw it with `on: false`.
+   *
+   * Deliberately not a fresh challenge. Rematching by re-challenging gave
+   * a new ring, a new arena instance and a new walk out of town, and threw
+   * the session score away — which is most of what a rematch is for.
+   */
+  | { t: 'rematch'; duelId: DuelId; on: boolean }
   | { t: 'leave'; duelId: DuelId }
   | { t: 'block'; playerId: PlayerId; on: boolean }
   | { t: 'settings'; incomingDisabled: boolean }
@@ -441,14 +530,26 @@ export type CombatEvent =
   | { kind: 'hit'; source: PlayerId; target: PlayerId; amount: number; label: string }
   | { kind: 'cast'; source: PlayerId; slot: 'Q' | 'W' | 'E' | 'R'; name: string }
   | { kind: 'announce'; text: string }
+  /**
+   * A fighter was held by the boundary this tick.
+   *
+   * The server is the only side that knows: it owns the position, and what
+   * the client receives is already inside the wall. Without this event a
+   * player walking into the barrier sees their wizard stop for no visible
+   * reason, which reads as the controls having failed.
+   */
+  | { kind: 'boundary'; target: PlayerId }
 
 export const DUEL_RULES = [
   'Equal stakes. Winner takes the pot. No house fee.',
   'Game gold only — not SOL, not wallet funds.',
   'Real levels and kits. Nothing is secretly equalized.',
   'First to 0 HP loses. Mutual death or the 3-minute cap is a draw and refunds both stakes.',
-  'Leave the ring for 5 seconds and you forfeit.',
-  'Town is protected. Challenges and PvP damage only work outside the gates.',
+  // Was "leave the ring for 5 seconds and you forfeit", which described the
+  // old open-ground rings. The arena has a wall: there is no out to go to,
+  // so the honest rule is that the floor keeps you on it.
+  'The arena is sealed. The boundary holds you in — there is nowhere to run to.',
+  'Town is protected. Challenges only work outside the gates; the duel is fought elsewhere.',
 ] as const
 
 export function assertIntGold(value: unknown, label = 'amount'): number {

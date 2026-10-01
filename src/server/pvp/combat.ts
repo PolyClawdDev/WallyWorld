@@ -1,6 +1,28 @@
 /* ------------------------------------------------------------------ *
  * Authoritative duel sim. Clients send inputs; this file decides hits,
- * damage, death, and whether a body is still inside the ring.
+ * damage, death, and whether a body is still inside the arena.
+ *
+ * The fight happens in an INSTANCE, not in the town. Positions here are in
+ * the coordinate space `src/arena/space.ts` lays out: a frame whose origin
+ * is 512 m from the town, with a circular boundary and two opposite marks.
+ * Three things follow from that and all three used to be bugs.
+ *
+ *   There is no town in here, so there is no town protection to apply. The
+ *   `isInTown` guards that used to be threaded through every damage path
+ *   were not protecting anyone in a duel — they were a pocket of the
+ *   `east-heath` ring in which a fighter could not be hit, because that
+ *   ring overlapped a building's skirt. Town is enforced where it belongs,
+ *   on the challenge.
+ *
+ *   The boundary is a circle with nothing in it, so containment is one
+ *   comparison and there is no pathfinding. `src/battle/nav.ts` is
+ *   deliberately not imported: constructing a NavGrid bakes the entire
+ *   town into a blocking grid, which is precisely what put trees in the
+ *   duel area.
+ *
+ *   The arena outlives the duel. A mutual rematch is a new `DuelSim` with
+ *   a new id and its own escrow, handed the same `ArenaHost`, so the two
+ *   fighters never leave the floor between matches.
  * ------------------------------------------------------------------ */
 
 import {
@@ -12,6 +34,9 @@ import {
   OUT_OF_BOUNDS_MS,
   RECONNECT_GRACE_MS,
   type AnimKind,
+  type ArenaPhase,
+  type ArenaSeries,
+  type ArenaView,
   type CombatEvent,
   type CombatInputKind,
   type DuelFighterView,
@@ -19,7 +44,13 @@ import {
   type PlayerId,
   type PublicLoadout,
 } from '../../shared/pvp'
-import { isInTown, pointInRing, ringById, ringStarts, type DuelRing } from '../../shared/zones'
+import { ringById, type DuelRing } from '../../shared/zones'
+/*
+ * `arena/space` and `arena/dimensions` only, never `arena/index` — the
+ * index builds meshes and imports Three.js, and the server has no business
+ * loading a renderer to work out where two people are standing.
+ */
+import { arenaConfine, arenaSpawns, BOUNDARY_RADIUS, type ArenaFrame } from '../../arena/space'
 import {
   PVP_KITS,
   pvpAttackRate,
@@ -135,10 +166,33 @@ export type DuelEnd = {
   reason: string
 }
 
+/**
+ * The instance a match is fought in.
+ *
+ * Owned and mutated by the hub, read here. The split is deliberate: a
+ * simulation is one match and knows nothing about rematches, while the
+ * series score, the standing rematch offers and the results deadline
+ * belong to the instance and have to survive the match that produced them.
+ * Passing the live object rather than a copy is what lets a snapshot taken
+ * after settlement still report the score the hub has just updated.
+ */
+export type ArenaHost = {
+  id: string
+  frame: ArenaFrame
+  matchNumber: number
+  series: ArenaSeries
+  rematch: { a: boolean; b: boolean }
+  /** Set while the results phase is running, null otherwise. */
+  resultsEndsAtMs: number | null
+  /** Set once the instance is retired and both fighters are back in the town. */
+  closed: boolean
+}
+
 export class DuelSim {
   readonly duelId: string
   readonly challengeId: string
   readonly ring: DuelRing
+  readonly arena: ArenaHost
   readonly stake: number
   readonly createdAt: number
   phase: 'preparing' | 'countdown' | 'active' | 'ended' = 'preparing'
@@ -160,6 +214,7 @@ export class DuelSim {
     duelId: string
     challengeId: string
     ringId: string
+    arena: ArenaHost
     stake: number
     a: { id: PlayerId; name: string; loadout: PublicLoadout }
     b: { id: PlayerId; name: string; loadout: PublicLoadout }
@@ -170,13 +225,18 @@ export class DuelSim {
     this.duelId = input.duelId
     this.challengeId = input.challengeId
     this.ring = ring
+    this.arena = input.arena
     this.stake = input.stake
     this.createdAt = input.now
-    const [sa, sb] = ringStarts(ring)
+    // Opposite marks, from the arena's own published layout rather than from
+    // a spread this file invents: the spawn separation is derived from the
+    // longest reach in any kit, so neither fighter can open by hitting
+    // somebody who has not moved yet.
+    const [sa, sb] = arenaSpawns(input.arena.frame)
     this.a = makeFighter(input.a, sa.x, sa.z)
     this.b = makeFighter(input.b, sb.x, sb.z)
-    this.a.facing = Math.atan2(this.b.x - this.a.x, this.b.z - this.a.z)
-    this.b.facing = Math.atan2(this.a.x - this.b.x, this.a.z - this.b.z)
+    this.a.facing = sa.facing
+    this.b.facing = sb.facing
   }
 
   fighter(id: PlayerId) {
@@ -291,6 +351,38 @@ export class DuelSim {
     return { events: [...carried, ...this.events], ended: null }
   }
 
+  /**
+   * What the client's state machine runs on.
+   *
+   * Derived rather than stored, so it cannot drift from the simulation. Note
+   * that `ended` is not `closed`: a settled match with a results panel on
+   * screen is over as a duel and still very much in the arena, and the two
+   * fighters stay on the floor until the hub retires the instance.
+   */
+  arenaPhase(): ArenaPhase {
+    if (this.arena.closed) return 'closed'
+    switch (this.phase) {
+      case 'preparing': return 'loading'
+      case 'countdown': return 'countdown'
+      case 'active': return 'fighting'
+      case 'ended': return 'results'
+    }
+  }
+
+  arenaView(): ArenaView {
+    return {
+      id: this.arena.id,
+      originX: this.arena.frame.x,
+      originZ: this.arena.frame.z,
+      boundaryRadius: BOUNDARY_RADIUS,
+      matchNumber: this.arena.matchNumber,
+      phase: this.arenaPhase(),
+      series: { ...this.arena.series },
+      rematch: { ...this.arena.rematch },
+      resultsEndsAtMs: this.arena.resultsEndsAtMs,
+    }
+  }
+
   snapshot(you: PlayerId): DuelSnapshot {
     const reconnect = [this.a, this.b].find(f => !f.connected && f.disconnectAt)
     const oob = [this.a, this.b].find(f => f.outSince)
@@ -298,6 +390,7 @@ export class DuelSim {
       duelId: this.duelId,
       challengeId: this.challengeId,
       phase: this.phase,
+      arena: this.arenaView(),
       ringId: this.ring.id,
       ringName: this.ring.name,
       stake: this.stake,
@@ -375,9 +468,20 @@ export class DuelSim {
     return { events: this.events, ended: end }
   }
 
+  /**
+   * The out-of-bounds forfeit, kept as a backstop rather than as a rule.
+   *
+   * `place` confines every move to the boundary, so in an arena this cannot
+   * fire from play — there is no outside to walk to, which is why the duel
+   * rules no longer promise a player they can forfeit by leaving. What it
+   * still catches is a position that arrived from somewhere other than a
+   * move: a restored `persist_json` written before the instance frame
+   * existed, say. A fighter who is somehow outside a sealed floor has to
+   * have SOME exit, and five seconds is the one this protocol already had.
+   */
   private outTooLong(f: Fighter, now: number) {
-    const inside = pointInRing(this.ring, f.x, f.z, 0.4)
-    if (inside) {
+    const slack = 0.4
+    if (Math.hypot(f.x - this.arena.frame.x, f.z - this.arena.frame.z) <= BOUNDARY_RADIUS + slack) {
       f.outSince = null
       return false
     }
@@ -450,19 +554,22 @@ export class DuelSim {
     }
   }
 
+  /**
+   * The only way a fighter's position ever changes.
+   *
+   * Every mover goes through here — walking, Flashstep, Blink, the Lantern
+   * Anchor recall — so the boundary cannot be jumped by an ability that
+   * forgot to check it. Clamping the radius and keeping the bearing is what
+   * makes running into the wall slide along it instead of stopping dead.
+   */
   private place(self: Fighter, x: number, z: number) {
-    if (isInTown(x, z)) return
-    const dx = x - this.ring.x
-    const dz = z - this.ring.z
-    const dist = Math.hypot(dx, dz)
-    const cap = this.ring.radius + 1.2
-    if (dist > cap) {
-      self.x = this.ring.x + (dx / dist) * cap
-      self.z = this.ring.z + (dz / dist) * cap
-      return
-    }
-    self.x = x
-    self.z = z
+    const held = arenaConfine(this.arena.frame, x, z)
+    self.x = held.x
+    self.z = held.z
+    // The client is sent a position that is already inside the wall, so
+    // without this it sees its wizard stop for no visible reason. One event
+    // per fighter per tick at most, since there is one `place` per mover.
+    if (held.moved) this.events.push({ kind: 'boundary', target: self.id })
   }
 
   private basicHit(self: Fighter, foe: Fighter, now: number) {
@@ -627,7 +734,10 @@ export class DuelSim {
       const target = this.other(bolt.owner)
       const caster = this.fighter(bolt.owner)
       if (!target || !caster) return false
-      if (isInTown(target.x, target.z)) return bolt.left > 0
+      // `bolt.hit` is what keeps one shot to one hit per fighter, and
+      // `other(bolt.owner)` is what keeps it scoped to this match's opponent:
+      // a projectile can reach neither its own caster nor anyone in another
+      // instance, because the only body it is ever tested against is that one.
       if (Math.hypot(bolt.x - target.x, bolt.z - target.z) <= bolt.radius + 0.55 && !bolt.hit.has(target.id)) {
         bolt.hit.add(target.id)
         this.hurt(target, bolt.damage, bolt.owner, 'Bolt')
@@ -657,7 +767,7 @@ export class DuelSim {
         zone.next = now + zone.every
         for (const f of [this.a, this.b]) {
           if (Math.hypot(f.x - zone.x, f.z - zone.z) > zone.radius) continue
-          if (f.id !== zone.owner && zone.damage && !isInTown(f.x, f.z)) {
+          if (f.id !== zone.owner && zone.damage) {
             this.hurt(f, zone.damage, zone.owner, 'Zone')
             if (zone.burn) {
               f.burnUntil = now + 3000
@@ -685,7 +795,7 @@ export class DuelSim {
       if (now < summon.next) return true
       summon.next = now + 1100
       const foe = this.other(summon.owner)
-      if (!foe || isInTown(foe.x, foe.z)) return true
+      if (!foe) return true
       if (Math.hypot(foe.x - summon.x, foe.z - summon.z) <= summon.reach) {
         this.hurt(foe, summon.damage, summon.owner, 'Sentinel')
       }
@@ -693,9 +803,18 @@ export class DuelSim {
     })
   }
 
+  /**
+   * The single chokepoint for losing hit points.
+   *
+   * The phase test is the invariant the brief asks for — no damage during
+   * load or countdown — stated once, here, rather than trusted to hold
+   * because every caller happens to be reached from the active branch. A
+   * dead fighter cannot be hurt again and cannot act, which is what makes
+   * one hit cost exactly one lot of damage.
+   */
   private hurt(target: Fighter, amount: number, source: PlayerId, label: string) {
+    if (this.phase !== 'active') return
     if (!target.alive || amount <= 0) return
-    if (isInTown(target.x, target.z)) return
     target.hp = Math.max(0, target.hp - amount)
     target.anim = target.hp <= 0 ? 'down' : 'hit'
     this.events.push({ kind: 'hit', source, target: target.id, amount, label })

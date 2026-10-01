@@ -66,6 +66,10 @@ const expireDue = db.prepare(`
    where status = 'pending' and expires_at_ms <= @now
 `)
 
+const duePending = db.prepare<[number], ChallengeRow>(
+  `select * from pvp_challenges where status = 'pending' and expires_at_ms <= ? order by expires_at_ms`,
+)
+
 const claimChallenge = db.prepare(`
   update pvp_challenges
      set status = @status, resolved_at_ms = @now, ring_id = coalesce(@ring_id, ring_id)
@@ -103,6 +107,23 @@ export type Pose = { x: number; z: number; state: string; online: boolean }
 
 export function expireChallenges(now = Date.now()) {
   expireDue.run({ now })
+}
+
+/**
+ * Expires what is due and hands back the rows, so somebody can tell the two
+ * players.
+ *
+ * `expireChallenges` on its own is not enough and that was a real trap: the
+ * row went to `expired` while both players kept the invite on screen and kept
+ * the `challenged` presence state that `offerChallenge` refuses a new
+ * challenge from. The pair could then never duel again — the thirty-second
+ * timer has to be something the clients are told about, not just something
+ * the table knows.
+ */
+export function takeExpiredChallenges(now = Date.now()): ChallengeRow[] {
+  const due = duePending.all(now)
+  if (due.length) expireDue.run({ now })
+  return due
 }
 
 export function blocked(from: PlayerId, to: PlayerId) {

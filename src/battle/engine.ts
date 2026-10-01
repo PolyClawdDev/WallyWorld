@@ -2050,8 +2050,31 @@ export function createBattle(deps: BattleDeps) {
     },
     maxResourceValue: () => maxResourceAt(kit, progress.level),
     cooldownRemaining: (slot: AbilitySlot) => Math.max(0, (readyAt[slot] - performance.now()) / 1000),
-    floatText(text: string, at: THREE.Vector3, colour: string) {
-      vfx.number(text, at, colour)
+    floatText(
+      text: string,
+      at: THREE.Vector3,
+      colour: string,
+      options?: { key?: string; scale?: number; gapMs?: number; announce?: boolean },
+    ) {
+      vfx.number(text, at, colour, options)
+    },
+
+    /** A hit spark, for damage this engine did not deal. */
+    hitSpark(at: THREE.Vector3, colour: string, accent = '#ffffff', radius = 1.1) {
+      vfx.impact(at, colour, accent, radius, 0.26)
+    },
+
+    /**
+     * Advances the shared visuals and nothing else.
+     *
+     * A duel does not run this engine — the server owns the orders, the
+     * cooldowns and the damage — but the damage numbers and impacts it throws
+     * still have to rise, fade and be released back to the pool. Without this
+     * the first float label of a duel would hang in the air until the fight
+     * ended and the ordinary update resumed.
+     */
+    pumpEffects(dt: number, now: number) {
+      vfx.update(dt, now)
     },
 
     dispose() {

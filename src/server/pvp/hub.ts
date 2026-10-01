@@ -12,7 +12,10 @@ import {
   GOLD_KIND,
   HEARTBEAT_INTERVAL_MS,
   PREPARE_TIMEOUT_MS,
+  RECONNECT_GRACE_MS,
+  RESULTS_TIMEOUT_MS,
   STALE_CONNECTION_MS,
+  type ArenaSeries,
   type C2S,
   type ChatMessage,
   type CombatEvent,
@@ -24,7 +27,10 @@ import {
   type PublicPresence,
   type S2C,
 } from '../../shared/pvp'
-import { isInTown, ringStarts, TOWN_RESPAWN } from '../../shared/zones'
+import { isInTown, TOWN_RESPAWN } from '../../shared/zones'
+// Numbers only. `arena/index.ts` builds meshes and imports Three.js; the
+// server needs the floor plan, not the floor.
+import { ARENA_SLOTS, arenaFrame } from '../../arena/space'
 import { ROOM_CAPACITY } from '../config'
 import { walletFromAuthHeader } from '../auth'
 import { newChatId, systemLine, vetChat } from '../chat/chat'
@@ -47,7 +53,6 @@ import {
   challengeView,
   claimPending,
   declineChallenge,
-  expireChallenges,
   freeRing,
   markAccepted,
   occupyRing,
@@ -57,10 +62,11 @@ import {
   publicCard,
   readChallenge,
   setBlock,
+  takeExpiredChallenges,
   youBlocked,
   type Pose,
 } from './challenges'
-import { DuelSim, type DuelEnd } from './combat'
+import { DuelSim, type ArenaHost, type DuelEnd } from './combat'
 import { goldView, recordOutcome, reserveBoth, settleEscrow } from './ledger'
 import { newId } from './ids'
 import { db } from './schema'
@@ -107,6 +113,73 @@ const duels = new Map<string, DuelSim>()
 const duelByPlayer = new Map<PlayerId, string>()
 const lastPoseAt = new Map<PlayerId, number>()
 let lastPresenceBroadcast = 0
+
+/* ------------------------------------------------------------------ *
+ * Arena instances.
+ *
+ * An instance is a private floor with exactly two people on it and a
+ * lifetime longer than the match that opened it: a mutual rematch is a new
+ * `DuelSim` with a new id and its own escrow, handed the same instance, so
+ * the two fighters never leave the floor between matches.
+ *
+ * THE THING THIS MUST NEVER DO is leave anybody on that floor with no way
+ * off it. Every state an instance can be in therefore has a deadline held
+ * somewhere outside the players' hands: `loading` by `PREPARE_TIMEOUT_MS`,
+ * `countdown` by its own length, `fighting` by `DUEL_CAP_MS`, `results` by
+ * `RESULTS_TIMEOUT_MS`, and a dropped socket in any of them by
+ * `RECONNECT_GRACE_MS`. `retireDuel` is the single exit and it is reached
+ * from all of them, including a settlement that failed and a server drain.
+ * ------------------------------------------------------------------ */
+
+type TownPose = { x: number; z: number; facing: number }
+
+type ArenaSession = {
+  host: ArenaHost
+  ringId: string
+  aId: PlayerId
+  bId: PlayerId
+  stake: number
+  /** The match being fought or the one whose results are on screen. */
+  sim: DuelSim
+  /**
+   * Where each fighter was standing in the town, and which way they were
+   * facing, at the moment they accepted.
+   *
+   * This is the only copy. A fighter's `Live` record does not follow them
+   * into the arena — see `emitCombat` — so the overworld already believes
+   * they are standing here, and restoring it is what makes stepping out of
+   * a duel a no-op rather than a teleport the speed clamp has to be argued
+   * with. It also means a process that dies mid-duel leaves a remembered
+   * position in the town rather than one 512 m outside the world.
+   */
+  townPose: Map<PlayerId, TownPose>
+  /** When a fighter's socket dropped. Cleared when they come back. */
+  awayAt: Map<PlayerId, number>
+}
+
+/** By arena id. */
+const sessions = new Map<string, ArenaSession>()
+const sessionByPlayer = new Map<PlayerId, ArenaSession>()
+const takenSlots = new Set<number>()
+
+/**
+ * Hands out an instance slot, which is what decides where the floor stands.
+ *
+ * Bounded by `ARENA_SLOTS`, and that bound is never the thing that refuses a
+ * duel: a match needs a free duel ring too, and there are four of those.
+ */
+function takeArenaSlot(): number | null {
+  for (let slot = 0; slot < ARENA_SLOTS; slot++) {
+    if (takenSlots.has(slot)) continue
+    takenSlots.add(slot)
+    return slot
+  }
+  return null
+}
+
+function emptySeries(): ArenaSeries {
+  return { aWins: 0, bWins: 0, draws: 0 }
+}
 
 const insertDuel = db.prepare(`
   insert into pvp_duels (
@@ -291,8 +364,15 @@ export function attachLive(tokenHeader: string | undefined, conn: WsConn): Live 
       // connection. Left behind it is one entry per player this process has
       // ever seen, for as long as the process lives.
       lastPoseAt.delete(account.player_id)
-      const duelId = duelByPlayer.get(account.player_id)
-      if (duelId) duels.get(duelId)?.setConnected(account.player_id, false, Date.now())
+      const session = sessionByPlayer.get(account.player_id)
+      if (session) {
+        // Told to the simulation, which forfeits past the grace window while a
+        // match is running, and recorded on the session, which is what reaps a
+        // fighter who dropped with the results panel up — no match is being
+        // stepped then, so nothing else would ever notice.
+        session.sim.setConnected(account.player_id, false, Date.now())
+        session.awayAt.set(account.player_id, Date.now())
+      }
     }
     broadcastPresence()
   }
@@ -330,9 +410,19 @@ function sendTo(playerId: PlayerId, msg: S2C) {
 function welcome(live: Live) {
   const account = accountByPlayer(live.playerId)
   if (!account) return
-  const duelId = duelByPlayer.get(live.playerId)
-  const sim = duelId ? duels.get(duelId) : undefined
-  if (sim) sim.setConnected(live.playerId, true, Date.now())
+  /*
+   * Read through the session rather than through `duels`, because a settled
+   * match is taken out of `duels` and its two fighters are still in the
+   * arena. Looking it up the old way sent `active: null` to somebody standing
+   * on the floor, which put their client back in the town while this process
+   * went on refusing their poses — the freeze, by another route.
+   */
+  const session = sessionByPlayer.get(live.playerId)
+  const sim = session?.sim
+  if (session) {
+    session.awayAt.delete(live.playerId)
+    session.sim.setConnected(live.playerId, true, Date.now())
+  }
   send(live, {
     t: 'welcome',
     playerId: live.playerId,
@@ -380,7 +470,7 @@ function broadcastPresence() {
 }
 
 function handle(live: Live, msg: C2S) {
-  expireChallenges()
+  sweepExpiredChallenges()
   switch (msg.t) {
     case 'hello': {
       const loadout = parseLoadout(msg.loadout)
@@ -482,6 +572,8 @@ function handle(live: Live, msg: C2S) {
       sim.requestSurrender(live.playerId)
       return
     }
+    case 'rematch':
+      return onRematch(live, msg.duelId, msg.on)
     case 'leave':
       return onLeave(live, msg.duelId)
     case 'respawn': {
@@ -652,6 +744,23 @@ function onChat(live: Live, frame: Extract<C2S, { t: 'chat' }>) {
   }
 }
 
+/**
+ * Ends the invitations whose thirty seconds are up, and tells both players.
+ *
+ * One sweep, called from both the tick and the top of `handle`, because
+ * whichever notices first has to be the one that reports it. The silent
+ * `expireChallenges` that used to run on every inbound message would take the
+ * row out from under the tick, leaving the pair `challenged` for ever with a
+ * dead invite on screen and no way to open another duel.
+ */
+function sweepExpiredChallenges(now = Date.now()) {
+  for (const row of takeExpiredChallenges(now)) {
+    sendTo(row.from_id, { t: 'inviteGone', challengeId: row.challenge_id, reason: 'expired' })
+    sendTo(row.to_id, { t: 'inviteGone', challengeId: row.challenge_id, reason: 'expired' })
+    clearChallenged(row.from_id, row.to_id)
+  }
+}
+
 function clearChallenged(a: PlayerId, b: PlayerId) {
   for (const id of [a, b]) {
     const live = lives.get(id)
@@ -702,25 +811,41 @@ function onAccept(live: Live, challengeId: string) {
   }
 
   const ring = pickFreeRing(isBusy, Date.now())
+  const slot = takeArenaSlot()
+  if (slot === null) {
+    return send(live, { t: 'error', code: 'busy', detail: 'Every arena is in use. Try again in a moment.' })
+  }
   occupyRing(ring.id)
   const duelId = newId('d')
   const reserved = reserveBoth(from.player_id, to.player_id, pending.stake, duelId)
   if (!reserved.ok) {
     freeRing(ring.id)
+    takenSlots.delete(slot)
     return send(live, { t: 'error', code: 'gold', detail: reserved.reason })
   }
 
   if (!markAccepted(pending, ring.id)) {
     settleEscrow({ duelId, aId: from.player_id, bId: to.player_id, stake: pending.stake, kind: 'refund' })
     freeRing(ring.id)
+    takenSlots.delete(slot)
     return send(live, { t: 'error', code: 'gone', detail: 'That invite was already resolved.' })
   }
 
   const now = Date.now()
+  const host: ArenaHost = {
+    id: newId('a'),
+    frame: arenaFrame(slot),
+    matchNumber: 1,
+    series: emptySeries(),
+    rematch: { a: false, b: false },
+    resultsEndsAtMs: null,
+    closed: false,
+  }
   const sim = new DuelSim({
     duelId,
     challengeId: pending.challenge_id,
     ringId: ring.id,
+    arena: host,
     stake: pending.stake,
     a: { id: from.player_id, name: from.display_name, loadout: loadoutOf(from) },
     b: { id: to.player_id, name: to.display_name, loadout: loadoutOf(to) },
@@ -757,20 +882,34 @@ function onAccept(live: Live, challengeId: string) {
   duelByPlayer.set(from.player_id, duelId)
   duelByPlayer.set(to.player_id, duelId)
 
-  const starts = ringStarts(ring)
-  const fromLive = lives.get(from.player_id)
-  const toLive = lives.get(to.player_id)
-  if (fromLive) {
-    fromLive.state = 'preparing'
-    fromLive.x = starts[0].x
-    fromLive.z = starts[0].z
-    fromLive.lastMoveAtMs = now
+  const session: ArenaSession = {
+    host,
+    ringId: ring.id,
+    aId: from.player_id,
+    bId: to.player_id,
+    stake: pending.stake,
+    sim,
+    townPose: new Map(),
+    awayAt: new Map(),
   }
-  if (toLive) {
-    toLive.state = 'preparing'
-    toLive.x = starts[1].x
-    toLive.z = starts[1].z
-    toLive.lastMoveAtMs = now
+  sessions.set(host.id, session)
+
+  /*
+   * Teleporting in is the one thing this block deliberately does NOT do.
+   *
+   * The fighters go to the arena because the simulation's snapshot says so
+   * and their client draws them there. Their overworld record stays exactly
+   * where they were standing, so nothing outside the duel — presence, the
+   * `/say` radius, the remembered position a crash would resume from — ever
+   * sees an arena coordinate. Restoring them afterwards is then a matter of
+   * putting back what was never taken away.
+   */
+  for (const player of [from.player_id, to.player_id]) {
+    const fighter = lives.get(player)
+    if (!fighter) continue
+    fighter.state = 'preparing'
+    session.townPose.set(player, { x: fighter.x, z: fighter.z, facing: fighter.facing })
+    sessionByPlayer.set(player, session)
   }
   sendTo(from.player_id, { t: 'inviteGone', challengeId: pending.challenge_id, reason: 'accepted' })
   sendTo(to.player_id, { t: 'inviteGone', challengeId: pending.challenge_id, reason: 'accepted' })
@@ -798,28 +937,167 @@ function onAccept(live: Live, challengeId: string) {
  * losing one frame cannot strand anybody.
  */
 function retireDuel(sim: DuelSim, now: number, note?: string) {
-  const snap = sim.snapshot('x')
-  for (const view of [snap.a, snap.b]) {
-    duelByPlayer.delete(view.playerId)
-    const live = lives.get(view.playerId)
+  const session = sessions.get(sim.arena.id)
+  /*
+   * `closed` before anything is sent, because it is what makes the final
+   * snapshot say "you are out" rather than "the match is over". The client
+   * tears its arena down on `arena.phase === 'closed'` and on nothing else,
+   * so setting this after the send would ship a frame that leaves both
+   * fighters standing on a floor this process has stopped believing in.
+   */
+  sim.arena.closed = true
+  sim.arena.resultsEndsAtMs = null
+  for (const playerId of [sim.snapshot('x').a.playerId, sim.snapshot('x').b.playerId]) {
+    duelByPlayer.delete(playerId)
+    sessionByPlayer.delete(playerId)
+    const live = lives.get(playerId)
     if (!live) continue
     live.state = 'exploring'
     live.anim = 'idle'
-    live.facing = view.facing
-    // The simulation had the last word on where these two are standing, so
-    // the overworld record follows it rather than teleporting anyone out.
-    // Moving them would be a correction the client has to be dragged
-    // through, and a correction fighting the speed clamp is its own freeze.
-    // The budget clock restarts here for the same reason: measured from
-    // where each of them stood when the challenge was accepted, the first
-    // step out of the ring would read as a jump.
-    placeLive(live, { x: view.x, z: view.z }, now)
-    send(live, { t: 'duel', snapshot: sim.snapshot(view.playerId) })
+    /*
+     * Back to the town position and orientation saved when the challenge was
+     * accepted. In the ordinary case this is where `live` already is — the
+     * arena never touched it — so the restore is an assertion rather than a
+     * move, and the one thing it does change is `facing`, which the fighter
+     * did turn while they were in there.
+     *
+     * The speed budget is re-based either way: measured from the accept, the
+     * first step after a three-minute duel reads as standing still, and
+     * measured from nothing at all it reads as a teleport.
+     */
+    const home = session?.townPose.get(playerId) ?? { x: live.x, z: live.z, facing: live.facing }
+    live.facing = home.facing
+    placeLive(live, home, now)
+    send(live, { t: 'duel', snapshot: sim.snapshot(playerId) })
     if (note) send(live, { t: 'error', code: 'settlement', detail: note })
   }
   freeRing(sim.ring.id)
+  takenSlots.delete(sim.arena.frame.slot)
   duels.delete(sim.duelId)
+  sessions.delete(sim.arena.id)
   broadcastPresence()
+}
+
+/**
+ * The match is settled and the two of them are still on the floor.
+ *
+ * This is the half of the brief that does not fit "a duel ends and everyone
+ * goes home": the result is read in the arena, a rematch happens in the same
+ * arena, and the score is kept across both. So settlement stops the
+ * simulation without retiring the instance.
+ *
+ * What keeps that from being the freeze bug again is that it is not a wait
+ * for a client to do something. `resultsEndsAtMs` is a deadline the sweep
+ * below enforces, a dropped socket is reaped by the same sweep, and either
+ * player may end it alone. The sim is taken out of `duels` so the combat
+ * tick stops stepping a finished fight.
+ */
+function enterResults(sim: DuelSim, now: number) {
+  const session = sessions.get(sim.arena.id)
+  if (!session) return retireDuel(sim, now)
+  sim.arena.rematch = { a: false, b: false }
+  sim.arena.resultsEndsAtMs = now + RESULTS_TIMEOUT_MS
+  duels.delete(sim.duelId)
+  // Still `dueling` as far as the town is concerned: these two are not
+  // available to be challenged by a third party while they are in here.
+  pushDuel(sim)
+}
+
+/**
+ * Another match in this instance, once both have asked for one.
+ *
+ * A rematch is a NEW match — new id, new escrow, its own row — fought on the
+ * same floor. Rebuilding it as a fresh challenge is what it used to be, and
+ * that meant a new ring, a new instance, another walk out of town and a
+ * score that reset every time.
+ */
+function onRematch(live: Live, duelId: string, on: boolean) {
+  const session = sessionByPlayer.get(live.playerId)
+  if (!session || session.sim.duelId !== duelId) {
+    return send(live, { t: 'error', code: 'gone', detail: 'That match is no longer on offer.' })
+  }
+  if (session.sim.arenaPhase() !== 'results') {
+    return send(live, { t: 'error', code: 'phase', detail: 'A rematch can only be offered after a match has settled.' })
+  }
+  const side = live.playerId === session.aId ? 'a' : 'b'
+  session.host.rematch[side] = on
+  if (session.host.rematch.a && session.host.rematch.b) startRematch(session, Date.now())
+  else pushDuel(session.sim)
+}
+
+function startRematch(session: ArenaSession, now: number) {
+  const from = accountByPlayer(session.aId)
+  const to = accountByPlayer(session.bId)
+  if (!from || !to) return retireDuel(session.sim, now, 'A fighter is no longer in this world.')
+
+  const duelId = newId('d')
+  /*
+   * Its own challenge id, because `pvp_duels.challenge_id` is unique and a
+   * rematch is a second agreement between the same two people rather than a
+   * second acceptance of the first. There is no row in `pvp_challenges` for
+   * it: nothing was offered, declined or expired, and inventing one would
+   * put an invite in the record that no player ever saw.
+   */
+  const challengeId = newId('c')
+  const reserved = reserveBoth(session.aId, session.bId, session.stake, duelId)
+  if (!reserved.ok) {
+    // The offers come down and the results panel stays up, still on its own
+    // deadline. Nobody is stuck and nobody has been charged.
+    session.host.rematch = { a: false, b: false }
+    for (const id of [session.aId, session.bId]) {
+      sendTo(id, { t: 'error', code: 'gold', detail: reserved.reason })
+    }
+    return pushDuel(session.sim)
+  }
+
+  session.host.matchNumber += 1
+  session.host.rematch = { a: false, b: false }
+  session.host.resultsEndsAtMs = null
+  const sim = new DuelSim({
+    duelId,
+    challengeId,
+    ringId: session.ringId,
+    arena: session.host,
+    stake: session.stake,
+    a: { id: session.aId, name: from.display_name, loadout: loadoutOf(from) },
+    b: { id: session.bId, name: to.display_name, loadout: loadoutOf(to) },
+    now,
+  })
+  insertDuel.run({
+    duel_id: duelId,
+    challenge_id: challengeId,
+    a_id: session.aId,
+    b_id: session.bId,
+    ring_id: session.ringId,
+    stake: session.stake,
+    a_wizard: from.character,
+    b_wizard: to.character,
+    a_level: from.level,
+    b_level: to.level,
+    a_ranks: from.ranks_json,
+    b_ranks: to.ranks_json,
+    a_name: from.display_name,
+    b_name: to.display_name,
+    persist_json: sim.persist(),
+    now,
+  })
+  insertEscrowRow.run({
+    duel_id: duelId,
+    challenge_id: challengeId,
+    a_id: session.aId,
+    b_id: session.bId,
+    stake: session.stake,
+    pot: session.stake * 2,
+    now,
+  })
+  session.sim = sim
+  duels.set(duelId, sim)
+  duelByPlayer.set(session.aId, duelId)
+  duelByPlayer.set(session.bId, duelId)
+  // Back through the same both-ready gate as the first match. The clients are
+  // already standing in the arena, so their ready arrives immediately — but
+  // it is the same one code path, bounded by the same prepare timeout.
+  pushDuel(sim)
 }
 
 /**
@@ -831,29 +1109,54 @@ function retireDuel(sim: DuelSim, now: number, note?: string) {
  * be able to get itself marked as out of the duel, or a lost frame would be
  * a trap again.
  */
+/**
+ * A player leaving the arena.
+ *
+ * Either of them may, alone, and it ends the instance for both: there is no
+ * match left to fight and the alternative is one person standing on a floor
+ * waiting out a deadline for company that is not coming back. Their opponent
+ * is told, and put back in the town by the same path as every other exit.
+ *
+ * Refused while a match is being fought — that is what surrender is for, and
+ * it costs the stake. The defensive branch at the bottom is the one that is
+ * load-bearing: a client holding a snapshot this process no longer has must
+ * still be able to get itself marked as out, or a lost frame is a trap.
+ */
 function onLeave(live: Live, duelId: string) {
-  const sim = duels.get(duelId)
-  if (!sim) {
-    if (!duelByPlayer.has(live.playerId) && (live.state === 'dueling' || live.state === 'preparing')) {
-      live.state = 'exploring'
-      placeLive(live, live, Date.now())
-      broadcastPresence()
+  const session = sessionByPlayer.get(live.playerId)
+  if (session && session.sim.duelId === duelId) {
+    const phase = session.sim.arenaPhase()
+    if (phase === 'results') {
+      const other = live.playerId === session.aId ? session.bId : session.aId
+      sendTo(other, { t: 'error', code: 'opponent_left', detail: 'Your opponent left the arena. You are back in the town.' })
+      retireDuel(session.sim, Date.now())
+      return
     }
-    return
+    // Loading, counting down or fighting: this is not the frame for it.
+    return send(live, { t: 'error', code: 'phase', detail: 'The match is still running. Surrender if you want out of it.' })
   }
-  if (sim.phase !== 'ended') return
-  retireDuel(sim, Date.now())
+  if (!duelByPlayer.has(live.playerId) && (live.state === 'dueling' || live.state === 'preparing')) {
+    live.state = 'exploring'
+    placeLive(live, live, Date.now())
+    broadcastPresence()
+  }
 }
 
 function pushDuel(sim: DuelSim) {
-  for (const id of [sim.snapshot('x').a.playerId, sim.snapshot('x').b.playerId]) {
+  const snap = sim.snapshot('x')
+  for (const id of [snap.a.playerId, snap.b.playerId]) {
     const live = lives.get(id)
-    if (live) {
-      if (sim.phase === 'preparing') live.state = 'preparing'
-      if (sim.phase === 'countdown' || sim.phase === 'active') live.state = 'dueling'
-      send(live, { t: 'duel', snapshot: sim.snapshot(id) })
-    }
+    if (!live) continue
+    /*
+     * `preparing` only while the arena is being loaded into; anything past
+     * that is `dueling`, including the results panel. Presence is what stops
+     * a third player challenging somebody who is standing in an arena, so it
+     * has to stay set until they are actually out of it.
+     */
+    live.state = sim.phase === 'preparing' ? 'preparing' : 'dueling'
+    send(live, { t: 'duel', snapshot: sim.snapshot(id) })
   }
+  broadcastPresence()
 }
 
 function writeJournal(
@@ -945,6 +1248,20 @@ function closeDuel(sim: DuelSim, end: DuelEnd, now: number) {
   if (end.kind === 'draw') recordOutcome(aId, bId, true, now)
   else if (!draw) recordOutcome(end.winnerId, end.loserId, false, now)
 
+  /*
+   * The session score, which is the instance's tally and not the account's.
+   * `recordOutcome` above is the lifetime W/L/D; this is "best of however
+   * many you two feel like", and it exists because a rematch that forgot the
+   * last match is not a rematch. A `void` is not counted for the same reason
+   * it is not recorded above: a restart is not a result anybody fought to.
+   */
+  const series = sim.arena.series
+  if (end.kind === 'draw') series.draws += 1
+  else if (end.kind !== 'void') {
+    if (end.winnerId === aId) series.aWins += 1
+    else if (end.winnerId === bId) series.bWins += 1
+  }
+
   for (const id of [aId, bId]) {
     const youWon = end.winnerId === id
     const delta = draw || end.kind === 'void' ? 0 : youWon ? sim.stake : -sim.stake
@@ -954,6 +1271,13 @@ function closeDuel(sim: DuelSim, end: DuelEnd, now: number) {
     const rec = gold
     const result: DuelResultView = {
       duelId: sim.duelId,
+      arenaId: sim.arena.id,
+      matchNumber: sim.arena.matchNumber,
+      series: {
+        yours: id === aId ? series.aWins : series.bWins,
+        theirs: id === aId ? series.bWins : series.aWins,
+        draws: series.draws,
+      },
       kind,
       winnerId: end.winnerId,
       loserId: end.loserId,
@@ -978,15 +1302,18 @@ function closeDuel(sim: DuelSim, end: DuelEnd, now: number) {
     if (live && account) sendTo(id, { t: 'you', self: presenceOf(live, account), gold })
   }
 
-  // Settled is not the same as over. Everything that keeps these two inside
-  // a duel comes apart here, whether or not either of them touches a button.
-  retireDuel(sim, now)
+  // Settled is not the same as over, and over is not the same as out. The
+  // match stops here and the two of them stay on the floor to read the
+  // result and decide about another one — on a deadline, enforced below.
+  enterResults(sim, now)
 }
 
 setInterval(() => {
   const now = Date.now()
-  expireChallenges(now)
-  for (const sim of duels.values()) {
+  // An invitation nobody answered ends on its own, and both players are told
+  // so: the row expiring is not the same as them being free again.
+  sweepExpiredChallenges(now)
+  for (const sim of [...duels.values()]) {
     if (sim.phase === 'preparing' && now - sim.createdAt > PREPARE_TIMEOUT_MS) {
       closeDuel(sim, { kind: 'void', winnerId: null, loserId: null, reason: 'Prepare timed out. Stakes returned.' }, now)
       continue
@@ -997,6 +1324,24 @@ setInterval(() => {
       persistSim(sim)
       emitCombat(sim, events)
     }
+  }
+  /*
+   * Nobody is left standing in a settled arena.
+   *
+   * Two ways out, both of them clocks rather than decisions: the fighter who
+   * dropped is not coming back inside the reconnect window, or the results
+   * panel has simply been up long enough. Iterating a copy because both
+   * paths retire the instance, which mutates `sessions`.
+   */
+  for (const session of [...sessions.values()]) {
+    const host = session.host
+    if (host.resultsEndsAtMs === null) continue
+    const gone = [...session.awayAt.values()].some(at => now - at >= RECONNECT_GRACE_MS)
+    if (gone) {
+      retireDuel(session.sim, now, 'Your opponent did not come back. You are back in the town.')
+      continue
+    }
+    if (now >= host.resultsEndsAtMs) retireDuel(session.sim, now)
   }
   if (now % 250 < COMBAT_TICK_MS) broadcastPresence()
 }, COMBAT_TICK_MS).unref()
@@ -1016,24 +1361,26 @@ function persistSim(sim: DuelSim) {
   })
 }
 
+/**
+ * The 20 Hz frame the two fighters run on, and nobody else.
+ *
+ * It used to copy each fighter's simulated position onto their `Live` record,
+ * which is what the whole town reads. That was right when a duel was fought
+ * on town ground and wrong now: an arena is 512 m outside the world, so
+ * publishing those coordinates would put both duellists off the map for
+ * every other player, feed them to the `/say` radius, and — worst — write
+ * them into the remembered position that a reconnect resumes from, stranding
+ * anyone whose process died mid-duel outside the world.
+ *
+ * So the town's copy of a duellist does not move. It stays where they were
+ * standing when they accepted, which is exactly where they are put back.
+ * The arena positions live only in this frame, and only the two people in it
+ * ever receive one.
+ */
 function emitCombat(sim: DuelSim, events: CombatEvent[]) {
   const snap = sim.snapshot('x')
   for (const id of [snap.a.playerId, snap.b.playerId]) {
     sendTo(id, { t: 'combat', snapshot: sim.snapshot(id), events })
-    const live = lives.get(id)
-    const fighter = id === snap.a.playerId ? snap.a : snap.b
-    if (live) {
-      // The simulation is authoritative inside the ring, so the overworld
-      // record follows it rather than the other way round — and the speed
-      // budget is re-based here so stepping out of a duel is not read as a
-      // teleport from wherever the player stood before it started.
-      live.x = fighter.x
-      live.z = fighter.z
-      live.facing = fighter.facing
-      live.anim = fighter.anim
-      live.lastMoveAtMs = Date.now()
-      rememberPosition(live.playerId, live)
-    }
   }
 }
 
@@ -1095,6 +1442,9 @@ export function clearLivesForTest() {
   byAccount.clear()
   duels.clear()
   duelByPlayer.clear()
+  sessions.clear()
+  sessionByPlayer.clear()
+  takenSlots.clear()
   claims.clear()
 }
 
@@ -1151,6 +1501,16 @@ export async function drainLive(reconnectAfterMs = 5_000): Promise<void> {
       loserId: null,
       reason: 'The server restarted mid-duel. Both stakes were returned.',
     }, now)
+  }
+  /*
+   * And then every instance, including the ones whose match had already
+   * settled and whose fighters were reading the result. `closeDuel` leaves
+   * those standing in the arena on purpose; a shutdown is the one moment that
+   * is not a courtesy, and a player who reconnects to the replacement has to
+   * arrive in the town rather than on a floor that no longer exists.
+   */
+  for (const session of [...sessions.values()]) {
+    retireDuel(session.sim, now, 'This world is restarting, so the arena closed. You are back in the town.')
   }
   for (const live of [...lives.values()]) {
     rememberPosition(live.playerId, live, now)

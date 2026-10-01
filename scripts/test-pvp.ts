@@ -54,6 +54,7 @@ async function main() {
   const { creditGold, goldView, readGold, reserveBoth, settleEscrow, conservationSum } = await import('../src/server/pvp/ledger')
   const { offerChallenge, markAccepted, declineChallenge, cancelChallenge, readChallenge, expireChallenges, setBlock, pickFreeRing, occupyRing, freeRing } = await import('../src/server/pvp/challenges')
   const { DuelSim, forceKill } = await import('../src/server/pvp/combat')
+  const { arenaFrame, ARENA_SLOTS } = await import('../src/arena/space')
   const { PVP_KITS, pvpBasicDamage, pvpMaxHp } = await import('../src/shared/pvpKits')
   const { kits, basicDamageAt, maxHpAt } = await import('../src/battle/kits')
   const { attachPvpUpgrade } = await import('../src/server/pvp')
@@ -201,11 +202,26 @@ async function main() {
   }
 
   /* ---- 8. combat: death, draw, kits --------------------------------- */
+  /*
+   * Every duel is fought in its own instance, so each of these gets its own
+   * slot. The arena is not a place in the town — see `src/arena/space.ts` —
+   * which is why the ring below is only a name and an occupancy record now.
+   */
+  let nextSlot = 0
   function duelOf(aChar: typeof loadout.character, bChar: typeof loadout.character) {
     return new DuelSim({
       duelId: `d_${randomUUID().replace(/-/g, '')}`,
       challengeId: `c_${randomUUID().replace(/-/g, '')}`,
       ringId: 'east-heath',
+      arena: {
+        id: `a_${randomUUID().replace(/-/g, '')}`,
+        frame: arenaFrame(nextSlot++ % ARENA_SLOTS),
+        matchNumber: 1,
+        series: { aWins: 0, bWins: 0, draws: 0 },
+        rematch: { a: false, b: false },
+        resultsEndsAtMs: null,
+        closed: false,
+      },
       stake: 10,
       a: { id: accA.player_id, name: 'Ash', loadout: { ...loadout, character: aChar } },
       b: { id: accB.player_id, name: 'Birch', loadout: { ...loadout, character: bChar } },

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 import { ChatBox } from '../chat/ChatBox'
 import { wizards } from '../characters'
-import { DEMO_GOLD_NOTICE, type PublicCard, type PublicPresence } from '../shared/pvp'
+import { DEMO_GOLD_NOTICE, type DuelSnapshot, type PublicCard, type PublicPresence } from '../shared/pvp'
 import { wayOutOfTown } from './leaveTown'
 import { fetchPvpJournal, reclaimPvp, retryPvp, send } from './net'
 import { isDuelLocked, pingPvp, pvpState, subscribePvp, type PvpLink } from './store'
@@ -289,13 +289,45 @@ function InviteCard() {
   )
 }
 
+/**
+ * "3", "2", "1", "FIGHT".
+ *
+ * Driven off `countdownEndsAtMs`, which is a server timestamp both clients
+ * receive in the same frame, so the two screens count together rather than
+ * each running its own timer from whenever it happened to notice. The last
+ * beat reads FIGHT rather than 0 because 0 is not a number anybody counts to,
+ * and it is also the moment damage actually becomes possible.
+ *
+ * Its own 100 ms timer: the presence tick is twelve a second and a number
+ * that changes on a whole second needs to change ON that second.
+ */
+function Countdown({ endsAtMs }: { endsAtMs: number }) {
+  const [, setNow] = useState(Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 100)
+    return () => clearInterval(timer)
+  }, [])
+  const left = endsAtMs - Date.now()
+  if (left <= 0) return <div className="pvp-count is-go" aria-live="assertive">FIGHT</div>
+  return <div className="pvp-count" aria-live="assertive" key={Math.ceil(left / 1000)}>{Math.ceil(left / 1000)}</div>
+}
+
+/** The session score from this client's own side. A snapshot is symmetric; a reader is not. */
+function seriesLine(duel: DuelSnapshot) {
+  const { aWins, bWins, draws } = duel.arena.series
+  const iAmA = duel.a.playerId === duel.you
+  return { mine: iAmA ? aWins : bWins, theirs: iAmA ? bWins : aWins, draws, fought: aWins + bWins + draws }
+}
+
 function DuelHud() {
   const duel = pvpState.duel!
   const you = duel.a.playerId === pvpState.playerId ? duel.a : duel.b
   const foe = you === duel.a ? duel.b : duel.a
-  const count = duel.countdownEndsAtMs ? Math.max(0, Math.ceil((duel.countdownEndsAtMs - Date.now()) / 1000)) : 0
+  const phase = duel.arena.phase
+  const score = seriesLine(duel)
   return (
     <div className="pvp-duel-hud">
+      {phase === 'countdown' && duel.countdownEndsAtMs && <Countdown endsAtMs={duel.countdownEndsAtMs} />}
       <div className="pvp-duel-bar">
         <strong>{you.displayName}</strong>
         <span>{you.hp}/{you.maxHp}</span>
@@ -304,21 +336,28 @@ function DuelHud() {
         <span>{foe.hp}/{foe.maxHp}</span>
       </div>
       <div className="pvp-duel-meta">
-        {duel.phase === 'preparing' && 'Waiting for both wayfinders…'}
-        {duel.phase === 'countdown' && `Fight starts in ${count}`}
-        {duel.phase === 'active' && `${duel.ringName} · pot ${duel.pot} · ${DEMO_GOLD_NOTICE}`}
-        {duel.reconnectUntilMs && <b> Reconnect window open</b>}
-        {duel.outOfBoundsUntilMs && <b> Return to the ring</b>}
+        {/* Named "match N" rather than by the ring, because the ring is now
+            only a booking: the fight happens in an instance of its own. */}
+        {phase === 'loading' && 'Building the arena…'}
+        {phase === 'countdown' && 'On your marks.'}
+        {phase === 'fighting' && `Match ${duel.arena.matchNumber} · pot ${duel.pot} · ${DEMO_GOLD_NOTICE}`}
+        {phase === 'results' && 'Match over.'}
+        {score.fought > 0 && <b> Session {score.mine}–{score.theirs}{score.draws ? ` (${score.draws}D)` : ''}</b>}
+        {duel.reconnectUntilMs && <b> Waiting on a reconnect…</b>}
       </div>
-      {duel.phase === 'preparing' && (
-        <button className="primary" onClick={() => send({ t: 'ready', duelId: duel.duelId })}>Ready</button>
-      )}
-      {duel.phase === 'active' && !pvpState.surrenderAsk && (
-        <button onClick={() => { pvpState.surrenderAsk = true; pingPvp() }}>Surrender</button>
+      {/* No manual Ready button. The gate is answered by the client the moment
+          its floor is up — see the arena block in main.tsx — which is what
+          makes it a load gate rather than a click nobody understands. */}
+      {phase === 'fighting' && !pvpState.surrenderAsk && (
+        <button onClick={() => { pvpState.surrenderAsk = true; pingPvp() }}>Forfeit</button>
       )}
       {pvpState.surrenderAsk && (
         <div className="pvp-actions">
-          <button className="primary" onClick={() => send({ t: 'surrender', duelId: duel.duelId })}>Confirm surrender</button>
+          {/* Asked, never done on one press: a forfeit hands the whole pot to
+              the other player, and it is one button away from the ability keys. */}
+          <button className="primary" onClick={() => send({ t: 'surrender', duelId: duel.duelId })}>
+            Forfeit · lose {duel.stake}
+          </button>
           <button onClick={() => { pvpState.surrenderAsk = false; pingPvp() }}>Keep fighting</button>
         </div>
       )}
@@ -326,34 +365,68 @@ function DuelHud() {
   )
 }
 
+/**
+ * The compact results panel, read standing in the arena.
+ *
+ * Deliberately small: it sits over a floor the player is still on, with their
+ * opponent standing across it, and a full-screen scoreboard would hide the one
+ * thing worth looking at. The score above the buttons is the session's, not the
+ * account's — "how are we doing tonight" is the question a rematch asks.
+ *
+ * Rematch is MUTUAL and it is not a new challenge. Pressing it puts an offer
+ * up; the match starts when both are standing, in the same instance, with the
+ * score carried over. Pressing it again withdraws it, because an offer you
+ * cannot take back is a trap of a smaller kind.
+ */
 function ResultCard() {
   const result = pvpState.result!
+  const duel = pvpState.duel
+  const arena = duel?.arena ?? null
+  const you = duel ? (duel.a.playerId === pvpState.playerId ? 'a' : 'b') : null
+  const yours = arena && you ? arena.rematch[you] : false
+  const theirs = arena && you ? arena.rematch[you === 'a' ? 'b' : 'a'] : false
+  // The arena is gone once the instance closes, and with it any rematch: what
+  // is left on the card is the record of what happened.
+  const stillInside = Boolean(arena && arena.phase === 'results')
   return (
-    <aside className="pvp-card" role="dialog" aria-label="Duel result">
-      <div className="wui-etch">RESULT</div>
+    <aside className="pvp-card pvp-result" role="dialog" aria-label="Duel result">
+      <div className="wui-etch">MATCH {result.matchNumber}</div>
       <h3>{result.kind === 'draw' || result.kind === 'void' || result.refunded ? 'Draw' : result.kind === 'victory' ? 'Victory' : 'Defeat'}</h3>
       <p>{result.reason}</p>
       <dl className="pvp-stats">
+        <div><dt>Session</dt><dd>{result.series.yours}–{result.series.theirs}{result.series.draws ? ` · ${result.series.draws}D` : ''}</dd></div>
         <div><dt>Stake</dt><dd>{result.stake}</dd></div>
-        <div><dt>{result.refunded ? 'Refund' : 'Pot'}</dt><dd>{result.refunded ? result.stake : result.pot}</dd></div>
         <div><dt>Net gold</dt><dd>{result.yourDelta >= 0 ? `+${result.yourDelta}` : result.yourDelta}</dd></div>
         <div><dt>Balance</dt><dd>{result.yourBalance}</dd></div>
-        <div><dt>W / L</dt><dd>{result.yourWins} / {result.yourLosses}</dd></div>
       </dl>
       <GoldNote />
-      <div className="pvp-actions">
-        <button className="primary" onClick={() => {
-          send({ t: 'challenge', playerId: result.opponentId, stake: result.stake })
-          pvpState.result = null
-          pingPvp()
-        }}>Rematch</button>
-        <button onClick={() => {
-          send({ t: 'leave', duelId: result.duelId })
-          pvpState.result = null
-          pvpState.duel = null
-          pingPvp()
-        }}>Leave Arena</button>
-      </div>
+      {stillInside ? (
+        <>
+          <div className="pvp-actions">
+            <button
+              className={yours ? 'primary pvp-armed' : 'primary'}
+              onClick={() => send({ t: 'rematch', duelId: result.duelId, on: !yours })}
+            >
+              {yours ? 'Waiting · cancel' : `Rematch · ${result.stake} each`}
+            </button>
+            <button onClick={() => send({ t: 'leave', duelId: result.duelId })}>Leave arena</button>
+          </div>
+          <p className="pvp-why">
+            {theirs && !yours
+              ? `${result.opponentName} has asked for another match. Both of you have to agree.`
+              : yours
+                ? `Waiting for ${result.opponentName}. Another ${result.stake} is staked when they agree.`
+                : 'A rematch is fought here, in this arena, and the session score carries over.'}
+          </p>
+        </>
+      ) : (
+        <>
+          <div className="pvp-actions">
+            <button className="primary" onClick={() => { pvpState.result = null; pingPvp() }}>Close</button>
+          </div>
+          <p className="pvp-why">The arena has closed and you are back in the town.</p>
+        </>
+      )}
     </aside>
   )
 }

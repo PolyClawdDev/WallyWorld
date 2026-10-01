@@ -115,9 +115,24 @@ export function pingPvp() {
   listeners.forEach(fn => fn())
 }
 
+/**
+ * True while this client is standing in an arena instance.
+ *
+ * Read off the INSTANCE's phase, not the duel's. A settled match with a
+ * results panel on screen is `ended` as a duel and the player is still on
+ * the floor, with the server owning their position; gating on the duel's
+ * phase there would hand control back to the town while the wizard was
+ * 512 m outside it. `closed` is the only state that means "you are out",
+ * and the server is the only thing that says it.
+ */
 export function isDuelLocked() {
-  const phase = pvpState.duel?.phase
-  return phase === 'preparing' || phase === 'countdown' || phase === 'active'
+  const arena = pvpState.duel?.arena
+  return Boolean(arena && arena.phase !== 'closed')
+}
+
+/** True only while damage can be dealt. Not during load, countdown or results. */
+export function isFighting() {
+  return pvpState.duel?.arena.phase === 'fighting'
 }
 
 export function remoteAt(id: PlayerId) {
