@@ -487,6 +487,36 @@ svg.sol-glyph { width: 17px; height: 17px; flex: none; }
 .sol-why-body p { margin: 0; }
 
 /* ==================================================================== *
+ * The pouch disclosure
+ *
+ * The same control as `.sol-why`, one level up: it opens the key handling,
+ * the payout block and the closing notes, which together were longer than
+ * the popup they sit in. Edged in brass rather than given a new shape,
+ * because it is the way further in and not another note — and because the
+ * payout block's own disclosure, which it contains, is already this
+ * control, so the panel asks the player to learn one thing.
+ *
+ * `.sol-detail` only carries the panel's own gap inward, so the blocks
+ * inside it sit exactly where they sat when they were always open.
+ * ==================================================================== */
+.sol-disclose {
+  padding: 11px 12px;
+  font-size: 10px;
+  color: #ecd6ae;
+  box-shadow: inset 0 2px 0 #ffffff1c, inset 0 -3px 0 #00000080, inset 0 0 0 2px #d5a64b66;
+}
+.sol-disclose:hover { box-shadow: inset 0 2px 0 #ffffff26, inset 0 -3px 0 #00000080, inset 0 0 0 2px var(--brass); }
+.sol-detail { display: grid; gap: 12px; }
+
+/* The no-spend line is the one claim in the summary that must not read as
+   fine print, so its well carries a brass edge like the plates do. */
+.sol-nospend {
+  box-shadow: inset 0 2px 0 #ffffff12, inset 0 -3px 0 #00000073, inset 0 0 0 2px #d5a64b4d;
+}
+.sol-nospend .sol-fine { color: #c9b492; }
+.sol-nospend .sol-fine strong { color: var(--brass-lit); }
+
+/* ==================================================================== *
  * The browser-held wallet, and the one place a secret key is drawn.
  *
  * The secret field is a real textarea rather than styled text so the

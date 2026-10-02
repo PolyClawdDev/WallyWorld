@@ -12,11 +12,32 @@
  * faults worth stating before anything else, the wallet block itself
  * (`EmbeddedWalletPanel.tsx`, kept separate because it is the one place a
  * secret key can be put on screen), and the payout notice.
+ *
+ * WHAT IS BEHIND THE DISCLOSURE, AND WHY THE LINE IS THERE.
+ *
+ * All of this renders inside the pouch, below the item grid, and in full
+ * it ran to twice the height of the popup — which is a way of hiding
+ * things too, because nobody scrolls a wall. So it is split in two, with
+ * one rule for the cut: anything a player needs in order to know where
+ * their money is, or that something is broken, is not behind a click.
+ *
+ * Always on screen: the funds label, because which network this is
+ * decides whether a mistake costs money; every fault — bad RPC config, an
+ * origin that is not this API, a cluster mismatch, an unreachable chain,
+ * a failed or conflicting account link — because a fault nobody sees is a
+ * fault nobody fixes; the address, the balance and the linked state; and
+ * the line saying the game cannot spend from the key.
+ *
+ * Behind the button: how the key came to exist, the storage ceiling in
+ * full (restated inside the export and import dialogs regardless), the
+ * export, import and delete controls, the payout block that is switched
+ * off, and the two closing notes. None of it is a fault and none of it is
+ * a number, and nothing was dropped to get here.
  * ------------------------------------------------------------------ */
 
 import React, { useEffect, useState } from 'react'
 import { fundsLabel, CLUSTER, RPC_PROXY_URL } from './cluster'
-import { EmbeddedWalletBlock, PixelGlyph } from './EmbeddedWalletPanel'
+import { EmbeddedWalletBlock, EmbeddedWalletDetail, PixelGlyph } from './EmbeddedWalletPanel'
 import { useClientStatus } from './clientStatus'
 import { fetchPayoutStatus } from './api'
 import './solana.css'
@@ -109,6 +130,7 @@ function PayoutNotice() {
 export function WalletSolanaPanel() {
   const status = useClientStatus()
   const label = fundsLabel()
+  const [detail, setDetail] = useState(false)
 
   return (
     <div className="sol-panel">
@@ -145,28 +167,41 @@ export function WalletSolanaPanel() {
       )}
 
       <EmbeddedWalletBlock />
-      <PayoutNotice />
 
-      <div className="sol-fine sol-footer">
-        <div className="sol-note">
-          <PixelGlyph glyph="key" />
-          <p>
-            <strong>One wallet, and you hold it.</strong> The key is a real Solana keypair that was generated in this
-            browser and sits in this browser&rsquo;s storage. The server never receives it — only your address and the
-            signatures it makes over challenges the server issued. Voxels will never ask you for a seed phrase or a
-            private key, not here and not anywhere else in the game.
-          </p>
+      {/* The same control as the payout block's `.sol-why`, which is now one
+          of the things it opens: the panel should teach one affordance. */}
+      <button type="button" className="sol-why sol-disclose" aria-expanded={detail} onClick={() => setDetail(open => !open)}>
+        <span>{detail ? 'Hide keys, exports and gold rewards' : 'Keys, exports and gold rewards'}</span>
+        <i aria-hidden="true">{detail ? '▾' : '▸'}</i>
+      </button>
+
+      {detail && (
+        <div className="sol-detail">
+          <EmbeddedWalletDetail />
+          <PayoutNotice />
+
+          <div className="sol-fine sol-footer">
+            <div className="sol-note">
+              <PixelGlyph glyph="key" />
+              <p>
+                <strong>One wallet, and you hold it.</strong> The key is a real Solana keypair that was generated in this
+                browser and sits in this browser&rsquo;s storage. The server never receives it — only your address and the
+                signatures it makes over challenges the server issued. Voxels will never ask you for a seed phrase or a
+                private key, not here and not anywhere else in the game.
+              </p>
+            </div>
+            <div className="sol-note">
+              <PixelGlyph glyph="skull" />
+              <p>
+                <strong>What that costs you.</strong> Nobody can recover the key for you, and any script that gets onto this
+                page can read it. It also cannot spend: there is no transaction signer in this app, so the only way SOL
+                leaves that address is if you import the key into a wallet of your own and send it yourself. Export it
+                somewhere safe, and keep it to small amounts.
+              </p>
+            </div>
+          </div>
         </div>
-        <div className="sol-note">
-          <PixelGlyph glyph="skull" />
-          <p>
-            <strong>What that costs you.</strong> Nobody can recover the key for you, and any script that gets onto this
-            page can read it. It also cannot spend: there is no transaction signer in this app, so the only way SOL
-            leaves that address is if you import the key into a wallet of your own and send it yourself. Export it
-            somewhere safe, and keep it to small amounts.
-          </p>
-        </div>
-      </div>
+      )}
     </div>
   )
 }

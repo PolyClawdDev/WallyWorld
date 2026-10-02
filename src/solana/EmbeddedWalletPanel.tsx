@@ -19,6 +19,22 @@
  *   3. The cluster is on screen next to the address, every time, because
  *      "which network is this key on" is the question that decides
  *      whether a mistake costs nothing or costs money.
+ *
+ * Two exports, because the pouch reads this panel under its item grid and
+ * the full block was longer than the popup on its own:
+ *
+ *   - `EmbeddedWalletBlock` is the summary the pouch always shows —
+ *     cluster, address, balance, whether the account is linked, every
+ *     fault state, and the one line saying the game cannot spend here.
+ *   - `EmbeddedWalletDetail` is what the disclosure in `WalletPanel.tsx`
+ *     opens: the storage ceiling in full, and export, import and delete.
+ *
+ * The split moves nothing out of reach and weakens no warning. Rule 2 is
+ * why: the ceiling is restated inside both the export and the import
+ * dialog, where the player is at the moment it matters, so hiding the
+ * standing copy of it behind a click cannot leave a key revealed without
+ * it. Rule 1 is unaffected — the secret still comes from the export
+ * call's return value inside `ExportDialog` and lives nowhere else.
  * ------------------------------------------------------------------ */
 
 import React, { useCallback, useEffect, useState, useSyncExternalStore } from 'react'
@@ -334,14 +350,13 @@ function ImportForm({ onClose }: { onClose: () => void }) {
   )
 }
 
-/* ----------------------------------------------------------------- panel */
+/* --------------------------------------------------------------- summary */
 
 type Dialog = 'none' | 'export' | 'import' | 'forget'
 
 export function EmbeddedWalletBlock() {
   const wallet = useEmbedded()
   const claim = useClaim()
-  const [dialog, setDialog] = useState<Dialog>('none')
   const [persists, setPersists] = useState(true)
 
   useEffect(() => {
@@ -450,12 +465,61 @@ export function EmbeddedWalletBlock() {
         </>
       )}
 
+      {/* The fix for this one is the export control, which is a click below
+          now, so it says where it is rather than leaving a dead instruction. */}
       {!persists && (
         <p className="sol-error">
           <strong>This browser is refusing storage.</strong> The wallet is real, but it exists only until you close
-          the tab. Export it now if you want to keep it.
+          the tab. Open the key controls below and export it now if you want to keep it.
         </p>
       )}
+
+      {/* The one sentence that is worth a click to nobody. A player reading
+          a real mainnet balance in a game's inventory screen is entitled to
+          know, without opening anything, that the game cannot touch it. */}
+      <div className="sol-note sol-nospend">
+        <PixelGlyph glyph="key" />
+        <p className="sol-fine">
+          <strong>The game cannot spend from this address.</strong> There is no transaction signer anywhere in Voxels,
+          so the only person who can move what is in it is you.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+/* ---------------------------------------------------------------- detail *
+ * What the pouch's disclosure opens: how this key came to exist, the
+ * ceiling on keeping one in a browser, and the three things a player can
+ * do to it.
+ *
+ * It reads the same store as the block above rather than taking anything
+ * in props, so no key material and no claim state crosses between them,
+ * and the dialog state that governs the reveal lives here — one component
+ * away from anything the pouch renders unconditionally.
+ * ----------------------------------------------------------------------- */
+
+export function EmbeddedWalletDetail() {
+  const wallet = useEmbedded()
+  const [dialog, setDialog] = useState<Dialog>('none')
+
+  if (!wallet) return null
+
+  return (
+    <div className="sol-block">
+      <div className="sol-block-head">
+        <span className="sol-buckle" aria-hidden="true" />
+        <div>
+          <strong>THE KEY ITSELF</strong>
+          <small>export, import or delete it</small>
+        </div>
+        {/* Named again here, and not only beside the address above: the
+            controls under it act on a key that is only worth anything on
+            one network, and these are the irreversible ones. */}
+        <b className={IS_MAINNET ? 'sol-plate cluster' : 'sol-plate on'}>
+          <i aria-hidden="true" />{CLUSTER.toUpperCase()}
+        </b>
+      </div>
 
       {/* The same two facts as before, pressed into the leather like the
           pouch's own note rather than set as body copy. */}
@@ -493,7 +557,7 @@ export function EmbeddedWalletBlock() {
         <div className="sol-actions">
           <button type="button" className="primary" onClick={() => setDialog('export')}>Export secret key</button>
           <button type="button" className="ghost" onClick={() => setDialog('import')}>Import a key</button>
-            <button type="button" className="ghost danger" onClick={() => setDialog('forget')}>Delete</button>
+          <button type="button" className="ghost danger" onClick={() => setDialog('forget')}>Delete</button>
         </div>
       )}
     </div>

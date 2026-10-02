@@ -408,10 +408,11 @@ export function WalletPouch({ gold, onGoldChange, nearbyNpc, onToast, connection
         <div><strong>{gift.label} → {gift.npc}</strong><small>{gift.proximity ? 'Offered to the nearest townsperson' : 'Dropped directly on them'} · no real funds moved</small></div>
       </div>)}
     </div>}
+    {/* Giving and dropping only. The wallet facts that used to be tacked on
+        here are the wallet block's to state, two inches below, and saying
+        them twice is how this screen became a wall of text. */}
     <p className="pouch-note">Dropped over open ground a stack goes to whoever you stand beside. Gold is held
-      by the server and stays in the game. The SOL figure is the real balance of your wallet's address, read
-      from the chain — send SOL to that address and it appears here. This app cannot spend it: there is no
-      transaction signer in it at all, and it will never ask you for a seed phrase.</p>
+      by the server and stays in the game.</p>
     {/* the pouch frame is cut out with clip-path, which clips fixed descendants,
         so the carried stack has to hang off the body to follow the cursor */}
     {dragged && createPortal(<>
