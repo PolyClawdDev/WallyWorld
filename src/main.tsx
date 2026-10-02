@@ -16,6 +16,7 @@ import { registerWorld } from './worldBridge'
 import { compassHuntRegion, createWildlife, highHuntArea, isInTown, isSafeZone, speciesSpecs } from './wildlife'
 import { animateWildscape, createWildscape } from './wildscape'
 import { animateZcashHouse, createZcashHouse } from './zcashHouse'
+import { animateFomoHouse, createFomoHouse } from './fomoHouse'
 import { createVitals } from './combat'
 import { huntState, pingHunt, resetHuntState } from './huntStore'
 import { HuntHud } from './huntHud'
@@ -182,6 +183,15 @@ function createBuilding(root: THREE.Group, spec: BuildingSpec) {
     // Published on the town, because its coin turns: the frame loop needs a
     // reference to it and the teardown needs somewhere to find its dispose.
     root.userData.zcashHouse = house
+    return
+  }
+  if (spec.landmark === 'fomo') {
+    const house = createFomoHouse(spec)
+    root.add(house)
+    // Published for the same two reasons the Zcash house is: its eyes bob and
+    // sway, so the frame loop needs a reference to it, and the teardown needs
+    // somewhere to find its dispose.
+    root.userData.fomoHouse = house
     return
   }
   const g = new THREE.Group()
@@ -640,6 +650,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
     const town = createTown()
     scene.add(town)
     const zcashHouse = town.userData.zcashHouse as THREE.Group | undefined
+    const fomoHouse = town.userData.fomoHouse as THREE.Group | undefined
     const player = createWizard(wizard, 1.05, style)
     player.position.set(0, 0, 8)
     player.visible = !firstPerson.current
@@ -1400,6 +1411,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       if (!dueling) {
         animateWildscape(wildscape, now)
         animateZcashHouse(zcashHouse, dt)
+        animateFomoHouse(fomoHouse, dt)
       }
       // The plate follows the committed target first and the cursor second, so
       // it stops flickering the moment you actually pick a fight.
@@ -1573,6 +1585,11 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       // them. Idempotent, so the removal path staying is not a double free.
       const disposeZcashHouse = zcashHouse?.userData.dispose as (() => void) | undefined
       disposeZcashHouse?.()
+      // Same story, same reason: two welded bodies and two canvas textures that
+      // the 'removed' listener never gets to free, because the town is never
+      // taken out of the scene. Idempotent as well.
+      const disposeFomoHouse = fomoHouse?.userData.dispose as (() => void) | undefined
+      disposeFomoHouse?.()
       renderer.dispose(); mount.current?.removeChild(renderer.domElement)
     }
   }, [wizard, style])

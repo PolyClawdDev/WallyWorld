@@ -78,13 +78,20 @@ export type BuildingSpec = {
   /**
    * Built by its own renderer instead of the standard box-and-pyramid.
    *
-   * One value so far: `zcash`, which builds Sable's premises as a struck coin
-   * in src/zcashHouse.ts. `wall`, `roof` and `trim` are ignored for a landmark
-   * — it brings its own palette — but `width`, `depth` and `sign` still mean
-   * exactly what they mean everywhere else, because navigation and the map read
-   * them without knowing or caring how the building is drawn.
+   * Two values: `zcash`, which builds Sable's premises as a struck coin in
+   * src/zcashHouse.ts, and `fomo`, which builds the Fomo House and the voxel
+   * eyes that hang over it in src/fomoHouse.ts. `wall`, `roof` and `trim` are
+   * ignored for a landmark — each brings its own palette — but `width`, `depth`
+   * and `sign` still mean exactly what they mean everywhere else, because
+   * navigation and the map read them without knowing or caring how the building
+   * is drawn.
+   *
+   * Both of these buildings also carry a notice saying what does not work in
+   * them, and both of those notices are the brightest lettering on their own
+   * wall. That is not decoration: a landmark is a loud claim, and the louder
+   * the building the plainer the thing it cannot do has to be written.
    */
-  landmark?: 'zcash'
+  landmark?: 'zcash' | 'fomo'
 }
 
 /**
@@ -123,6 +130,15 @@ export const buildingSpecs: BuildingSpec[] = [
   { name: 'Cartwright', kind: 'cartwright', x: 83, z: -54, width: 12, depth: 10, height: 11, wall: '#74604d', roof: '#4c443d', sign: 'CARTS', accent: '#d5a64b' },
   { name: 'River Chapel', kind: 'chapel', x: 0, z: -68, width: 11, depth: 9, height: 28, wall: '#69767b', roof: '#424e57', sign: 'CHAPEL', accent: '#7bc9ce', trim: '#e5ddc8' },
   { name: 'Fisher Shed', kind: 'fishery', x: 52, z: -70, width: 10, depth: 8, height: 7, wall: '#596b67', roof: '#3d4b48', sign: 'FISH', accent: '#7bc9ce' },
+  /* The Fomo House, on the north-west shoulder of the old town — see
+   * src/fomoHouse.ts for the siting and for what an unfinished building is
+   * allowed to say. Nothing in it works; it is a shell with a notice on it and
+   * the owner's voxel eyes hanging over the roof. `kind` is `hall` because a
+   * clubhouse is a hall and because `kind` is what the town brief prints as a
+   * trade; the landmark renderer ignores it. The height is the top of the eyes
+   * at rest rather than an eaves line, and the footprint is unchanged by them:
+   * they float from thirteen metres up, where nothing walks. */
+  { name: 'Fomo House', kind: 'hall', x: -32, z: 33, width: 12, depth: 9, height: 22, wall: '#17152e', roof: '#0c0a1f', sign: 'FOMO HOUSE', accent: '#cfcdf2', landmark: 'fomo' },
 ]
 
 /**

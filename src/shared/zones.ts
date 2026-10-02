@@ -39,6 +39,13 @@ export const townBuildings: Rect[] = [
   { x: 83, z: -54, halfW: 6, halfD: 5 },
   { x: 0, z: -68, halfW: 5.5, halfD: 4.5 },
   { x: 52, z: -70, halfW: 5, halfD: 4 },
+  // The Fomo House. Added here as well as to `buildingSpecs` because this table
+  // is the server's only copy of the town: `scripts/test-pvp.ts` walks a 6m grid
+  // and asserts this module and `wildlife.isInTown` agree, so a building that
+  // exists in one and not the other is a desync the moment somebody stands in
+  // it. The eyes above it are not here — they begin thirteen metres up, and
+  // nothing in this table describes anything a player cannot walk into.
+  { x: -32, z: 33, halfW: 6, halfD: 4.5 },
 ]
 
 export const townPlaza: Circle = { x: 0, z: 0, r: 18 }
