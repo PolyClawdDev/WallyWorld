@@ -708,6 +708,16 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
     /** Reused for every duel cue, so hit feedback allocates nothing per frame. */
     const cueAt = new THREE.Vector3()
     let lastWallCue = 0
+    /**
+     * What hit feedback has actually been drawn.
+     *
+     * Counted at the throw rather than where the events arrive, because the
+     * fault this answers is that the client used to receive a `CombatEvent[]`
+     * every tick and discard it — so a tally taken off the socket would prove
+     * the one half that was never broken. A zero here means nothing reached
+     * the screen, whatever the server sent.
+     */
+    const cueTally = { damage: 0, onMe: 0, onThem: 0, cast: 0, announce: 0, boundary: 0, lastAmount: 0 }
     const drops: THREE.Group[] = []
     /** Each coin builds its own geometry and material, so each one frees them. */
     const retireDrop = (drop: THREE.Group) => {
@@ -1326,6 +1336,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
             announce: true,
             scale: 1.15,
           })
+          cueTally.announce++
           continue
         }
         if (cue.kind === 'boundary') {
@@ -1335,6 +1346,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
           if (now - lastWallCue < 620) continue
           lastWallCue = now
           battle?.hitSpark(cueAt.set(cue.x, 0.9, cue.z), '#66d2e6', '#cff6fb', 1.5)
+          cueTally.boundary++
           continue
         }
         if (cue.kind === 'cast') {
@@ -1343,6 +1355,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
             gapMs: 300,
             scale: 0.8,
           })
+          cueTally.cast++
           continue
         }
         // Damage. Red on you, gold on them — the one distinction that has to
@@ -1353,6 +1366,10 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
           scale: cue.onMe ? 1.05 : 0.95,
         })
         battle?.hitSpark(cueAt.set(cue.x, 1.2, cue.z), cue.onMe ? '#e35e35' : '#f0b84d')
+        cueTally.damage++
+        cueTally.lastAmount = cue.amount
+        if (cue.onMe) cueTally.onMe++
+        else cueTally.onThem++
       }
 
       /* --- hunt: wildlife, abilities, vitals, HUD ------------------------- */
@@ -1478,6 +1495,25 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
               triangles: renderer.info.render.triangles,
             },
           }
+        },
+        /**
+         * Hit feedback, as two independent numbers.
+         *
+         * `drawn` is what the duel threw. `liveLabels` and `liveEffects` are
+         * what the pool is showing this instant, read back off the scene rather
+         * than from the tally — the float labels throttle per target, so the
+         * only proof that a number is on screen is a visible sprite.
+         */
+        duelFeedback: () => {
+          const pool = scene.getObjectByName('combat-vfx')
+          let liveLabels = 0
+          let liveEffects = 0
+          for (const child of pool?.children ?? []) {
+            if (!child.visible) continue
+            if ((child as THREE.Sprite).isSprite) liveLabels++
+            else liveEffects++
+          }
+          return { drawn: { ...cueTally }, liveLabels, liveEffects }
         },
         /** Projects a world point through the live camera, in clip space. */
         onScreen: (x: number, y: number, z: number) => {

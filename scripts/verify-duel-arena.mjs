@@ -226,6 +226,28 @@ async function enterWorld(page, name, ui) {
 
 const uiOf = page => page.evaluate('window.__wally.pvpUi()')
 const arenaOf = page => page.evaluate('window.__wally.arena()')
+const feedbackOf = page => page.evaluate('window.__wally.duelFeedback()')
+
+/**
+ * Watches the float-label pool while the two of them trade blows.
+ *
+ * A damage number lives 850ms and the labels throttle per target, so a single
+ * reading after the fact proves nothing: the pool is empty again by then. This
+ * polls both clients through the fight and keeps the high-water mark, which is
+ * the only honest way to say a number was on screen.
+ */
+const watchFeedback = async (pages, ms, stepMs = 120) => {
+  const peak = pages.map(() => 0)
+  const until = Date.now() + ms
+  while (Date.now() < until) {
+    for (const [i, page] of pages.entries()) {
+      const seen = await feedbackOf(page).catch(() => null)
+      if (seen) peak[i] = Math.max(peak[i], seen.liveLabels)
+    }
+    await sleep(stepMs)
+  }
+  return peak
+}
 const send = (page, msg) => page.evaluate(m => window.__wally.pvpSend(m), msg)
 const seedGold = (playerId, amount) =>
   run(process.execPath, ['--import', 'tsx', 'scripts/seed-gold.ts', playerId, String(amount)], { WALLY_DB_PATH: DB_PATH })
@@ -478,6 +500,14 @@ async function main() {
     check('both floors are already built when the countdown runs',
       countdownSamples.length > 0 && countdownSamples.every(s => s.floors))
     check('no damage lands during loading or the countdown', hurtEarly === null, hurtEarly ?? 'both still on full health')
+    /* Health says nothing was applied; this says nothing was even drawn. The
+     * two are separate failures — a hit suppressed by the phase gate but still
+     * shown as a number would tell both players the gate had leaked. */
+    const quietA = await feedbackOf(pageA)
+    const quietB = await feedbackOf(pageB)
+    check('and no damage number is drawn before FIGHT either',
+      quietA.drawn.damage === 0 && quietB.drawn.damage === 0,
+      `A ${quietA.drawn.damage} B ${quietB.drawn.damage} labels`)
 
     // Samples are only evidence once both sides have something to compare. The
     // client that was held in the debugger is a few frames behind when it is
@@ -590,6 +620,47 @@ async function main() {
     check('and it can be taken back', await clickText(pageA, 'Keep fighting'))
     check('taking it back leaves the fight running', (await arenaOf(pageA)).view?.phase === 'fighting')
 
+    /* ---- 10b. the blows are visible on both screens -------------------
+     * The server has always sent a `CombatEvent[]` with every combat frame and
+     * the client discarded it from the day duels were added, so this is the
+     * half of the brief with no history of working. Both clients trade real
+     * blows and both are watched for labels while they do. */
+    const feedBefore = [await feedbackOf(pageA), await feedbackOf(pageB)]
+    const trading = (async () => {
+      for (let i = 0; i < 10; i++) {
+        await swing(pageA, duel1.duelId, 1)
+        await swing(pageB, duel1.duelId, 1)
+        await sleep(360)
+      }
+    })()
+    const peakLabels = await watchFeedback([pageA, pageB], 4200)
+    await trading
+    const feedA = await feedbackOf(pageA)
+    const feedB = await feedbackOf(pageB)
+    check('both clients draw damage numbers for the blows that land',
+      feedA.drawn.damage > feedBefore[0].drawn.damage && feedB.drawn.damage > feedBefore[1].drawn.damage,
+      `A ${feedA.drawn.damage} B ${feedB.drawn.damage} labels thrown`)
+    check('and a label was actually on screen, not merely counted',
+      peakLabels[0] > 0 && peakLabels[1] > 0,
+      `peak live sprites · A ${peakLabels[0]} B ${peakLabels[1]}`)
+    /* Each client has to show both sides of the exchange. Only `onThem` would
+     * mean a player never sees what is being done to them, which is the number
+     * that matters most in a fight. */
+    check('each client shows damage taken as well as damage dealt',
+      feedA.drawn.onMe > 0 && feedA.drawn.onThem > 0 && feedB.drawn.onMe > 0 && feedB.drawn.onThem > 0,
+      `A ${feedA.drawn.onMe} taken / ${feedA.drawn.onThem} dealt · B ${feedB.drawn.onMe} taken / ${feedB.drawn.onThem} dealt`)
+    check('the number drawn is a real amount, not a placeholder',
+      feedA.drawn.lastAmount > 0 && feedB.drawn.lastAmount > 0,
+      `last hit A ${feedA.drawn.lastAmount} B ${feedB.drawn.lastAmount}`)
+    /* The wall was run into back in section 9, and `confine()` reporting it is
+     * the only way a client can know: the position it receives is already
+     * inside the boundary. */
+    check('the boundary that held A is fed back as a spark rather than silently',
+      feedA.drawn.boundary > 0, `${feedA.drawn.boundary} wall cues on A`)
+    check('and the opponent is not strobed by a wall they never touched',
+      feedB.drawn.boundary === 0, `${feedB.drawn.boundary} wall cues on B`)
+    await pageA.screenshot({ path: `${SHOTS}/arena-a-feedback.png` })
+
     /* ---- 11. fight it out -------------------------------------------- */
     for (let i = 0; i < 60; i++) {
       await swing(pageA, duel1.duelId, 1)
@@ -606,6 +677,13 @@ async function main() {
     const resultB = await until(async () => (await uiOf(pageB)).result, 30_000)
     check('the match settles for both fighters', Boolean(resultA && resultB),
       resultA ? `${resultA.kind} / ${resultB?.kind} · ${resultA.reason}` : '')
+    /* The server announces what ended it on the same channel as the damage, so
+     * both fighters are told in the world rather than only in a panel. */
+    const endedA = await feedbackOf(pageA)
+    const endedB = await feedbackOf(pageB)
+    check('both fighters are told in the arena how the match ended',
+      endedA.drawn.announce > 0 && endedB.drawn.announce > 0,
+      `A ${endedA.drawn.announce} B ${endedB.drawn.announce} announcements`)
     check('the two sides agree who won', resultA?.winnerId === resultB?.winnerId && resultA?.kind !== resultB?.kind,
       `winner ${resultA?.winnerId} · A sees ${resultA?.kind}, B sees ${resultB?.kind}`)
     check('the session score counts the match', resultA?.matchNumber === 1 &&

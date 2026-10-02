@@ -65,8 +65,16 @@ type Budget = {
   /** Fractional on purpose: the bucket refills continuously, not in steps. */
   tokens: number
   refilledAtMs: number
-  /** Newest forfeit already counted, so one death cannot be spent twice. */
+  /**
+   * Newest forfeit already counted, so one death cannot be spent twice.
+   *
+   * A timestamp alone was not enough to say which: forfeits recorded in the
+   * same millisecond all compared equal to the cursor, so every one after the
+   * first was skipped for good and a player who really was dying lost the
+   * token it should have bought back. The id breaks the tie.
+   */
   countedDeathMs: number
+  countedDeathId: string
 }
 
 /**
@@ -81,13 +89,13 @@ const budgets = new Map<PlayerId, Budget>()
  * Joined through `hunt_sessions`, which is where the player id is written when
  * the hunt opens, so this cannot be pointed at another account's deaths.
  */
-const selectRecentDeaths = db.prepare<[string, number], { created_at_ms: number }>(`
-  select d.created_at_ms
+const selectRecentDeaths = db.prepare<[string, number, number, string], { created_at_ms: number; death_id: string }>(`
+  select d.created_at_ms, d.death_id
     from hunt_deaths d
     join hunt_sessions s on s.hunt_id = d.hunt_id
    where s.player_id = ?
-     and d.created_at_ms > ?
-   order by d.created_at_ms asc
+     and (d.created_at_ms > ? or (d.created_at_ms = ? and d.death_id > ?))
+   order by d.created_at_ms asc, d.death_id asc
 `)
 
 export type RespawnVerdict =
@@ -96,14 +104,23 @@ export type RespawnVerdict =
 
 /** New forfeits since the last check, each worth one token back. */
 function countDeaths(playerId: PlayerId, budget: Budget, now: number): number {
-  const since = Math.max(budget.countedDeathMs, now - CORROBORATION_WINDOW_MS)
-  const rows = selectRecentDeaths.all(playerId, since)
-  if (rows.length) budget.countedDeathMs = rows[rows.length - 1].created_at_ms
+  // Past the cursor the window is the bound, and an empty id admits everything
+  // standing on that millisecond rather than excluding the first one found.
+  const floor = now - CORROBORATION_WINDOW_MS
+  const windowed = floor >= budget.countedDeathMs
+  const since = windowed ? floor : budget.countedDeathMs
+  const afterId = windowed ? '' : budget.countedDeathId
+  const rows = selectRecentDeaths.all(playerId, since, since, afterId)
+  const newest = rows[rows.length - 1]
+  if (newest) {
+    budget.countedDeathMs = newest.created_at_ms
+    budget.countedDeathId = newest.death_id
+  }
   return rows.length
 }
 
 export function authoriseRespawn(playerId: PlayerId, now = Date.now()): RespawnVerdict {
-  const budget = budgets.get(playerId) ?? { lastGrantMs: 0, tokens: RESPAWN_BURST, refilledAtMs: now, countedDeathMs: 0 }
+  const budget = budgets.get(playerId) ?? { lastGrantMs: 0, tokens: RESPAWN_BURST, refilledAtMs: now, countedDeathMs: 0, countedDeathId: '' }
   budgets.set(playerId, budget)
 
   const deaths = countDeaths(playerId, budget, now)

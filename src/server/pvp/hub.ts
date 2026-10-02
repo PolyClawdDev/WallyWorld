@@ -1319,7 +1319,18 @@ setInterval(() => {
       continue
     }
     const { events, ended } = sim.step(now)
-    if (ended) closeDuel(sim, ended, now)
+    if (ended) {
+      /*
+       * The last frame is emitted before the match is settled, because it is
+       * the only one that carries the killing blow and the server's
+       * announcement of what ended the fight — `closeDuel` sends a result
+       * card, which is a panel rather than a combat frame. Dropping `events`
+       * here meant the hit that actually won a duel was the single hit that
+       * never showed a damage number, and the reason was never announced.
+       */
+      emitCombat(sim, events)
+      closeDuel(sim, ended, now)
+    }
     else if (sim.phase !== 'ended') {
       persistSim(sim)
       emitCombat(sim, events)
