@@ -304,8 +304,17 @@ export function purchaseService(input: PurchaseInput): PurchaseOutcome {
   const service = serviceById(input.serviceId)
   if (!service) return { ok: false, code: 'unknown_service', reason: 'No such service.' }
 
-  if (service.availability.state === 'unavailable' || service.priceGold === null || !service.prepare) {
-    const because = service.availability.state === 'unavailable' ? service.availability.because.join(' ') : 'This service has nothing behind it.'
+  if (service.availability.state !== 'available' || service.priceGold === null || !service.prepare) {
+    // A `read-only` desk is open and still not for sale, so its refusal says
+    // so rather than borrowing the shut desks' wording. Both carry `because`,
+    // which is the half a buyer is owed either way.
+    const because =
+      service.availability.state === 'read-only'
+        ? `${service.availability.does.join(' ')} It is not bought with gold and no order is written for it. ` +
+          service.availability.because.join(' ')
+        : service.availability.state === 'unavailable'
+          ? service.availability.because.join(' ')
+          : 'This service has nothing behind it.'
     return { ok: false, code: 'service_unavailable', reason: because }
   }
 

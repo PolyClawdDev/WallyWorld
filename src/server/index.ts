@@ -72,6 +72,7 @@ import { blocklistSize, screenDisplayName } from './moderation/names'
 import { originContext } from './origin'
 import { handleOperatorHttp } from './operator/http'
 import { handleAccountHttp } from './routes/account'
+import { handleCourierHttp } from './routes/courier'
 import { schemaVersions } from './store'
 import { handlerKinds } from './jobs/handlers'
 import { recoverExpiredLeases } from './jobs/queue'
@@ -666,6 +667,17 @@ async function route(req: IncomingMessage, res: ServerResponse): Promise<void> {
   ) {
     return
   }
+
+  /**
+   * Sable's shielded courier desk: address parsing and dry quotes.
+   *
+   * Its own module rather than a corner of the account routes, because nothing
+   * it does touches an account balance — no gold, no escrow, no ledger entry —
+   * and it handles a value the rest of the API never sees, a player's Zcash
+   * address. Keeping that in one file is what makes "nothing here logs" a
+   * property somebody can check rather than a habit.
+   */
+  if (await handleCourierHttp({ req, res, path, method, send, fail, readBody: () => readJson(req) })) return
 
   /**
    * Account, gold ledger, hunting, jobs and withdrawals.

@@ -58,6 +58,7 @@
     "operator:console": "tsx --env-file-if-exists=.env scripts/operator-console.ts",
     "test:courier": "node --import tsx --test src/server/providers/courier.test.ts",
     "verify:zec-delivery": "tsx --env-file-if-exists=.env scripts/verify-zec-delivery.ts",
+    "verify:shielded-desk": "tsx --env-file-if-exists=.env scripts/verify-shielded-desk.mjs",
     "test:chat": "tsx scripts/test-chat.ts"
   },
   "dependencies": {

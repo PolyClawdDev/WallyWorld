@@ -750,6 +750,133 @@ body.pouch-dragging .popup { filter: drop-shadow(0 10px 0 #00000059); opacity: 0
 .jr-row small { display: block; margin-top: 3px; font-size: 9px; color: #6b5233; }
 .jr-empty { margin-top: 14px; font: italic 12px Georgia, serif; color: #6b5233; }
 
+/* ---- Sable's shielded desk ----------------------------------------- *
+ * Built from the journal's own parts — the same parchment card, dotted
+ * rules, inset wells and mono type as every other page in this book — in
+ * the gold the Zcash mark already carries on the board and the chart
+ * (#b8860b), and the chart's warning ink (#8a3a1e) for the half that says
+ * what cannot happen. Nothing new is invented: this is a desk in a ledger,
+ * not a dashboard bolted into one.
+ *
+ * One rule is load-bearing rather than decorative. `.jr-shield-half` is a
+ * single class used for all three halves of the privacy statement, so the
+ * unflattering one cannot be made quieter than the flattering one by a
+ * later edit to this file. If it ever needs a variant, it needs a reason.
+ * -------------------------------------------------------------------- */
+.jr-shield { box-shadow: inset 0 0 0 2px #b8860b, inset 0 2px 0 2px #ffffff59, inset 0 -3px 0 #00000014; }
+.jr-shield .task-head b.jr-shield-state { color: #8a3a1e; }
+
+.jr-shield-split { display: grid; gap: 8px; margin-bottom: 12px; }
+.jr-shield-split > div {
+  padding: 9px 10px;
+  background: #d9c9a3;
+  box-shadow: inset 0 2px 0 #ffffff4d, inset 0 -2px 0 #00000014, inset 2px 0 0 #b8860b;
+  clip-path: var(--vx-clip-sm);
+}
+.jr-shield-split > div.jr-shield-not { box-shadow: inset 0 2px 0 #ffffff4d, inset 0 -2px 0 #00000014, inset 2px 0 0 #8a3a1e; }
+.jr-shield-split b {
+  display: block;
+  margin-bottom: 4px;
+  font: 700 9px 'DM Mono', ui-monospace, monospace;
+  letter-spacing: 0.16em;
+  color: #8a5a1e;
+}
+.jr-shield-split span { font: 10px/1.6 'DM Mono', ui-monospace, monospace; color: #4d3a26; }
+
+.jr-shield-desk { margin-top: 4px; }
+
+/* the statement: three wells, identical weight, identical ink.
+ *
+ * Qualified by the card it sits in only to outrank `.jr-card p` above, which
+ * paints every paragraph in this book dark brown — correct on parchment and
+ * unreadable on these dark wells, which is what it did here until the rendered
+ * contrast was measured rather than assumed. */
+.jr-shield-say { display: grid; gap: 7px; margin-bottom: 13px; }
+.jr-card p.jr-shield-half {
+  margin: 0;
+  padding: 9px 10px;
+  background: #2b2419;
+  box-shadow: inset 0 2px 0 #ffffff14, inset 0 -3px 0 #00000073, inset 0 0 0 2px #00000033;
+  clip-path: var(--vx-clip-sm);
+  font: 10px/1.65 'DM Mono', ui-monospace, monospace;
+  color: #e7dcc2;
+}
+.jr-shield-half b {
+  display: block;
+  margin-bottom: 4px;
+  font: 700 9px 'DM Mono', ui-monospace, monospace;
+  letter-spacing: 0.18em;
+  color: #e0b464;
+}
+
+.jr-shield-field { display: block; margin: 0 0 9px; }
+.jr-shield-field > span {
+  display: block;
+  margin-bottom: 5px;
+  font: 700 9px 'DM Mono', ui-monospace, monospace;
+  letter-spacing: 0.16em;
+  color: #8a5a1e;
+}
+.jr-shield-field input {
+  width: 100%;
+  padding: 10px 9px;
+  background: #fdf6e3;
+  border: 0;
+  box-shadow: inset 0 3px 0 #00000026, inset 0 -2px 0 #ffffffa6, inset 0 0 0 2px #a58f65;
+  clip-path: var(--vx-clip-sm);
+  font: 11px 'DM Mono', ui-monospace, monospace;
+  color: #33251a;
+  outline: none;
+}
+.jr-shield-field input:focus { box-shadow: inset 0 3px 0 #00000026, inset 0 -2px 0 #ffffffa6, inset 0 0 0 2px #b8860b; }
+.jr-shield-field small { display: block; margin-top: 5px; font: 9px/1.6 'DM Mono', ui-monospace, monospace; color: #6b5233; }
+
+.jr-shield-refusal, .jr-shield-ok, .jr-shield-quote, .jr-shield-stop {
+  margin-top: 12px;
+  padding: 11px;
+  background: #d9c9a3;
+  box-shadow: inset 0 2px 0 #ffffff4d, inset 0 -3px 0 #00000014, inset 0 0 0 2px #a58f65;
+  clip-path: var(--vx-clip-sm);
+}
+.jr-shield-refusal { box-shadow: inset 0 2px 0 #ffffff4d, inset 0 -3px 0 #00000014, inset 0 0 0 2px #8a3a1e; }
+.jr-shield-ok { box-shadow: inset 0 2px 0 #ffffff4d, inset 0 -3px 0 #00000014, inset 0 0 0 2px #2f5a52; }
+.jr-shield-quote { box-shadow: inset 0 2px 0 #ffffff4d, inset 0 -3px 0 #00000014, inset 0 0 0 2px #b8860b; }
+.jr-shield-refusal h5 { margin: 9px 0 6px; font: 700 12px Georgia, serif; color: #7a3317; }
+.jr-shield-refusal p, .jr-shield-ok p, .jr-shield-quote p, .jr-shield-stop p {
+  margin: 0 0 7px;
+  font: 10px/1.65 'DM Mono', ui-monospace, monospace;
+  color: #4d3a26;
+}
+.jr-shield-quote strong {
+  display: block;
+  margin: 10px 0 9px;
+  font: 700 15px 'DM Mono', ui-monospace, monospace;
+  color: #46331f;
+  text-shadow: 0 1px 0 #ffffff73;
+}
+.jr-shield-do { box-shadow: inset 3px 0 0 #8a3a1e; padding-left: 9px; }
+.jr-shield-do b {
+  display: block;
+  margin-bottom: 3px;
+  font: 700 9px 'DM Mono', ui-monospace, monospace;
+  letter-spacing: 0.14em;
+  color: #8a3a1e;
+}
+
+.jr-shield-rows { display: grid; gap: 6px; margin: 9px 0 10px; }
+.jr-shield-rows > div {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 7px 8px;
+  background: #e8dab8;
+  box-shadow: inset 0 2px 0 #ffffff73, inset 0 -2px 0 #00000014;
+  clip-path: var(--vx-clip-sm);
+}
+.jr-shield-rows b { font: 700 11px 'DM Mono', ui-monospace, monospace; color: #33251a; }
+.jr-shield-rows small { font: 9px 'DM Mono', ui-monospace, monospace; letter-spacing: 0.08em; color: #6b5233; }
+.jr-shield-rows em { margin-left: auto; font: 9px 'DM Mono', ui-monospace, monospace; font-style: normal; letter-spacing: 0.12em; color: #8a3a1e; }
+
 /* ==================================================================== *
  * Settings: engraved brass workshop plate
  * ==================================================================== */

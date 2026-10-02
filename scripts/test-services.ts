@@ -55,15 +55,42 @@ section('the catalogue is priced in gold and honest about what is missing')
 
 const catalogue = catalogueView()
 const live = catalogue.filter(service => service.availability.state === 'available')
+const open = catalogue.filter(service => service.availability.state === 'read-only')
 const shut = catalogue.filter(service => service.availability.state === 'unavailable')
 
 equal('every service NPC in town is accounted for', catalogue.length, serviceNpcs.length)
 check('five services are real', live.length === 5, live.map(s => s.id).join(', '))
-check('three are plainly unavailable', shut.length === 3, shut.map(s => s.id).join(', '))
+check('one desk is open and cannot pay', open.length === 1, open.map(s => s.id).join(', '))
+check('two are plainly unavailable', shut.length === 2, shut.map(s => s.id).join(', '))
 check('every available service names a price in gold', live.every(s => s.priceGold !== null && /^[1-9][0-9]*$/.test(s.priceGold!)))
-check('no unavailable service names a price', shut.every(s => s.priceGold === null))
+check('nothing that cannot be bought names a price', [...open, ...shut].every(s => s.priceGold === null))
 check('every unavailable service says why, in sentences', shut.every(s =>
   s.availability.state === 'unavailable' && s.availability.because.join(' ').length > 80))
+
+/* ------------------------------------------------- the third availability */
+
+section('a read-only desk says what it does AND where it stops')
+
+// The whole reason this state exists: "you can use this desk but it cannot send
+// money" is two facts, and a state carrying only the first would be the thing
+// `unavailable` was invented to prevent, running the other way.
+const sable = catalogue.find(service => service.id === 'alchemy.shielded-note')!
+equal('Sable keeps it', sable.npc, 'SABLE · ALCHEMIST')
+equal('it is neither available nor unavailable', sable.availability.state, 'read-only')
+if (sable.availability.state === 'read-only') {
+  check('it says what a player can do there', sable.availability.does.join(' ').length > 80)
+  check('it says where it stops, at the same length', sable.availability.because.join(' ').length > 80)
+  check('and names the missing piece rather than a date',
+    /signer/i.test(sable.availability.because.join(' ')))
+  check('nothing about it reads as pending', !/coming soon|not yet|soon/i.test(
+    `${sable.what} ${sable.availability.does.join(' ')} ${sable.availability.because.join(' ')}`))
+}
+equal('it is not priced in gold', sable.priceGold, null)
+check('it names the desk the client should work at', sable.desk === '/api/courier', String(sable.desk))
+check('no other service names a desk', catalogue.filter(s => s.desk !== undefined).length === 1)
+check('the services that are for sale name no desk', live.every(s => s.desk === undefined))
+check('what it claims to hand over does not include a payout',
+  !/payout|send|transfer/i.test(sable.what.split('It pays nothing out')[0]!), sable.what)
 
 // "demo credits" was an invented currency. It is gone, and the catalogue is not
 // allowed to quote a price in anything but gold.
@@ -340,9 +367,13 @@ if (record.ok) {
 
 /* ----------------------------------------------- the shut desks stay shut */
 
-section('the services that cannot exist refuse, and charge nothing')
+section('nothing that is not for sale can be bought, and none of it charges')
 
-for (const service of SERVICES.filter(s => s.availability.state === 'unavailable')) {
+// Both the shut desks and the open one. `purchaseService` is the only way gold
+// moves for a service, and a desk that is usable over its own endpoint must
+// still be unbuyable here — otherwise "read-only" would be a label rather than
+// a property.
+for (const service of SERVICES.filter(s => s.availability.state !== 'available')) {
   const beforeShut = available()
   const ordersWere = listOrdersForOwner(userId, 500).length
   const refused = buy(service.id, `unavailable-${service.id.replace(/[^a-z]/g, '-')}`)

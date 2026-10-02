@@ -13,37 +13,49 @@ import type { WizardId } from './characters'
  * any panel that ever describes the service, must say the same thing,
  * and that thing must not drift into optimism.
  *
- * What it says is not a stylistic choice. Shielded Zcash transfers do
- * not work in this project and cannot be made to work right now:
+ * What it says is not a stylistic choice. The desk behind it is open
+ * and it cannot send money, and both of those have to survive on a
+ * sign with room for three lines:
  *
- *   - `src/server/providers/zcashWallet.ts` surveys every candidate
- *     backend against its own words and concludes, as a value the
- *     operator console reports rather than an inference: "Nothing in this
- *     repository can sign a Zcash transaction."
- *   - `src/server/providers/oneclick.ts` documents the trap that makes
- *     this easy to get wrong. The 1Click quote endpoint ACCEPTS
- *     shielded-only unified addresses and returns priced quotes for
- *     them, while the same provider's chain-support page says Zcash is
- *     "⚠️ Partially supported - Transparent addresses only". A priced
- *     quote is therefore not evidence of shielded delivery; that
- *     adapter's verdict for a shielded receiver is `unsubstantiated`,
- *     and `planZecPayout` refuses outright rather than quietly
- *     downgrading to a transparent address.
+ *   - It is open. `src/server/providers/courier.ts` parses the address
+ *     with the ZIP-316 parser, classifies its receivers, prices the leg
+ *     against the live conversion endpoint and freezes the result into
+ *     an intent. A player can do all of that, and the Journal desk is
+ *     where they do it.
+ *   - It cannot pay. `src/server/providers/zcashWallet.ts` surveys every
+ *     candidate backend against its own words and concludes, as a value
+ *     the operator console reports rather than an inference: "Nothing in
+ *     this repository can sign a Zcash transaction." `COURIER_SIGNER` in
+ *     courier.ts says the same of the Solana side, and calls adding one
+ *     a custody decision rather than a configuration change.
+ *   - The quote cannot become a payment by accident. Every quote this
+ *     project asks for is `dry`, which `oneclick.ts` hardcodes rather
+ *     than accepting as an argument, and a dry quote returns a price and
+ *     no deposit address at all.
  *
- * The emblem on Sable's board says which network the desk would talk
- * to. These lines say the desk is shut. Both are true, and the second
- * does not get shortened to fit the sign.
+ * This wording used to say a priced quote for a shielded address was
+ * not proof of shielded delivery and that the payout planner refused
+ * outright. That stopped being the live verdict when the executing
+ * connector was identified and observed paying into the Orchard pool:
+ * `classifyZecDelivery` now returns `orchard-substantiated` for an
+ * Orchard-only address and `planZecPayout` calls that route usable. What
+ * is missing is no longer the verdict. It is the signer.
+ *
+ * The emblem on Sable's board says which network the desk talks to.
+ * These lines say what it will not do, and that half does not get
+ * shortened to fit the sign.
  * ------------------------------------------------------------------ */
 export const SHIELDED_NOTICE = {
-  headline: 'SHIELDED · UNAVAILABLE',
+  headline: 'SHIELDED · QUOTE ONLY',
   lines: [
-    'No usable Zcash signing wallet exists for this project,',
-    'so no shielded transfer can be sent. A priced quote for a',
-    'shielded address is not proof of shielded delivery, and the',
-    'payout planner refuses rather than downgrading to transparent.',
+    'This desk reads your Zcash address and prices the route. It',
+    'cannot send anything: no usable Zcash signing wallet exists for',
+    'this project and there is no treasury signer, so the last stage',
+    'of the run has nothing to carry it out. Every quote is dry, which',
+    'means it comes back with a price and no deposit address.',
   ],
   /** Short form, for a sign board that only has room for two lines. */
-  boardLines: ['NO SIGNING WALLET', 'NOTHING HERE CAN SEND ZEC'],
+  boardLines: ['QUOTES ONLY · NO SIGNER', 'NOTHING HERE CAN SEND ZEC'],
   /** Why the mark is on the board at all, so it cannot read as an endorsement. */
   markCaption: 'INTEGRATES WITH',
 } as const
@@ -158,8 +170,8 @@ export const serviceNpcs: ServiceNpc[] = [
     color: '#7bc9ce',
     trade: 'DRAUGHTS',
     emblem: 'MORTAR',
-    // Sable keeps the shielded-transfer desk. The desk is shut, and the sign
-    // says so; see SHIELDED_NOTICE below for why that wording is not softened.
+    // Sable keeps the shielded courier desk. It quotes and cannot pay, and the
+    // sign says so; see SHIELDED_NOTICE above for why that half is not softened.
     integrates: 'ZCASH',
     status: [...SHIELDED_NOTICE.boardLines],
   },

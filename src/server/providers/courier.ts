@@ -57,7 +57,7 @@ import {
   type ZecDeliveryAssessment,
 } from './oneclick'
 import { parseZcashAddress, type ParsedZcashAddress, type ZcashNetwork } from './zcashAddress'
-import { providerFailure, type AdapterResult } from './types'
+import { envPresent, providerFailure, type AdapterResult } from './types'
 
 export const COURIER_SERVICE_ID = 'courier.sol-to-shielded-zec'
 
@@ -190,9 +190,105 @@ export async function acceptDestination(
   return { ok: true, destination: { address: parsed.address, parsed, privateCapable } }
 }
 
+/**
+ * The same five refusals, written for somebody standing at the desk.
+ *
+ * Kept here rather than in the UI so the words cannot drift away from the code
+ * that decides them, and kept as five entries rather than a lookup with a
+ * default so adding a sixth `DestinationRefusal` is a type error instead of a
+ * silent fallback to "invalid address".
+ *
+ * `doThis` is the field that earns this constant. The `detail` strings above
+ * explain why a refusal happened, which is what an operator reading a log
+ * needs; a player needs the next move, and those are five different next
+ * moves. `transparent-receiver-present` gets the longest one because it is the
+ * case nearly everybody hits — a unified address bundles a transparent
+ * receiver so that anyone at all can pay it — and a player whose wallet is
+ * working perfectly has to be told that, or they will go looking for a fault
+ * that is not there.
+ *
+ * Nothing here quotes the address back. These strings are fixed text that
+ * reaches the response and the screen; the address never does.
+ */
+export const DESTINATION_REFUSALS: Record<
+  DestinationRefusal,
+  { readonly headline: string; readonly says: string; readonly doThis: string }
+> = {
+  unparseable: {
+    headline: 'NOT A ZCASH ADDRESS',
+    says:
+      'The ZIP-316 parser could not read that as a Zcash mainnet address at all. It was not looked up ' +
+      'anywhere and it was not sent anywhere.',
+    doThis:
+      'Copy the receiving address out of your Zcash wallet again — the whole string, with no spaces and ' +
+      'nothing trimmed off either end. A Bitcoin, Ethereum or Solana address will not parse here, and ' +
+      'neither will a testnet one.',
+  },
+  'no-shielded-receiver': {
+    headline: 'TRANSPARENT ADDRESS · NOTHING SHIELDED IN IT',
+    says:
+      'That address parses, and every receiver in it is transparent. A payment to it would sit on the ' +
+      'public Zcash chain with the amount and the address in plain view, which is the opposite of what ' +
+      'this desk is for.',
+    doThis:
+      'Ask your wallet for a shielded receiving address instead of the one beginning t1 or t3. In most ' +
+      'wallets the shielded or unified address is offered alongside it on the same receive screen.',
+  },
+  'transparent-receiver-present': {
+    headline: 'UNIFIED ADDRESS · CARRIES A TRANSPARENT RECEIVER',
+    says:
+      'That address parses as a unified address holding a shielded receiver and a transparent one. Which ' +
+      'of the two a sender pays is the sender\u2019s choice and is not visible from outside, so this ' +
+      'address cannot be quoted as private: it could land in public.',
+    doThis:
+      'This is the ordinary case and not a fault with your wallet — a unified address usually bundles a ' +
+      'transparent receiver so that anyone at all can pay it. What you need is a shielded-only address: ' +
+      'on your wallet\u2019s receive screen look for the address it calls shielded, private or Orchard, ' +
+      'and if it lets you choose which receivers to include, include Orchard and leave transparent out. ' +
+      'Paste that one here.',
+  },
+  'sapling-without-orchard': {
+    headline: 'SAPLING ONLY · THIS ROUTE BUILDS ORCHARD OUTPUTS',
+    says:
+      'That address offers a Sapling receiver and no Orchard one. The conversion provider rejects ' +
+      'Sapling-only recipients outright, and the connector that would execute the Zcash leg is only ever ' +
+      'observed building Orchard outputs.',
+    doThis:
+      'Your wallet is either older than Orchard or still handing out Sapling addresses by choice. Update ' +
+      'it, or move to a wallet that supports Orchard, and take a shielded-only address from that. An ' +
+      'address beginning zs1 will never be quotable here.',
+  },
+  'unknown-receivers-only': {
+    headline: 'RECEIVERS THIS BUILD CANNOT READ',
+    says:
+      'That address parses, and every receiver in it carries a typecode this deployment has never heard ' +
+      'of. ZIP-316 says an address like that must be treated as unusable rather than guessed at, so it ' +
+      'is refused.',
+    doThis:
+      'This one is at our end, not yours: your wallet is ahead of the parser running here. Use an address ' +
+      'that exposes an Orchard receiver, or come back once this deployment has caught up.',
+  },
+}
+
 /* ------------------------------------------------------------------ *
  * 2. The quote
  * ------------------------------------------------------------------ */
+
+/**
+ * The refund field sent on a dry quote when no treasury address is configured.
+ *
+ * The Solana system program's address, which is not a wallet and cannot hold a
+ * balance. A dry quote moves nothing and returns no deposit address, so this
+ * field is only ever a parameter the validator inspects — but it still has to
+ * be *some* address, and inventing a plausible-looking one would put a string
+ * on screen that reads like a treasury this project does not have. The same
+ * value is used by `scripts/verify-zec-delivery.ts`, for the same reason.
+ *
+ * `WALLY_COURIER_TREASURY_ADDRESS` takes precedence where an operator has set
+ * one. That does not bring funding any closer: `fundDeposit` still needs a
+ * signer, and there is none.
+ */
+export const COURIER_DRY_REFUND_TO = '11111111111111111111111111111112'
 
 export interface CourierQuoteInput {
   readonly destination: AcceptedDestination
@@ -306,9 +402,64 @@ export function describeQuote(quote: CourierQuote): QuoteDescription {
     delivers: PRIVACY_STATEMENT.delivers,
     doesNotHide: PRIVACY_STATEMENT.doesNotHide,
     cannotProve: PRIVACY_STATEMENT.cannotProve,
+    // No gold is named here. This line used to end "and your gold is returned",
+    // written for a route that spent gold; nothing does, and the sentence is now
+    // read by a player at a desk that takes no payment of any kind, where it is
+    // simply untrue. The refund it describes is the provider's own behaviour.
     worstCase:
       `If the price moves you will receive at least ${formatZec(quote.minZatoshisOut)} ZEC. Below that the ` +
-      'conversion is refunded to the treasury rather than filled, and your gold is returned.',
+      'conversion is refunded rather than filled, so the run does not go through at a worse rate than this.',
+  }
+}
+
+/**
+ * What the desk is, before a player has typed anything.
+ *
+ * Lives beside `describeQuote` rather than in the HTTP layer for the same
+ * reason that one does: it is the player-facing account of this pipeline, and
+ * a route that assembled it field by field would be a route that could leave a
+ * field out. `PRIVACY_STATEMENT` is spread whole, so dropping `doesNotHide`
+ * would have to be done on purpose.
+ *
+ * `stops` is not an apology and not a roadmap. It names the stage this route
+ * does not reach, the absence that stops it, and the three settings that would
+ * still not be enough — which is the shape `/api/withdrawals` already reports
+ * the treasury in, so an operator reading both sees the same absence twice
+ * rather than two different stories.
+ */
+export function describeDesk(bounds: { minLamports: bigint; maxLamports: bigint }) {
+  return {
+    statement: { ...PRIVACY_STATEMENT },
+    stops: {
+      at: 'stage 5 of 5 — funding the deposit',
+      signer: { available: COURIER_SIGNER.available, reason: COURIER_SIGNER.reason },
+      // Presence only, never the value — `envPresent` exists so that a report
+      // can say which decisions an operator has made without disclosing any of
+      // them. All three being set would still leave the signer absent.
+      configuration: (Object.keys(COURIER_CONFIG_KEYS) as CourierConfigKey[]).map(key => ({
+        key,
+        what: COURIER_CONFIG_KEYS[key],
+        set: envPresent(key),
+      })),
+      depositAddress: null,
+      depositAddressReason:
+        'Every quote this desk asks for is dry. A dry quote returns a price and no deposit address, and ' +
+        'the adapter throws rather than continue if one ever appears in a reply. There is nowhere to send ' +
+        'money even if there were anything here able to send it.',
+      goldInvolved: false,
+    },
+    accepts: {
+      network: 'main' as const,
+      requirement: 'shielded-required' as const,
+      minSol: formatSol(bounds.minLamports),
+      maxSol: formatSol(bounds.maxLamports),
+      executor: ZEC_EXECUTOR.connectorContract,
+    },
+    /** All five, so a client holds the vocabulary rather than inventing a default. */
+    refusals: (Object.keys(DESTINATION_REFUSALS) as DestinationRefusal[]).map(code => ({
+      code,
+      ...DESTINATION_REFUSALS[code],
+    })),
   }
 }
 

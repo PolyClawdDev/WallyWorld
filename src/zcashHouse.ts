@@ -23,19 +23,21 @@ import type { Batch, Surface } from './voxelBuild'
  * ---- what this building is allowed to say --------------------------
  *
  * A trademark fifteen metres across is a much louder claim than a badge
- * on a sign, and the claim it would make if left alone is false:
- * shielded Zcash transfers DO NOT WORK here and cannot be made to work
- * right now. There is no usable Zcash signing wallet for this project,
- * and a priced quote for a shielded address is not evidence of shielded
- * delivery — `src/server/providers/zcashWallet.ts` and
- * `src/server/providers/oneclick.ts` document both at length.
+ * on a sign, and the claim it would make if left alone is false. The
+ * desk inside reads a Zcash address and prices a route, and that is the
+ * end of it: shielded Zcash transfers CANNOT BE SENT from here. There is
+ * no usable Zcash signing wallet for this project and no treasury signer
+ * to fund a conversion — `src/server/providers/zcashWallet.ts` and
+ * `COURIER_SIGNER` in `src/server/providers/courier.ts` say so as values
+ * rather than as prose, and the latter calls adding one a custody
+ * decision rather than a setting.
  *
- * So the unavailability is built into the house rather than left to the
- * board on the back wall. `SHIELDED_NOTICE` is lit across the base's
- * street face, at the height a player reads a door sign, and it is the
- * brightest lettering on the building. The rule that follows from this
- * is short: if the coin is ever made bigger, the notice gets bigger
- * with it. They are one object.
+ * So the limit is built into the house rather than left to the board on
+ * the back wall. `SHIELDED_NOTICE` is lit across the base's street face,
+ * at the height a player reads a door sign, and it is the brightest
+ * lettering on the building. The rule that follows from this is short:
+ * if the coin is ever made bigger, the notice gets bigger with it. They
+ * are one object.
  *
  * ---- why the coin is a second batch --------------------------------
  *

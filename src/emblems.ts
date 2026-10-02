@@ -27,12 +27,13 @@ import { spans } from './voxelBuild'
  * endorsement. It is hung as a separate "integrates with" plate beside
  * the shop's own emblem, never merged into one badge with it.
  *
- * It is a label, not a claim. Shielded transfers DO NOT WORK in this
- * project and cannot be made to work right now — there is no usable
- * Zcash signing wallet, which `src/server/providers/zcashWallet.ts`
- * documents in detail, and `src/server/providers/oneclick.ts` documents
- * why a priced quote for a shielded address proves nothing. The board
- * that carries this mark therefore also carries the unavailability, from
+ * It is a label, not a claim. Nothing in this project can SEND a
+ * shielded transfer: there is no usable Zcash signing wallet, which
+ * `src/server/providers/zcashWallet.ts` documents in detail, and no
+ * treasury signer to fund the conversion, which `COURIER_SIGNER` in
+ * `src/server/providers/courier.ts` states as a value. The desk behind
+ * the mark parses addresses and prices the route and stops there. The
+ * board that carries this mark therefore also carries that limit, from
  * `SHIELDED_NOTICE` in src/townData.ts, on the same sign.
  * ------------------------------------------------------------------ */
 

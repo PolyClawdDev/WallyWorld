@@ -247,8 +247,8 @@ export function WorldMap() {
             says what they do, which is the whole reason for finding them. Anyone
             whose desk names an external network gets a gold ring as well, and
             the standing of that desk written under it — the ring marks WHICH
-            network, and the line says the desk is shut. Neither is allowed to
-            travel without the other, the same rule as the board in the world. */}
+            network, and the line says how far the desk goes. Neither is allowed
+            to travel without the other, the same rule as the board in the world. */}
         {serviceNpcs.map(npc => <g key={npc.name}>
           {npc.integrates && <polygon
             points={polygon(npc.x, npc.z, 5.4, 12)}

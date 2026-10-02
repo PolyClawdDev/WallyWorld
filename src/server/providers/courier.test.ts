@@ -13,14 +13,17 @@
  * ------------------------------------------------------------------ */
 
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import {
   COURIER_CONFIG_KEYS,
   COURIER_SIGNER,
   COURIER_TRANSITIONS,
+  DESTINATION_REFUSALS,
   PRIVACY_STATEMENT,
   acceptDestination,
   canTransition,
+  describeDesk,
   describeQuote,
   formatSol,
   formatZec,
@@ -28,6 +31,7 @@ import {
   recordIntent,
   type CourierIntent,
   type CourierQuote,
+  type DestinationRefusal,
 } from './courier'
 import { classifyZecDelivery, planZecPayout } from './oneclick'
 import { loadVectors, transparentAddressFrom, vectorWithReceivers } from '../../../scripts/lib/zec-vectors'
@@ -97,6 +101,200 @@ test('a non-Zcash string is refused as unparseable rather than treated as an add
     if (result.ok) continue
     assert.equal(result.code, 'unparseable')
   }
+})
+
+/* -------------------------------------------- what a refused player reads */
+
+/**
+ * The refusals are the product here, not an error path.
+ *
+ * Five codes exist because they need five different things from the player,
+ * and a desk that collapsed them into "invalid address" would leave somebody
+ * holding a perfectly good wallet with nothing to try. These tests pin that
+ * each code reaches distinct copy, that the copy tells them what to do, and
+ * that none of it quotes the address back.
+ */
+
+const REFUSAL_CODES: DestinationRefusal[] = [
+  'unparseable',
+  'no-shielded-receiver',
+  'transparent-receiver-present',
+  'sapling-without-orchard',
+  'unknown-receivers-only',
+]
+
+test('every refusal code has copy, and no two codes share any of it', () => {
+  assert.deepEqual(Object.keys(DESTINATION_REFUSALS).sort(), [...REFUSAL_CODES].sort())
+  // A headline is a line on a card; `says` and `doThis` are the two paragraphs
+  // that do the work, so they are held to a length a real explanation needs.
+  const floor = { headline: 12, says: 90, doThis: 90 }
+  for (const field of ['headline', 'says', 'doThis'] as const) {
+    const values = REFUSAL_CODES.map(code => DESTINATION_REFUSALS[code][field])
+    assert.equal(new Set(values).size, REFUSAL_CODES.length, `two codes share a ${field}`)
+    for (const value of values) assert.ok(value.length > floor[field], `a ${field} is too short: "${value}"`)
+  }
+})
+
+test('every refusal tells the player what to do next, not only what went wrong', () => {
+  for (const code of REFUSAL_CODES) {
+    const { doThis } = DESTINATION_REFUSALS[code]
+    // An instruction, not a restatement. Every one of these names something to
+    // go and do: copy it again, ask the wallet for a different address, update
+    // the wallet, or wait for this deployment.
+    assert.match(doThis, /\b(Copy|Ask|Update|Use|Look|paste|Paste|move|come back)\b/, code)
+  }
+})
+
+test('a transparent-bearing unified address is told to ask for a shielded-only one', async () => {
+  const result = await acceptDestination(TRANSPARENT_ORCHARD)
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  const copy = DESTINATION_REFUSALS[result.code!]
+  // The common case: this is what most wallets hand out, so the copy has to say
+  // that it is ordinary and then say precisely what to ask for instead.
+  assert.match(copy.doThis, /shielded-only/)
+  assert.match(copy.doThis, /Orchard/)
+  assert.match(copy.doThis, /not a fault with your wallet/)
+})
+
+test('a Sapling-only address is told its wallet is the problem, and which way out', async () => {
+  const result = await acceptDestination(SAPLING_ONLY)
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  const copy = DESTINATION_REFUSALS[result.code!]
+  assert.match(copy.headline, /SAPLING/)
+  assert.match(copy.doThis, /Orchard/)
+  assert.match(copy.doThis, /zs1/)
+})
+
+test('a transparent-only address is told the payment would be public, not that it is invalid', async () => {
+  const result = await acceptDestination(TRANSPARENT_ONLY)
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  const copy = DESTINATION_REFUSALS[result.code!]
+  assert.match(copy.says, /public/)
+  assert.match(copy.doThis, /shielded/)
+  assert.doesNotMatch(copy.headline, /INVALID/i)
+})
+
+test('a string that is not an address is told so, and is not described as the wrong kind of address', async () => {
+  const result = await acceptDestination('bc1qar0srrr7xfkvy5l643lydnw9re59gtzzwf5mdq')
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.equal(result.code, 'unparseable')
+  const copy = DESTINATION_REFUSALS.unparseable
+  assert.match(copy.headline, /NOT A ZCASH ADDRESS/)
+  assert.match(copy.doThis, /Bitcoin/)
+})
+
+/**
+ * The literal `scripts/verify-zip316.ts` uses for its unknown-typecode case.
+ *
+ * `acceptDestination` has an `unknown-receivers-only` branch for an address
+ * that decodes to an empty receiver set, and @jp4g/zcash.js 0.1.0-rc.1 never
+ * produces one: it throws out of `decode` rather than returning a parse with
+ * nothing known in it. So the branch is unreachable with the installed parser
+ * and this address lands on `unparseable` instead.
+ *
+ * It stays, and the test records why rather than deleting either. A later
+ * parser that surfaces unknown typecodes instead of refusing would make this
+ * live, and `unparseable` is the wrong thing to tell somebody whose wallet is
+ * simply newer than ours — which is precisely the difference the two copies
+ * carry. If this assertion ever starts failing, the branch has woken up.
+ */
+const UNKNOWN_ONLY = 'u1ldhmqnkm57nvjrkpvqz6tcy44su7l9rgd0n4qljmvd4v0zwft05tzzhwewslcvhmawhpvrhrhqg8qrwmgwsjcf'
+
+test('an unknown-typecode-only address is refused, and today that refusal is unparseable', async () => {
+  const result = await acceptDestination(UNKNOWN_ONLY)
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.equal(result.code, 'unparseable')
+  // The two are not interchangeable, which is why the branch is worth keeping.
+  assert.notEqual(DESTINATION_REFUSALS.unparseable.doThis, DESTINATION_REFUSALS['unknown-receivers-only'].doThis)
+})
+
+test('the refusal a player sees never quotes their address back', async () => {
+  // Address-shaped strings are the thing that must not survive into copy. The
+  // detail strings from `acceptDestination` are written for a log; these are
+  // what reaches a screen, and they are fixed text with no interpolation in
+  // them at all.
+  for (const address of [ORCHARD_ONLY, SAPLING_ONLY, TRANSPARENT_ONLY, TRANSPARENT_ORCHARD]) {
+    for (const code of REFUSAL_CODES) {
+      const copy = DESTINATION_REFUSALS[code]
+      const whole = `${copy.headline} ${copy.says} ${copy.doThis}`
+      for (let index = 0; index + 12 <= address.length; index += 1) {
+        assert.equal(whole.includes(address.slice(index, index + 12)), false, `${code} echoes the address`)
+      }
+    }
+  }
+})
+
+/* --------------------------------------------- what reaches the player's screen */
+
+test('the desk describes itself with both halves of the statement, verbatim', () => {
+  const desk = describeDesk({ minLamports: 10_000_000n, maxLamports: 100_000_000_000n })
+  assert.equal(desk.statement.delivers, PRIVACY_STATEMENT.delivers)
+  assert.equal(desk.statement.doesNotHide, PRIVACY_STATEMENT.doesNotHide)
+  assert.equal(desk.statement.cannotProve, PRIVACY_STATEMENT.cannotProve)
+  // Not a prefix, not a summary. The whole string or nothing.
+  assert.match(desk.statement.doesNotHide, /Buying in is public and stays public/)
+  assert.match(desk.statement.doesNotHide, /Nothing here deletes any of that\.$/)
+})
+
+test('the desk states where it stops, and never offers a deposit address', () => {
+  const desk = describeDesk({ minLamports: 10_000_000n, maxLamports: 100_000_000_000n })
+  assert.equal(desk.stops.depositAddress, null)
+  assert.equal(desk.stops.signer.available, false)
+  assert.equal(desk.stops.goldInvolved, false)
+  assert.match(desk.stops.at, /stage 5 of 5/)
+  assert.equal(desk.stops.configuration.length, Object.keys(COURIER_CONFIG_KEYS).length)
+  // Presence, never a value: an operator's address must not travel to a client.
+  for (const entry of desk.stops.configuration) {
+    assert.equal(typeof entry.set, 'boolean')
+    assert.equal(Object.keys(entry).sort().join(','), 'key,set,what')
+  }
+  assert.equal(desk.accepts.minSol, '0.01')
+  assert.equal(desk.accepts.maxSol, '100')
+})
+
+test('the desk hands the client all five refusals rather than a default', () => {
+  const desk = describeDesk({ minLamports: 10_000_000n, maxLamports: 100_000_000_000n })
+  assert.deepEqual(desk.refusals.map(entry => entry.code).sort(), [...REFUSAL_CODES].sort())
+})
+
+/**
+ * The two seams between `PRIVACY_STATEMENT` and a player's eyes, read off the
+ * source rather than asserted about in the abstract.
+ *
+ * The statement is a server constant and the screen is a React component, so
+ * nothing in a unit test can watch the pixels. What a unit test can do is
+ * assert that neither end has quietly dropped the half it would rather not
+ * show: that the route forwards all three fields out of `describeQuote`, and
+ * that the panel renders all three through one list with one class, which is
+ * what makes "equal prominence" a property of the code instead of a promise.
+ * `npm run build` plus the browser pass is what confirms it on screen.
+ */
+const sourceOf = (path: string) => readFileSync(new URL(`../../../${path}`, import.meta.url), 'utf8')
+
+test('the quote route forwards all three fields of the statement to the client', () => {
+  const route = sourceOf('src/server/routes/courier.ts')
+  for (const field of ['delivers', 'doesNotHide', 'cannotProve']) {
+    assert.match(route, new RegExp(`${field}: described\\.${field}`), `the quote reply drops ${field}`)
+  }
+  // Nothing may shorten a half on its way out.
+  assert.doesNotMatch(route, /described\.doesNotHide\.(slice|substring|split)/)
+})
+
+test('the journal renders all three halves, through one list and one class', () => {
+  const panel = sourceOf('src/panels.tsx')
+  const halves = panel.slice(panel.indexOf('const halves'), panel.indexOf('</div>', panel.indexOf('const halves')))
+  for (const field of ['delivers', 'doesNotHide', 'cannotProve']) {
+    assert.match(halves, new RegExp(`statement\\.${field}`), `the panel drops ${field}`)
+  }
+  assert.match(halves, /className="jr-shield-half"/)
+  // One class for all three. A second one would be how "equal prominence"
+  // stops being true without anybody editing the words.
+  assert.equal(panel.match(/jr-shield-half/g)?.length, 1)
 })
 
 /* --------------------------------------------------------- the verdict */

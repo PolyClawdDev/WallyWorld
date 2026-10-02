@@ -17,17 +17,22 @@ import { resolvePresenceAuth } from './pvp/guest'
  * town data, and hands it back. Nothing here is on a timer and nothing here
  * pretends.
  *
- * Three of the eight service NPCs cannot do anything real — the shielded
- * Zcash desk has no signer anywhere in this project, and the other two
- * would need world state that does not exist. They are drawn as shut, with
- * the reason, and they have no button. That is deliberate: removing the word
- * "demo" from something that does not work would be worse than the demo.
+ * Two of the eight service NPCs cannot do anything real — they would need
+ * world state that does not exist. They are drawn as shut, with the reason,
+ * and they have no button. That is deliberate: removing the word "demo"
+ * from something that does not work would be worse than the demo.
+ *
+ * Sable's shielded desk is the third kind, `read-only`: it works, and it
+ * cannot pay. `ShieldedCourierDesk` below is that desk, and the one rule it
+ * is built around is that the half of the truth a player would rather not
+ * read is never the half that gets dropped, shortened or folded away.
  *
  * Artifacts are rendered as text, never as markup.
  * ------------------------------------------------------------------ */
 
 type Availability =
   | { state: 'available' }
+  | { state: 'read-only'; headline: string; does: string[]; because: string[] }
   | { state: 'unavailable'; headline: string; because: string[] }
 
 type Service = {
@@ -40,6 +45,7 @@ type Service = {
   priceGold: string | null
   availability: Availability
   landmarks?: string[]
+  desk?: string
 }
 
 type OrderView = {
@@ -87,6 +93,237 @@ const ARTIFACT_STYLE: React.CSSProperties = {
   // generators already wrap their prose at a fixed width, so scrolling sideways
   // keeps a table readable where reflowing it would not.
   whiteSpace: 'pre',
+}
+
+/* ------------------------------------------------------------------ *
+ * Sable's shielded courier desk
+ * ------------------------------------------------------------------ */
+
+type Statement = { delivers: string; doesNotHide: string; cannotProve: string }
+
+type Stops = {
+  at: string
+  signer: { available: boolean; reason: string }
+  configuration: Array<{ key: string; what: string; set: boolean }>
+  depositAddress: null
+  depositAddressReason: string
+  goldInvolved: boolean
+}
+
+type DeskInfo = {
+  statement: Statement
+  stops: Stops
+  accepts: {
+    network: string
+    requirement: string
+    minSol: string
+    maxSol: string
+    parser: { name: string; version: string; note: string }
+    executor: string
+  }
+}
+
+type Refused = { error: string; code: string; headline: string; says: string; doThis: string }
+
+type Checked = { accepted: true; receivers: string[]; shieldedOnly: boolean; says: string }
+
+type Priced = {
+  dry: boolean
+  depositAddress: null
+  destination: { receivers: string[]; shieldedOnly: boolean }
+  quote: {
+    headline: string
+    worstCase: string
+    sol: string
+    zec: string
+    minZec: string
+    timeEstimateSeconds: number | null
+    correlationId: string
+    signatureVerified: boolean
+  }
+  statement: Statement
+  verdict: { verdict: string; deliveredReceiver: string; explanation: string; documentedSupport: string; documentedSupportUrl: string }
+  intent: { intentId: string; state: string; receivers: string[]; expiresAtMs: number; note: string } | null
+  stops: Stops
+}
+
+/**
+ * The privacy statement, whole, wherever it is shown.
+ *
+ * Rendered by walking one list rather than placing three paragraphs, so that
+ * an edit which only wanted the headline cannot quietly leave `doesNotHide`
+ * out — which is the exact thing `PRIVACY_STATEMENT` is held as a constant on
+ * the server to prevent. All three rows carry the same class: equal prominence
+ * is the requirement, and giving the unflattering half a smaller one would be
+ * the same omission done in CSS.
+ */
+function PrivacyStatement({ statement }: { statement: Statement }) {
+  const halves: Array<[string, string]> = [
+    ['DELIVERS', statement.delivers],
+    ['DOES NOT HIDE', statement.doesNotHide],
+    ['CANNOT PROVE', statement.cannotProve],
+  ]
+  return <div className="jr-shield-say">
+    {halves.map(([label, text]) => <p className="jr-shield-half" key={label}><b>{label}</b>{text}</p>)}
+  </div>
+}
+
+function WhereItStops({ stops }: { stops: Stops }) {
+  return <div className="jr-shield-stop">
+    <div className="jr-ledger-head"><span>WHERE THIS STOPS</span><b>{stops.at.toUpperCase()}</b></div>
+    <p>{stops.signer.reason}</p>
+    <p>{stops.depositAddressReason}</p>
+    <div className="jr-shield-rows">
+      {stops.configuration.map(entry => <div key={entry.key}>
+        <b>{entry.key}</b><small>{entry.what}</small><em>{entry.set ? 'set · still no signer' : 'unset'}</em>
+      </div>)}
+    </div>
+  </div>
+}
+
+/**
+ * The desk, in four moves: read the statement, hand over an address, name an
+ * amount, read the price.
+ *
+ * No gold is involved at any point and there is no purchase button, because
+ * there is nothing to purchase. The address is sent to the world server and
+ * held nowhere — not in storage, not in a URL, and not in this component past
+ * the moment the field is cleared.
+ */
+function ShieldedCourierDesk({ endpoint }: { endpoint: string }) {
+  const [info, setInfo] = useState<DeskInfo | null>(null)
+  const [address, setAddress] = useState('')
+  const [sol, setSol] = useState('1')
+  const [busy, setBusy] = useState('')
+  const [refused, setRefused] = useState<Refused | null>(null)
+  const [checked, setChecked] = useState<Checked | null>(null)
+  const [priced, setPriced] = useState<Priced | null>(null)
+  const [note, setNote] = useState('')
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}${endpoint}`)
+        if (response.ok) setInfo((await response.json()) as DeskInfo)
+      } catch {
+        setNote('The desk could not be reached, so nothing can be parsed or priced right now.')
+      }
+    })()
+  }, [endpoint])
+
+  const ask = async (what: 'address' | 'quote') => {
+    setBusy(what)
+    setNote('')
+    setRefused(null)
+    if (what === 'address') { setChecked(null); setPriced(null) }
+    const auth = await resolvePresenceAuth()
+    if (!auth) {
+      setBusy('')
+      setNote('This desk needs a session with the world server.')
+      return
+    }
+    try {
+      const response = await fetch(`${API_BASE_URL}${endpoint}/${what}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${auth.token}` },
+        body: JSON.stringify(what === 'address' ? { address } : { address, sol }),
+      })
+      const payload = (await response.json()) as Record<string, unknown>
+      if (response.ok && what === 'address') setChecked(payload as unknown as Checked)
+      else if (response.ok) { setPriced(payload as unknown as Priced); setChecked(null) }
+      // The address in the field is refused, so anything already on screen is
+      // about a different address. A price and a refusal shown together would
+      // be the desk contradicting itself about what the player typed.
+      else if (payload.error === 'destination_refused') {
+        setRefused(payload as unknown as Refused)
+        setChecked(null)
+        setPriced(null)
+      }
+      else setNote(String(payload.detail ?? `The desk answered ${response.status}.`))
+    } catch {
+      setNote('The request did not reach the world server. Nothing was parsed and nothing was priced.')
+    }
+    setBusy('')
+  }
+
+  if (!info) return <p className="jr-empty">{note || 'Opening the courier desk…'}</p>
+
+  const quote = priced?.quote
+
+  return <div className="jr-shield-desk">
+    {/* First, and never behind anything. A player reads what this does and
+        what it does not hide before they are asked for an address. */}
+    <PrivacyStatement statement={priced?.statement ?? info.statement} />
+
+    <label className="jr-shield-field">
+      <span>YOUR ZCASH ADDRESS</span>
+      <input
+        value={address}
+        onChange={event => setAddress(event.target.value)}
+        placeholder="a shielded-only unified address"
+        spellCheck={false}
+        autoComplete="off"
+      />
+      <small>
+        Parsed by {info.accepts.parser.name} {info.accepts.parser.version}. {info.accepts.parser.note}
+      </small>
+    </label>
+    <button className="primary full" disabled={busy !== '' || address.trim() === ''} onClick={() => void ask('address')}>
+      {busy === 'address' ? 'Reading the address…' : 'Check this address'}
+    </button>
+
+    {refused && <div className="jr-shield-refusal">
+      <div className="jr-ledger-head"><span>REFUSED</span><b>{refused.code}</b></div>
+      <h5>{refused.headline}</h5>
+      <p>{refused.says}</p>
+      <p className="jr-shield-do"><b>WHAT TO DO</b>{refused.doThis}</p>
+    </div>}
+
+    {checked && <div className="jr-shield-ok">
+      <div className="jr-ledger-head"><span>ACCEPTED</span><b>{checked.receivers.join(' · ').toUpperCase()}</b></div>
+      <p>{checked.says}</p>
+    </div>}
+
+    {(checked || priced) && <>
+      <label className="jr-shield-field">
+        <span>AMOUNT TO PRICE</span>
+        <input value={sol} onChange={event => setSol(event.target.value)} spellCheck={false} autoComplete="off" />
+        <small>
+          SOL, between {info.accepts.minSol} and {info.accepts.maxSol}. Naming an amount prices the route and
+          nothing else: no gold moves, nothing is reserved, and no payment is prepared.
+        </small>
+      </label>
+      <button className="primary full" disabled={busy !== ''} onClick={() => void ask('quote')}>
+        {busy === 'quote' ? 'Pricing the route…' : 'Price this run'}
+      </button>
+    </>}
+
+    {note && <p className="jr-empty">{note}</p>}
+
+    {priced && quote && <div className="jr-shield-quote">
+      <div className="jr-ledger-head"><span>PRICED · DRY QUOTE</span><b>NO DEPOSIT ADDRESS</b></div>
+      <strong>{quote.headline}</strong>
+      <div className="jr-shield-rows">
+        <div><b>{quote.sol} SOL</b><small>in</small></div>
+        <div><b>{quote.zec} ZEC</b><small>expected out</small></div>
+        <div><b>{quote.minZec} ZEC</b><small>least you would get</small></div>
+      </div>
+      <p>{quote.worstCase}</p>
+      <div className="jr-meta">
+        <span>verdict {priced.verdict.verdict}</span>
+        <span>{quote.signatureVerified ? 'quote signature verified' : 'quote signature unverified'}</span>
+      </div>
+      <p>{priced.verdict.explanation}</p>
+      <p className="jr-shield-do"><b>THE PROVIDER STILL DOCUMENTS</b>{priced.verdict.documentedSupport} — contradicted by what the connector is observed doing on chain, and kept here because a verdict that overrides a provider&rsquo;s own words has to quote them.</p>
+      {priced.intent && <div className="jr-shield-ok">
+        <div className="jr-ledger-head"><span>INTENT FROZEN</span><b>{priced.intent.state.toUpperCase()}</b></div>
+        <p>{priced.intent.intentId} · receivers {priced.intent.receivers.join(', ')} · expires {when(priced.intent.expiresAtMs)}</p>
+        <p>{priced.intent.note}</p>
+      </div>}
+    </div>}
+
+    <WhereItStops stops={priced?.stops ?? info.stops} />
+  </div>
 }
 
 export function JournalPanel() {
@@ -176,8 +413,9 @@ export function JournalPanel() {
       <button className="primary full" onClick={() => setArtifact(null)}>Close the page</button>
     </div>}
 
-    {desk?.services.map(service => service.availability.state === 'available'
-      ? <div className="jr-card" key={service.id}>
+    {desk?.services.map(service => {
+      if (service.availability.state === 'available') {
+        return <div className="jr-card" key={service.id}>
           <div className="task-head"><span>{service.npc}</span><b>{service.priceGold} GOLD</b></div>
           <h4>{service.title}</h4>
           <p>{service.what}</p>
@@ -193,13 +431,36 @@ export function JournalPanel() {
             {busy === service.id ? 'Paying and drawing it up…' : `Pay ${service.priceGold} gold`}
           </button>
         </div>
-      : <div className="jr-card" key={service.id} style={{ opacity: 0.72 }}>
-          <div className="task-head"><span>{service.npc}</span><b style={{ color: '#8a3a1e' }}>UNAVAILABLE</b></div>
+      }
+
+      /* Open, and unable to pay. Drawn at full strength rather than dimmed
+         like a shut desk, with what it does and where it stops side by side
+         and neither of them collapsed. */
+      if (service.availability.state === 'read-only') {
+        const { headline, does, because } = service.availability
+        return <div className="jr-card jr-shield" key={service.id}>
+          <div className="task-head"><span>{service.npc}</span><b className="jr-shield-state">{headline}</b></div>
           <h4>{service.title}</h4>
-          <p>{service.availability.state === 'unavailable' ? service.availability.headline : ''}</p>
-          <p style={{ marginTop: 8 }}>{service.availability.state === 'unavailable' ? service.availability.because.join(' ') : ''}</p>
-          <div className="jr-meta"><span>No price</span><span>Nothing to buy</span></div>
-        </div>)}
+          <p>{service.what}</p>
+          <div className="jr-meta"><span>{service.keeper}</span><span>from {service.derivedFrom.join(', ')}</span></div>
+          <div className="jr-shield-split">
+            <div><b>THE DESK DOES</b><span>{does.join(' ')}</span></div>
+            <div className="jr-shield-not"><b>AND CANNOT</b><span>{because.join(' ')}</span></div>
+          </div>
+          {service.desk
+            ? <ShieldedCourierDesk endpoint={service.desk} />
+            : <p className="jr-empty">This desk names no endpoint, so nothing can be worked at it.</p>}
+        </div>
+      }
+
+      return <div className="jr-card" key={service.id} style={{ opacity: 0.72 }}>
+        <div className="task-head"><span>{service.npc}</span><b style={{ color: '#8a3a1e' }}>UNAVAILABLE</b></div>
+        <h4>{service.title}</h4>
+        <p>{service.availability.headline}</p>
+        <p style={{ marginTop: 8 }}>{service.availability.because.join(' ')}</p>
+        <div className="jr-meta"><span>No price</span><span>Nothing to buy</span></div>
+      </div>
+    })}
 
     <div className="jr-ledger">
       {/* Was "SIMULATED". These rows are the gold ledger's own account of what
