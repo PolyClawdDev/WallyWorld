@@ -33,12 +33,30 @@ import { ARENA_FADE_MS, type ArenaView } from '../shared/pvp'
 /**
  * Objects that belong to the duel rather than to the town, by name.
  *
- * The player group and the opponent are passed in, because the caller owns
- * them. These two are found by name because nothing else has a handle on
- * them at this level: `combat-vfx` is the float-label and impact pool that
- * draws the duel's damage numbers, and `arena` is the floor itself.
+ * The player group is passed in, because the caller owns it. These two are
+ * found by name because nothing else has a handle on them at this level:
+ * `combat-vfx` is the float-label and impact pool that draws the duel's
+ * damage numbers, and `arena` is the floor itself.
  */
 const KEPT_NAMES = new Set(['combat-vfx', 'arena'])
+
+/**
+ * The other wizard in the fight.
+ *
+ * Kept by flag rather than by handle, which is the whole reason this bug
+ * existed: the caller passes in the objects it owns, and it does not own
+ * this one — `pvp/world.ts` creates, recreates and disposes remote wizards
+ * as presence changes, so any handle taken at entry can be stale by the
+ * next frame. A character swap mid-instance disposes the group and builds
+ * a new one; a keep-list holding the old object would hide the new one.
+ *
+ * Non-participants are not a worry here even though they carry the same
+ * flag. `updatePvpWorld` REMOVES every remote except the opponent from the
+ * scene while a duel is locked, and it runs after this sweep and before the
+ * frame is drawn, so a bystander left visible by this rule is out of the
+ * scene entirely before anything renders.
+ */
+const isRemotePlayer = (child: THREE.Object3D) => child.userData.remotePlayer === true
 
 type Mode = 'in' | 'live' | 'out' | 'restore'
 
@@ -101,6 +119,7 @@ function enter(scene: THREE.Scene, view: ArenaView, now: number, keep: THREE.Obj
   const hidden: THREE.Object3D[] = []
   for (const child of scene.children) {
     if (kept.has(child) || KEPT_NAMES.has(child.name)) continue
+    if (isRemotePlayer(child)) continue
     if (!child.visible) continue
     child.visible = false
     hidden.push(child)

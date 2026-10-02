@@ -48,6 +48,28 @@ const TOWN_EDGE = 96
 const GRACE_MS = 15_000
 const CHALLENGE_TTL_MS = 30_000
 
+/**
+ * What `visibleTownObjects` should read inside an arena.
+ *
+ * The probe counts every visible scene child that is not the local player,
+ * the arena floor or the vfx pool — and the opponent's wizard is none of
+ * those three, so the honest expected count during a duel is ONE: the other
+ * fighter, drawn, and nothing else behind them.
+ *
+ * It is not zero, and asserting zero is what let an invisible-opponent bug
+ * ship. The stage's entry sweep hid every visible scene child except the
+ * local player, which included the opponent — whose wizard is always
+ * already in the scene, because clicking it is how you challenge them. The
+ * count read 0, this check was satisfied that the town was gone, and the
+ * thing it was really reporting was that neither fighter could see the
+ * other. Every other arena assertion is about coordinates, and the
+ * coordinates were right the whole time.
+ *
+ * So a 0 here now means the opponent is not being drawn. That is the
+ * regression this number exists to catch.
+ */
+const OPPONENT_ONLY = 1
+
 const failures = []
 const check = (name, ok, detail = '') => {
   console.log(`${ok ? 'ok  ' : 'FAIL'}  ${name}${detail ? ` — ${detail}` : ''}`)
@@ -564,9 +586,9 @@ async function main() {
     /* ---- 6. nothing of the town, and nobody else --------------------- */
     const insideA = await arenaOf(pageA)
     const insideB = await arenaOf(pageB)
-    check('no town geometry is left visible',
-      insideA.visibleTownObjects === 0 && insideB.visibleTownObjects === 0,
-      `A ${insideA.visibleTownObjects} B ${insideB.visibleTownObjects} (was ${townObjectsA} in town)`)
+    check('no town geometry is left visible, and the opponent still is',
+      insideA.visibleTownObjects === OPPONENT_ONLY && insideB.visibleTownObjects === OPPONENT_ONLY,
+      `A ${insideA.visibleTownObjects} B ${insideB.visibleTownObjects} (was ${townObjectsA} in town, expected ${OPPONENT_ONLY})`)
     check('the only other player in the scene is the opponent',
       insideA.remotes.length === 1 && insideA.remotes[0].playerId === idB && insideB.remotes.length === 1 && insideB.remotes[0].playerId === idA,
       `A sees ${insideA.remotes.length}, B sees ${insideB.remotes.length}`)
@@ -696,8 +718,9 @@ async function main() {
     check('both fighters stay in the arena for the result',
       restingA.view?.phase === 'results' && restingB.view?.phase === 'results',
       `A ${restingA.view?.phase} B ${restingB.view?.phase}`)
-    check('and the town is still not drawn behind them',
-      restingA.visibleTownObjects === 0 && restingB.visibleTownObjects === 0)
+    check('and the town is still not drawn behind them, with both wizards still on the floor',
+      restingA.visibleTownObjects === OPPONENT_ONLY && restingB.visibleTownObjects === OPPONENT_ONLY,
+      `A ${restingA.visibleTownObjects} B ${restingB.visibleTownObjects}`)
     check('the result panel is on screen', await pageA.evaluate(() => Boolean(document.querySelector('.pvp-result'))))
     check('the results phase has a deadline of its own', typeof restingA.view?.resultsEndsAtMs === 'number',
       `${Math.round(((restingA.view?.resultsEndsAtMs ?? 0) - Date.now()) / 1000)}s left`)
@@ -725,7 +748,7 @@ async function main() {
     const duel2 = (await uiOf(pageA)).duel
     check('the rematch is a new match with its own id', duel2 && duel2.duelId !== duel1.duelId,
       `${duel1.duelId} -> ${duel2?.duelId}`)
-    check('nobody left the arena to do it', (await arenaOf(pageA)).visibleTownObjects === 0 &&
+    check('nobody left the arena to do it', (await arenaOf(pageA)).visibleTownObjects === OPPONENT_ONLY &&
       Math.abs((await pose(pageA)).x) > TOWN_EDGE)
 
     const fighting2 = await until(async () => (await arenaOf(pageA)).view?.phase === 'fighting', 45_000)
