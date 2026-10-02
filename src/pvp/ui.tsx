@@ -290,6 +290,30 @@ function InviteCard() {
 }
 
 /**
+ * The duel HUD's own 100 ms beat, shared by everything in it that counts.
+ *
+ * The presence tick is twelve a second and lands wherever the network put it;
+ * a number that changes on a whole second has to change ON that second. One
+ * interval for the whole HUD rather than one per readout: two intervals
+ * started at different moments tick at different offsets, so the countdown
+ * digit and the round clock beside it would disagree about when a second
+ * turned.
+ */
+function useHudClock() {
+  const [, setBeat] = useState(0)
+  useEffect(() => {
+    const timer = setInterval(() => setBeat(n => n + 1), 100)
+    return () => clearInterval(timer)
+  }, [])
+}
+
+/** m:ss, for a clock that is read at a glance in the middle of a fight. */
+function clockText(ms: number) {
+  const seconds = Math.max(0, Math.floor(ms / 1000))
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+}
+
+/**
  * "3", "2", "1", "FIGHT".
  *
  * Driven off `countdownEndsAtMs`, which is a server timestamp both clients
@@ -298,18 +322,31 @@ function InviteCard() {
  * beat reads FIGHT rather than 0 because 0 is not a number anybody counts to,
  * and it is also the moment damage actually becomes possible.
  *
- * Its own 100 ms timer: the presence tick is twelve a second and a number
- * that changes on a whole second needs to change ON that second.
+ * Re-rendered by `useHudClock` in `DuelHud`, which is mounted for the whole
+ * duel and is the only interval the HUD runs.
  */
 function Countdown({ endsAtMs }: { endsAtMs: number }) {
-  const [, setNow] = useState(Date.now())
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 100)
-    return () => clearInterval(timer)
-  }, [])
   const left = endsAtMs - Date.now()
   if (left <= 0) return <div className="pvp-count is-go" aria-live="assertive">FIGHT</div>
   return <div className="pvp-count" aria-live="assertive" key={Math.ceil(left / 1000)}>{Math.ceil(left / 1000)}</div>
+}
+
+/**
+ * How long this round has been running, counted up from the server's clock.
+ *
+ * `roundStartedAtMs` is the tick on which the simulation enabled combat, sent
+ * to both clients in the same snapshot — the same arrangement as the
+ * countdown's deadline and for the same reason. Noting the time locally on
+ * the frame a client happened to notice the phase change would give the two
+ * fighters two different round lengths, drifting further apart the longer
+ * they fought.
+ *
+ * Quiet on purpose. It sits in the meta line under the health bars rather
+ * than anywhere near the middle of the screen: during a fight the loudest
+ * thing in the HUD should be the two HP numbers.
+ */
+function RoundClock({ startedAtMs }: { startedAtMs: number }) {
+  return <b className="pvp-duel-clock" aria-label="Round time">{clockText(Date.now() - startedAtMs)}</b>
 }
 
 /** The session score from this client's own side. A snapshot is symmetric; a reader is not. */
@@ -320,6 +357,7 @@ function seriesLine(duel: DuelSnapshot) {
 }
 
 function DuelHud() {
+  useHudClock()
   const duel = pvpState.duel!
   const you = duel.a.playerId === pvpState.playerId ? duel.a : duel.b
   const foe = you === duel.a ? duel.b : duel.a
@@ -340,7 +378,8 @@ function DuelHud() {
             only a booking: the fight happens in an instance of its own. */}
         {phase === 'loading' && 'Building the arena…'}
         {phase === 'countdown' && 'On your marks.'}
-        {phase === 'fighting' && `Match ${duel.arena.matchNumber} · pot ${duel.pot} · ${DEMO_GOLD_NOTICE}`}
+        {phase === 'fighting' && `Match ${duel.arena.matchNumber} · pot ${duel.pot} · ${DEMO_GOLD_NOTICE} · `}
+        {phase === 'fighting' && duel.roundStartedAtMs !== null && <RoundClock startedAtMs={duel.roundStartedAtMs} />}
         {phase === 'results' && 'Match over.'}
         {score.fought > 0 && <b> Session {score.mine}–{score.theirs}{score.draws ? ` (${score.draws}D)` : ''}</b>}
         {duel.reconnectUntilMs && <b> Waiting on a reconnect…</b>}
@@ -393,8 +432,16 @@ function ResultCard() {
       <div className="wui-etch">MATCH {result.matchNumber}</div>
       <h3>{result.kind === 'draw' || result.kind === 'void' || result.refunded ? 'Draw' : result.kind === 'victory' ? 'Victory' : 'Defeat'}</h3>
       <p>{result.reason}</p>
+      {/* Six stats in the same two-column grid the other cards use, so the
+          panel grows by one row rather than by a section. The opponent used
+          to be named only inside the rematch button's label, which left the
+          card reading as a result against nobody. The duration is the
+          server's own measurement — see `roundMs` — so the two fighters are
+          not shown two lengths for the round they just fought. */}
       <dl className="pvp-stats">
+        <div><dt>Opponent</dt><dd>{result.opponentName}</dd></div>
         <div><dt>Session</dt><dd>{result.series.yours}–{result.series.theirs}{result.series.draws ? ` · ${result.series.draws}D` : ''}</dd></div>
+        <div><dt>Round</dt><dd>{clockText(result.roundMs)}</dd></div>
         <div><dt>Stake</dt><dd>{result.stake}</dd></div>
         <div><dt>Net gold</dt><dd>{result.yourDelta >= 0 ? `+${result.yourDelta}` : result.yourDelta}</dd></div>
         <div><dt>Balance</dt><dd>{result.yourBalance}</dd></div>

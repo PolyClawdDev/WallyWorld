@@ -378,6 +378,17 @@ export type DuelSnapshot = {
   b: DuelFighterView
   you: PlayerId
   countdownEndsAtMs: number | null
+  /**
+   * When combat was enabled, on the server's clock. Null until it is.
+   *
+   * The HUD counts the round up from this for the same reason the countdown
+   * counts down to `countdownEndsAtMs`: a start time each client noted for
+   * itself is a different start time on each screen, so the two fighters
+   * would read different elapsed times for the same round. It stays set
+   * through `ended` so the arena still knows when the round it just finished
+   * began.
+   */
+  roundStartedAtMs: number | null
   fightEndsAtMs: number | null
   outOfBoundsUntilMs: number | null
   reconnectUntilMs: number | null
@@ -403,6 +414,17 @@ export type DuelResultView = {
   loserId: PlayerId | null
   stake: number
   pot: number
+  /**
+   * How long the round ran, in milliseconds.
+   *
+   * A duration measured entirely on the server clock rather than the two
+   * timestamps it came from, so both panels state the same length: a client
+   * subtracting its own `Date.now()` from a server start would be out by
+   * whatever its clock is out by, and the two fighters would disagree about
+   * a round they fought together. Zero for a match that never reached
+   * combat — a prepare timeout or a drain has no round to measure.
+   */
+  roundMs: number
   refunded: boolean
   yourDelta: number
   yourBalance: number

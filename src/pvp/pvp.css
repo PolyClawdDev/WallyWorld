@@ -131,7 +131,10 @@
 }
 
 .pvp-stats dt { color: #a89068; font-size: 11px; }
-.pvp-stats dd { margin: 0; font-weight: 700; }
+/* `anywhere` because a display name is now one of these values and may be 24
+   characters with no space in it — a number never needed breaking, a name
+   does, and the alternative is a column that pushes the card wider. */
+.pvp-stats dd { margin: 0; font-weight: 700; overflow-wrap: anywhere; }
 
 .pvp-demo { color: #c4a15a !important; font-size: 11px; letter-spacing: 0.03em; }
 
@@ -191,6 +194,10 @@
 
 .pvp-duel-bar { display: flex; gap: 10px; justify-content: center; align-items: center; }
 .pvp-duel-meta { margin: 6px 0; font-size: 12px; color: #c8b89a; }
+/* The round clock. Tabular figures so the line does not shuffle sideways
+   every time a digit changes, and otherwise no louder than the meta text it
+   sits in: during a fight the two HP numbers above it are what matters. */
+.pvp-duel-clock { font-variant-numeric: tabular-nums; color: #e5ddc8; }
 
 /* ------------------------------------------------------------------ *
  * The scene swap.

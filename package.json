@@ -43,6 +43,7 @@
     "verify:duel-lifecycle": "node scripts/verify-duel-lifecycle.mjs",
     "verify:duel-abandon": "node scripts/verify-duel-abandon.mjs",
     "verify:duel-arena": "node scripts/verify-duel-arena.mjs",
+    "verify:duel-concurrency": "node scripts/verify-duel-concurrency.mjs",
     "verify:heartbeat": "tsx scripts/verify-heartbeat.mjs",
     "verify:combat": "tsx scripts/verify-combat.mjs",
     "verify:camera": "node scripts/verify-camera.mjs",

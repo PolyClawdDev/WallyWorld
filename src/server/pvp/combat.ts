@@ -399,6 +399,10 @@ export class DuelSim {
       b: viewOf(this.b),
       you,
       countdownEndsAtMs: this.phase === 'countdown' ? this.countdownAt + COUNTDOWN_MS : null,
+      // Not gated on the phase, unlike the two deadlines either side of it:
+      // the moment combat opened is still the truth after the match has
+      // ended, and the results panel is read from an `ended` snapshot.
+      roundStartedAtMs: this.startedAt || null,
       fightEndsAtMs: this.phase === 'active' ? this.startedAt + DUEL_CAP_MS : null,
       outOfBoundsUntilMs: oob?.outSince ? oob.outSince + OUT_OF_BOUNDS_MS : null,
       reconnectUntilMs: reconnect?.disconnectAt ? reconnect.disconnectAt + RECONNECT_GRACE_MS : null,

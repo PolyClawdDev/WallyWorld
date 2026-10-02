@@ -1255,6 +1255,15 @@ function closeDuel(sim: DuelSim, end: DuelEnd, now: number) {
    * last match is not a rematch. A `void` is not counted for the same reason
    * it is not recorded above: a restart is not a result anybody fought to.
    */
+  /*
+   * The length of the round, settled once here rather than on either screen.
+   * `endedAt` is set by `finish`, which every outcome the fighters can reach
+   * goes through; a prepare timeout and a shutdown drain reach `closeDuel`
+   * without it, so `now` stands in and a match that never started measures
+   * zero either way.
+   */
+  const roundMs = sim.startedAt > 0 ? Math.max(0, (sim.endedAt || now) - sim.startedAt) : 0
+
   const series = sim.arena.series
   if (end.kind === 'draw') series.draws += 1
   else if (end.kind !== 'void') {
@@ -1283,6 +1292,7 @@ function closeDuel(sim: DuelSim, end: DuelEnd, now: number) {
       loserId: end.loserId,
       stake: sim.stake,
       pot: sim.stake * 2,
+      roundMs,
       refunded: draw || end.kind === 'void',
       yourDelta: delta,
       yourBalance: gold.available,
