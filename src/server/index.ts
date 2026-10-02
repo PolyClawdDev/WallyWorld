@@ -94,7 +94,7 @@ import {
 } from './db'
 import { verifyClusterIdentity, verifyTransfer } from './chain'
 import { allowedMethodNames, proxyRpc } from './rpcProxy'
-import { redact, safeError, safeLog, secretFingerprint } from './redact'
+import { redactDeep, safeError, safeLog, secretFingerprint } from './redact'
 import { attachPvpUpgrade, handlePvpHttp, upgradePolicy } from './pvp'
 import { drainLive } from './pvp/hub'
 
@@ -111,15 +111,25 @@ type Json = Record<string, unknown> | Array<unknown>
 /**
  * The single writer for every response body.
  *
- * Serialising first and scrubbing the finished string means the RPC endpoint
- * cannot escape through any route, however deeply it was nested or whichever
- * library put it there — `@solana/web3.js` and `fetch` both quote the endpoint
- * in their error messages, and those messages end up inside receipt details and
- * health payloads. Doing it here rather than at each call site makes the safe
- * behaviour the default instead of something to remember.
+ * Scrubbing happens here rather than at each call site so the safe behaviour is
+ * the default instead of something to remember: the RPC endpoint cannot escape
+ * through any route, however deeply it was nested or whichever library put it
+ * there — `@solana/web3.js` and `fetch` both quote the endpoint in their error
+ * messages, and those messages end up inside receipt details and health
+ * payloads.
+ *
+ * It scrubs the object and serialises the result, rather than serialising and
+ * scrubbing the finished string. The string version reached production and
+ * corrupted it: an operator had left one of the credential variables set to the
+ * literal text `null`, which became a secret fragment, and every structural
+ * `null` in every response was then replaced with the placeholder — invalid
+ * JSON, from a server with nothing wrong with its own logic. Walking the value
+ * cannot touch structure, and it is the stricter scrubber besides, because a
+ * secret containing a quote or a backslash is escaped by `JSON.stringify` and
+ * would no longer match the pattern once flattened.
  */
 function send(res: ServerResponse, status: number, body: Json) {
-  const payload = redact(JSON.stringify(body))
+  const payload = JSON.stringify(redactDeep(body))
   res.statusCode = status
   res.setHeader('Content-Type', 'application/json; charset=utf-8')
   res.setHeader('Cache-Control', 'no-store')

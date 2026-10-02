@@ -9,6 +9,8 @@
  * Run with: npm run test:identity
  */
 import { createHash, randomBytes } from 'node:crypto'
+import { spawnSync } from 'node:child_process'
+import { readFile } from 'node:fs/promises'
 import { ed25519 } from '@noble/curves/ed25519.js'
 import bs58 from 'bs58'
 import { useTestDatabases, check, equal, section, finish } from './lib/harness'
@@ -306,6 +308,55 @@ check('an ordinary log line is left alone', redact('opened hunt h_abc for level 
 // needs it, so the scrubber must not match that shape.
 check('a sign-in response can still carry its own token',
   redact(JSON.stringify({ token: liveToken })).includes(liveToken))
+
+/*
+ * The scrubber once corrupted production, and not through a secret.
+ *
+ * A credential variable had been left set to the literal text `null`, so `null`
+ * became a secret fragment, and the response writer — which scrubbed the
+ * serialised string — replaced every structural `null` in every body with the
+ * placeholder. The server was emitting invalid JSON while being entirely
+ * correct about its own logic, and the only visible symptom was clients failing
+ * to parse a 200.
+ *
+ * Two things stop it, and both are checked: a value too short to hold a token
+ * is no longer treated as secret, and the writer scrubs the value before
+ * serialising it so structure is never in reach of a pattern. The pattern is
+ * built once at module load, so the first half has to be asked in a process
+ * that started with the variable set that way.
+ */
+const inChildWith = (env: Record<string, string>, body: string) =>
+  spawnSync(process.execPath, ['--import', 'tsx', '-e', body], {
+    env: { ...process.env, ...env },
+    encoding: 'utf8',
+    cwd: new URL('..', import.meta.url).pathname,
+  })
+
+const placeholderProbe = inChildWith(
+  { DATABASE_URL: 'null' },
+  `import('./src/server/redact.ts').then(({ redact }) => {
+     const out = redact(JSON.stringify({ depositAddress: null, ok: true }))
+     try { JSON.parse(out); console.log('VALID ' + out) } catch { console.log('INVALID ' + out) }
+   })`,
+)
+check('a credential variable left as the word "null" does not make "null" a secret',
+  placeholderProbe.stdout.includes('VALID'), placeholderProbe.stdout.trim() || placeholderProbe.stderr.trim())
+
+// And a real secret in the same process is still scrubbed, so the floor above
+// bought correctness without buying a leak.
+const realSecretProbe = inChildWith(
+  { DATABASE_URL: 'null', SOLANA_RPC_URL_MAINNET_BETA: 'https://tiny.example.com/9f3c81aa77be42d1' },
+  `import('./src/server/redact.ts').then(({ redact }) => {
+     console.log(redact('failed to reach https://tiny.example.com/9f3c81aa77be42d1 for getSlot'))
+   })`,
+)
+check('a real endpoint is still scrubbed alongside it',
+  !realSecretProbe.stdout.includes('9f3c81aa77be42d1') && realSecretProbe.stdout.includes('[redacted-rpc-endpoint]'),
+  realSecretProbe.stdout.trim() || realSecretProbe.stderr.trim())
+
+const writer = await readFile(new URL('../src/server/index.ts', import.meta.url), 'utf8')
+check('the response writer scrubs the value, not the serialised text',
+  writer.includes('JSON.stringify(redactDeep(body))') && !writer.includes('redact(JSON.stringify(body))'))
 
 /* ------------------------------------------------------------ conservation */
 

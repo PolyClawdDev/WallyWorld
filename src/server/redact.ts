@@ -55,9 +55,19 @@ const NON_SECRET_HOSTS = new Set(['localhost', '127.0.0.1', '::1', 'postgres', '
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+/**
+ * A value this short in a credential variable is a leftover, not a credential.
+ *
+ * Deployments arrive with these set to `null`, `none` or `-` by a blueprint
+ * that had nothing to put in them, and treating such a value as secret turns
+ * the scrubber into a find-and-replace for a common English word across every
+ * log line and every response body. `null` is the one that did real damage, so
+ * the floor is the same `TOKEN_MIN_LENGTH` already applied to path segments:
+ * nothing shorter can carry an access token anyway.
+ */
 function fragmentsFor(raw: string): string[] {
   const value = raw.trim()
-  if (!value) return []
+  if (value.length < TOKEN_MIN_LENGTH) return []
   const fragments = new Set<string>([value, value.replace(/\/+$/, '')])
   try {
     const url = new URL(value)
