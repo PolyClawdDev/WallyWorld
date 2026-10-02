@@ -26,8 +26,8 @@ wallet pouch) and `f35fe54` (Phantom wallet, combat HUD, in-world UI pass, wildl
 | --- | --- | --- |
 | Entry / world host | `src/main.tsx` (720) | React root, character select, `WorldCanvas`, panel routing, key handling. `INTERACT_RANGE = 5`, `TAP_MS = 200` disambiguating WASD movement from Q/W/E/R abilities. |
 | Characters | `src/characters.ts` (1397) | Four archetypes MOTH, BRAMBLE, CINDER, ORBIT; voxel builder, wardrobe, `animateCharacter`. |
-| Town data | `src/townData.ts` (96) | **Single source of truth for the town plan.** 17 `buildingSpecs`, 8 `serviceNpcs`, 10 `ambientNpcs`, streets/plaza/canal/bridges, `perimeterTrees()`, `districts`. |
-| NPC models | `src/npcs.ts` (881) | Voxel sprite builder plus 8 hand-authored `namedDesigns` and an ambient wardrobe. |
+| Town data | `src/townData.ts` (96) | **Single source of truth for the town plan.** 17 `buildingSpecs`, 8 `serviceNpcs`, streets/plaza/canal/bridges, `perimeterTrees()`, `districts`. The decorative `ambientNpcs` crowd was removed: the town is populated by real players. |
+| NPC models | `src/npcs.ts` (1109) | Voxel sprite builder plus 8 hand-authored `namedDesigns`, one per service NPC. An unnamed NPC is an error, not a generic resident. |
 | Map | `src/WorldMap.tsx` (282) | SVG map drawn from `townData.ts` — a projection of the real world, 1 SVG unit = 1 metre. |
 | Panels / HUD | `src/panels.tsx`, `src/Popup.tsx`, `src/huntHud.tsx`, `src/combatHud.tsx` (479) | Journal, settings, hunt log, combat HUD with ability book and tooltips. |
 | Wallet pouch | `src/Wallet.tsx` (399) | Local demo inventory with **working drag-and-drop onto NPCs** via `npcAtScreen()` raycast. `demo = true` default. |

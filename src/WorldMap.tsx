@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { SHIELDED_NOTICE, ambientNpcs, buildingSpecs, districtAt, districts, huntingRegions, perimeterTrees, serviceNpcs, townLayout } from './townData'
+import { SHIELDED_NOTICE, buildingSpecs, districtAt, districts, huntingRegions, perimeterTrees, serviceNpcs, townLayout } from './townData'
 import { emblems, isEmblemId } from './emblems'
 import type { EmblemId } from './emblems'
 import { SAFE_ZONE, huntTrails, speciesSpecs, wildRegions, wildlifeMarkers } from './wildlife'
@@ -41,7 +41,6 @@ function Swatch({ kind, color }: { kind: string; color: string }) {
       <rect x="5" y="0" width="2" height="2" fill="#d5a64b" />
     </>}
     {kind === 'service' && <polygon points="6,1 11,6 6,11 1,6" fill={color} stroke="#3a2b1c" strokeWidth="1" />}
-    {kind === 'resident' && <rect x="3" y="3" width="6" height="6" fill="#9a9a86" stroke="#3a2b1c" strokeWidth="0.8" />}
     {kind === 'player' && <polygon points="6,11 1,1 6,4 11,1" fill={color} stroke="#3a2b1c" strokeWidth="0.8" />}
     {kind === 'water' && <><rect x="0" y="0" width="12" height="12" fill="#a8c9c6" stroke="#4d7f80" strokeWidth="0.8" /><rect x="0" y="4" width="12" height="0.8" fill="#6f9c9c" /><rect x="0" y="8" width="8" height="0.8" fill="#6f9c9c" /></>}
     {kind === 'bridge' && <><rect x="0" y="3" width="12" height="6" fill="#b08e5c" stroke="#5b4433" strokeWidth="0.6" /><rect x="3" y="3" width="1" height="6" fill="#7a5c39" /><rect x="7" y="3" width="1" height="6" fill="#7a5c39" /></>}
@@ -239,9 +238,6 @@ export function WorldMap() {
           strokeWidth="0.5"
         />)}
 
-        {/* residents */}
-        {ambientNpcs.map((npc, index) => <rect className="mp-resident" key={index} x={npc.x - 1.3} y={npc.z - 1.3} width="2.6" height="2.6" fill="#9a9a86" stroke="#3a2b1c" strokeWidth="0.6" />)}
-
         {/* named service NPCs.
             The diamond says where somebody is standing; the line under the name
             says what they do, which is the whole reason for finding them. Anyone
@@ -316,7 +312,6 @@ export function WorldMap() {
             shielded transfer is <b>unavailable here</b> and nothing in this build can
             send ZEC.</span>
           </li>}
-          <li><Swatch kind="resident" color="#849394" />Residents ({ambientNpcs.length})</li>
           <li><Swatch kind="building" color="#795c50" />Building · gold notch is the door</li>
           <li><Swatch kind="plaza" color="#65706a" />Fountain plaza</li>
           <li><Swatch kind="street" color="#555d59" />Streets and the upper terrace</li>

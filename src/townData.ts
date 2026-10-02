@@ -181,13 +181,6 @@ export const serviceNpcs: ServiceNpc[] = [
   { name: 'NELL · INNKEEPER', id: 'MOTH', x: -10, z: 10, color: '#d5a64b', trade: 'BOARD', emblem: 'TANKARD' },
 ]
 
-export const ambientNpcs: Array<{ id: WizardId; x: number; z: number }> = [
-  { id: 'BRAMBLE', x: -8, z: 3 }, { id: 'CINDER', x: 8, z: 4 }, { id: 'MOTH', x: -5, z: -5 },
-  { id: 'ORBIT', x: 12, z: -4 }, { id: 'BRAMBLE', x: 27, z: -22 }, { id: 'CINDER', x: 40, z: 30 },
-  { id: 'MOTH', x: -29, z: 24 }, { id: 'ORBIT', x: -34, z: 51 }, { id: 'BRAMBLE', x: 18, z: 55 },
-  { id: 'CINDER', x: 69, z: 53 },
-]
-
 /** Streets, plaza, canal and landmarks in world metres. */
 export const townLayout = {
   ground: 220,

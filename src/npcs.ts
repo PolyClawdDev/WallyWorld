@@ -625,203 +625,17 @@ const namedDesigns: Record<string, NpcDesign> = {
   },
 }
 
-/* ------------------------------------------------------------------ *
- * Ambient residents. Five body plans, each with a few wardrobes, so a
- * crowd of ten never shows the same person twice in one glance.
- * ------------------------------------------------------------------ */
-
-const ambientBodies = {
-  // Stocky, flat cap, working vest over a long tunic.
-  stocky: grid('stocky', [
-    '.....QQQQQQQQ.....',
-    '....QQQQQQQQQQ....',
-    '......FFFFFF......',
-    '......FEFFEF......',
-    '......FFFFFF......',
-    '.....TTTTTTTT.....',
-    '...CCCCCCCCCCCC...',
-    '..CCCCCCCCCCCCCC..',
-    '..SCCCCCCCCCCCCS..',
-    '..SCCCCCCCCCCCCS..',
-    '..SCCCCCCCCCCCCS..',
-    '...CGGGGGGGGGGC...',
-    '...CCCCCCCCCCCC...',
-    '...cccccccccccc...',
-    '....PPPPPPPPPP....',
-    '....PPPP..PPPP....',
-    '....PPP....PPP....',
-    '...OOOO....OOOO...',
-  ]),
-  // Slim, bare head, long shop apron.
-  slim: grid('slim', [
-    '......KKKKKK......',
-    '.....KKKKKKKK.....',
-    '......FFFFFF......',
-    '......FEFFEF......',
-    '......FFFFFF......',
-    '.....WWWWWWWW.....',
-    '....CCCCCCCCCC....',
-    '...CCCCCCCCCCCC...',
-    '..SCCAAAAAAAACCS..',
-    '..SCAAAAAAAAAACS..',
-    '...CAAAAAAAAAAC...',
-    '...CAGGGGGGGGAC...',
-    '...CAAAAAAAAAAC...',
-    '...CAAAAAAAAAAC...',
-    '....CCCCCCCCCC....',
-    '.....PPPPPPPP.....',
-    '.....PPP..PPP.....',
-    '.....OOO..OOO.....',
-  ]),
-  // Short, round-headed, simple smock. Reads as a kid at a distance.
-  small: grid('small', [
-    '......KKKKKK......',
-    '.....KKKKKKKK.....',
-    '.....KFFFFFFK.....',
-    '.....FEFFFFEF.....',
-    '.....FFFFFFFF.....',
-    '......FFFFFF......',
-    '......CCCCCC......',
-    '.....CCCCCCCC.....',
-    '....SCCCCCCCCS....',
-    '.....CGGGGGGC.....',
-    '.....CCCCCCCC.....',
-    '.....CCCCCCCC.....',
-    '......PPPPPP......',
-    '......PP..PP......',
-    '......OO..OO......',
-  ]),
-  // Hooded, hauling a sack that swallows one shoulder.
-  hauler: grid('hauler', [
-    '......HHHHHH......',
-    '.....HHHHHHHH.....',
-    '....HHHHHHHHHH....',
-    '....HHFFFFFFHH....',
-    '....HHFEFFEFHH....',
-    '.....HFFFFFFH.....',
-    '.....HHHHHHHH.....',
-    '..LLLHHHHHHHH.....',
-    '.LLLLLCCCCCCCC....',
-    'LLLLLLLCCCCCCCS...',
-    'LLLLLLLCCCCCCCS...',
-    '.LLLLLCGGGGGGC....',
-    '..LLLCCCCCCCCC....',
-    '....CCCCCCCCCC....',
-    '....cccccccccc....',
-    '....PPPPPPPP......',
-    '....PPP..PPP......',
-    '....OOO..OOO......',
-  ]),
-  // Stooped elder under a heavy shawl, leaning on a stick.
-  elder: grid('elder', [
-    '......KKKKKK......',
-    '.....KKKKKKKK.....',
-    '....KKFFFFFFK.....',
-    '....KKFEFFEFK.....',
-    '.....KFFFFFF......',
-    '.....TTTTTTTT.....',
-    '...TTTTTTTTTTTT...',
-    '..TTTTTTTTTTTTTT..',
-    '..STTTTTTTTTTTTS..',
-    '..M.TTTTTTTTTT....',
-    '..M.CCCCCCCCCC....',
-    '..M.CGGGGGGGGC....',
-    '..M.CCCCCCCCCC....',
-    '..M.CCCCCCCCCC....',
-    '..M.cccccccccc....',
-    '..M..PPPPPPPP.....',
-    '..M..PPP..PPP.....',
-    '..M..OOO..OOO.....',
-  ]),
-} satisfies Record<string, string[]>
-
-type AmbientKind = keyof typeof ambientBodies
-
-/**
- * Ordered so a round-robin walk never puts two of the same body plan next to
- * each other, and ten residents cover all five plans twice.
- */
-const ambientWardrobe: Array<{ kind: AmbientKind; height: number; accent: string; lean?: number; palette: Palette }> = [
-  {
-    kind: 'stocky', height: 3.2, accent: '#9aa7a8',
-    palette: base({ Q: '#4d4338', q: '#332c25', T: '#8a5a3f', C: '#7d6a4f', c: '#54462f', P: '#3e4a52', F: SKIN.warm, S: SKIN.warm }),
-  },
-  {
-    kind: 'slim', height: 3.15, accent: '#a6947c',
-    palette: base({ K: '#6b4a2e', C: '#8a5f4a', c: '#5d3f31', A: '#ded3b4', P: '#4a4238', F: SKIN.pale, S: SKIN.pale }),
-  },
-  {
-    kind: 'hauler', height: 3.3, accent: '#8f9684', lean: 0.09,
-    palette: base({ H: '#5a5347', C: '#6b5f4c', c: '#463d30', L: '#7a5a38', P: '#3f3a32', F: SKIN.warm, S: SKIN.warm }),
-  },
-  {
-    kind: 'elder', height: 2.85, accent: '#b0a7b5', lean: 0.16,
-    palette: base({ K: '#cfc9ba', T: '#8a6f7d', C: '#4f4a52', c: '#332f36', P: '#3d3a33', M: '#7a5a38', F: SKIN.pale, S: SKIN.pale }),
-  },
-  {
-    kind: 'small', height: 2.3, accent: '#c69a72',
-    palette: base({ K: '#c08a3e', C: '#b5714f', c: '#7c4b34', P: '#485162', F: SKIN.pale, S: SKIN.pale }),
-  },
-  {
-    kind: 'stocky', height: 3.35, accent: '#8fa38c',
-    palette: base({ Q: '#3b5364', q: '#26353f', T: '#c2543f', C: '#5b6f63', c: '#3b4a41', P: '#4a3f33', F: SKIN.deep, S: SKIN.deep }),
-  },
-  {
-    kind: 'slim', height: 3.25, accent: '#93a2b5',
-    palette: base({ K: '#2f2a26', C: '#4f6b70', c: '#334749', A: '#c9c0a3', P: '#3d3a33', F: SKIN.deep, S: SKIN.deep }),
-  },
-  {
-    kind: 'hauler', height: 3.4, accent: '#7f8c97', lean: 0.11,
-    palette: base({ H: '#3f4a55', C: '#505a63', c: '#353d44', L: '#6a4a2e', P: '#3a3630', F: SKIN.ruddy, S: SKIN.ruddy }),
-  },
-  {
-    kind: 'elder', height: 2.95, accent: '#9fb096', lean: 0.14,
-    palette: base({ K: '#d6d0c2', T: '#6f7f6a', C: '#4a5148', c: '#2f342e', P: '#3a3a36', M: '#6b4d36', F: SKIN.deep, S: SKIN.deep }),
-  },
-  {
-    kind: 'small', height: 2.45, accent: '#a8b58c',
-    palette: base({ K: '#4a3b2e', C: '#6d7f5c', c: '#47543c', P: '#4c4238', F: SKIN.warm, S: SKIN.warm }),
-  },
-]
-
-function hash(text: string) {
-  let h = 2166136261
-  for (let i = 0; i < text.length; i++) {
-    h ^= text.charCodeAt(i)
-    h = Math.imul(h, 16777619)
-  }
-  return Math.abs(h)
-}
-
-/**
- * Hashing names straight into the wardrobe collides often enough that a crowd
- * of ten can miss whole body plans, so residents are dealt round-robin in the
- * order they are first built and then remembered by name.
- */
-const residentSlots = new Map<string, number>()
-
-function slotFor(name: string) {
-  let slot = residentSlots.get(name)
-  if (slot === undefined) {
-    slot = residentSlots.size % ambientWardrobe.length
-    residentSlots.set(name, slot)
-  }
-  return slot
-}
-
 /** `MIRA · GUIDE` and `MIRA` both resolve to the MIRA design. */
 function designFor(name: string): NpcDesign {
   const key = name.split('·')[0].trim().toUpperCase()
   const named = namedDesigns[key]
-  if (named) return named
-  const wardrobe = ambientWardrobe[slotFor(name)]
-  return {
-    rows: ambientBodies[wardrobe.kind],
-    height: wardrobe.height,
-    palette: wardrobe.palette,
-    accent: wardrobe.accent,
-    lean: wardrobe.lean,
-  }
+  // Every townsperson in the world is now one of the eight named service
+  // posts; the generic wardrobe that unnamed residents used to fall back to is
+  // gone with them. Returning a blank design instead of raising would put an
+  // invisible, unclickable service NPC on their pitch, which is the failure
+  // that is hardest to notice and worst to live with.
+  if (!named) throw new Error(`No NPC design for "${name}"`)
+  return named
 }
 
 /** Label and ground-ring colour for an NPC, so markers match the model. */
@@ -831,7 +645,7 @@ export function npcAccent(name: string) {
 
 /**
  * Build a townsperson. Height comes from the design, not the caller, because
- * varied stature is most of what stops the crowd reading as clones.
+ * varied stature is most of what distinguishes one post from the next.
  */
 export function createTownsfolk(name: string, scale = 1) {
   const key = name.split('·')[0].trim().toUpperCase()
@@ -839,9 +653,6 @@ export function createTownsfolk(name: string, scale = 1) {
   const root = new THREE.Group()
   root.scale.setScalar(scale)
   root.userData.npcDesign = key
-  // Named NPCs keep a predictable facing so their props read from the street.
-  // Residents get a stable scatter, otherwise the crowd stands in formation.
-  if (!namedDesigns[key]) root.rotation.y = ((hash(name) % 360) / 360) * Math.PI * 2
 
   const sprite = buildSprite(design.rows, design.palette, design.height)
   if (design.lean) sprite.rotation.x = design.lean

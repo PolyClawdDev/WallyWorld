@@ -10,7 +10,7 @@ import { createServiceEmblems, createTownsfolk, npcAccent, placeNpcLabel } from 
 import { Popup } from './Popup'
 import { WalletPouch } from './Wallet'
 import { WorldMap } from './WorldMap'
-import { ambientNpcs, buildingSpecs, perimeterTrees, serviceNpcs, townLayout } from './townData'
+import { buildingSpecs, perimeterTrees, serviceNpcs, townLayout } from './townData'
 import type { BuildingSpec } from './townData'
 import { registerWorld } from './worldBridge'
 import { compassHuntRegion, createWildlife, highHuntArea, isInTown, isSafeZone, speciesSpecs } from './wildlife'
@@ -272,18 +272,15 @@ function createTown() {
   return root
 }
 
-function createNpc(name: string, x: number, z: number, interactive = true, color?: string) {
+function createNpc(name: string, x: number, z: number, color?: string) {
   const npc = createTownsfolk(name)
-  // Named NPCs keep their town-data colour so the world and the map agree;
-  // residents fall back to their own design accent instead of one shared grey.
+  // Named NPCs keep their town-data colour so the world and the map agree.
   const accent = color ?? npcAccent(name)
   npc.position.set(x, 0, z)
-  npc.userData.npc = interactive ? name : undefined
+  npc.userData.npc = name
   npc.userData.homeY = 0
   npc.userData.phase = (x + z) * 0.13
-  npc.userData.interactive = interactive
   const label = makeLabel(name, accent)
-  label.visible = interactive
   // Sized and raised from the model's own height, not a fixed offset.
   placeNpcLabel(npc, label)
   const marker = new THREE.Mesh(new THREE.RingGeometry(0.28, 0.38, 8), new THREE.MeshBasicMaterial({ color: accent, transparent: true, opacity: 0.8, side: THREE.DoubleSide }))
@@ -654,8 +651,13 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
     player.updateMatrixWorld(true)
     refreshNameplate()
     nameplate.attachTo(player)
-    serviceNpcs.forEach(({ name, x, z, color }) => scene.add(createNpc(name, x, z, true, color)))
-    ambientNpcs.forEach(({ x, z }) => scene.add(createNpc(`townsperson-${x}-${z}`, x, z, false)))
+    serviceNpcs.forEach(({ name, x, z, color }) => scene.add(createNpc(name, x, z, color)))
+    /* Ten decorative residents used to stand here alongside the eight service
+     * posts. They had no nameplate, no dialogue and nothing to click, so four of
+     * them loitering on the fountain plaza read as broken NPCs rather than as
+     * scenery. The plaza is meant to be filled by real players; if it looks
+     * empty, that is a player-count problem and not one to paper over with
+     * figures nobody can talk to. */
     const wildscape = createWildscape()
     scene.add(wildscape)
     // The town's own footprints plus whatever the wildscape registered for its
@@ -1235,7 +1237,7 @@ function WorldCanvas({ wizard, style = defaultMothStyle, playerName = '', paused
       animateCharacter(player, now)
       scene.children.forEach(o => {
         if (o.userData.phase === undefined) return
-        o.position.y = Math.sin(now * 0.0018 + o.userData.phase) * (o.userData.interactive ? 0.018 : 0.035)
+        o.position.y = Math.sin(now * 0.0018 + o.userData.phase) * 0.018
         o.rotation.y += Math.sin(now * 0.001 + o.userData.phase) * 0.0007
         animateCharacter(o, now, o.userData.phase)
       })

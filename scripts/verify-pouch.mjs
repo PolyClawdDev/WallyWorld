@@ -233,7 +233,9 @@ const map = await page.evaluate(() => {
 check('M opens a wide centered popup, not a sidebar', map.popup && map.wide && map.centered && !map.sidePanel)
 check('all 17 buildings are labelled', map.buildings === 17, `${map.buildings} labels`)
 check('8 service NPCs are labelled', map.npcs.length === 8, map.npcs.join(', '))
-check('10 residents are marked', map.residents === 10, `${map.residents} markers`)
+// The decorative resident crowd was removed from the town; the map must not
+// grow markers for people who are not standing there.
+check('no resident markers remain', map.residents === 0, `${map.residents} markers`)
 // both lists grew with the wildlife data the map now reads, so this is a floor
 check('legend and place lists render', map.legend >= 9 && map.places >= 25, `legend ${map.legend}, places ${map.places}`)
 check('player readout is live', /LIVE/.test(map.readout), map.readout.replace(/\s+/g, ' ').slice(0, 90))
